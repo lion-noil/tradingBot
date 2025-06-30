@@ -1,30 +1,31 @@
-# utils/logger.py
 import logging
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
-import sys
-import io
+import os
 
-def setup_logger(name="tradebot", log_file="logs/tradebot.log", level=logging.INFO):
-    Path("logs").mkdir(exist_ok=True)
+def setup_logger():
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
 
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger("bybit-bot")
+    logger.setLevel(logging.DEBUG)
 
-    # 🔒 파일 핸들러는 INFO 이상만 저장
-    file_handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
+    # 콘솔 출력 핸들러
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+
+    # 파일 핸들러
+    file_handler = logging.FileHandler(f"{log_dir}/trading.log", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    console_handler.setFormatter(formatter)
     file_handler.setFormatter(formatter)
-    file_handler.setLevel(level)  # usually logging.INFO
 
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)  # 전체 로그 레벨은 DEBUG
-
-    if not logger.hasHandlers():
-        logger.addHandler(file_handler)
-
-        # 🔊 콘솔 핸들러는 DEBUG까지 출력 (현재가 로그 포함)
-        console = logging.StreamHandler(io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8'))
-        console.setFormatter(formatter)
-        console.setLevel(logging.DEBUG)  # <=== 이 줄 중요!
-        logger.addHandler(console)
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
 
     return logger
+
+# ✅ 여기 추가
+logger = setup_logger()
