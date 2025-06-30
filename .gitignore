@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE 설정
+.vscode/
+.idea/
+
+# 환경 파일
+.env
+
+# 로그 파일
+logs/
+*.log
+
+# OS 관련
+.DS_Store
+Thumbs.db
+
+# 가상환경 (있다면)
+venv/
+*.egg-info/
+
+# PyInstaller, build 결과물
+dist/
+build/
