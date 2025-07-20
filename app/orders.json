@@ -338,5 +338,22 @@
     "cumQuote": 5193.144,
     "clientOrderId": "x-Cb7ytekJ9b9d4aad4c0c7be6a97059",
     "source": "binance"
+  },
+  {
+    "id": "5394626354",
+    "symbol": "BTCUSDT",
+    "side": "LONG",
+    "type": "OPEN",
+    "qty": 0.043,
+    "price": 117932.7,
+    "time": 1753006999357,
+    "orderSide": "BUY",
+    "reduceOnly": false,
+    "closePosition": false,
+    "status": "FILLED",
+    "orderType": "MARKET",
+    "cumQuote": 5071.1061,
+    "clientOrderId": "x-Cb7ytekJ23f6f37441f0d4cc33ee85",
+    "source": "binance"
   }
 ]

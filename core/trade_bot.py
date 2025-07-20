@@ -156,6 +156,7 @@ class TradeBot:
 
         # 4. 자동매매 조건 평가
         short_reasons = get_short_entry_reasons(price, ma100, prev)
+        percent = 10
         if short_reasons:
             logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
             self.binance.sell_market_100(self.symbol, price, percent, balance)
