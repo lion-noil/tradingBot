@@ -56,7 +56,7 @@ class TradeBot:
                 o for o in all_orders
                 if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
             ]
-            open_orders.sort(key=lambda x: x["time"])
+            open_orders.sort(key=lambda x: x["time"], reverse=True)
 
             entry_logs = []  # (time, qty, price)
             for order in open_orders:
@@ -67,7 +67,8 @@ class TradeBot:
 
                 used_qty = min(order_qty, remaining_qty)
                 price = float(order["price"])
-                entry_logs.append((order["time"], used_qty,price))
+                order_time = order["time"]
+                entry_logs.append((order_time, used_qty, price))
                 remaining_qty -= used_qty
 
             results.append({
@@ -127,6 +128,13 @@ class TradeBot:
             "SHORT": pos_dict.get("SHORT", {}).get("entries", [[None]])[0][0] if pos_dict.get("SHORT") and
                                                                                  pos_dict["SHORT"]["entries"] else None,
         }
+        self.position_time = {
+            "LONG": pos_dict.get("LONG", {}).get("entries", [])[-1][0]
+            if pos_dict.get("LONG", {}).get("entries") else None,
+            "SHORT": pos_dict.get("SHORT", {}).get("entries", [])[-1][0]
+            if pos_dict.get("SHORT", {}).get("entries") else None,
+        }
+
 
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
@@ -162,7 +170,7 @@ class TradeBot:
         ## short 진입 조건
         recent_short_time = None
         if "SHORT" in pos_dict and pos_dict["SHORT"]["entries"]:
-            recent_short_time = pos_dict["SHORT"]["entries"][-1][0]
+            recent_short_time = self.position_time['SHORT']
         short_reasons = get_short_entry_reasons(price, ma100, prev, recent_short_time)
         if short_reasons:
             logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
@@ -171,7 +179,7 @@ class TradeBot:
         ## long 진입 조건
         recent_long_time = None
         if "LONG" in pos_dict and pos_dict["LONG"]["entries"]:
-            recent_long_time = pos_dict["LONG"]["entries"][-1][0]
+            recent_long_time = self.position_time['LONG']
         long_reasons = get_long_entry_reasons(price, ma100, prev, recent_long_time)
         if long_reasons:
             logger.info("📌 롱 진입 조건 충족:\n - " + "\n - ".join(long_reasons))
