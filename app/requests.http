@@ -1,0 +1,38 @@
+### 롱 포지션 총자산 10% 진입 테스트
+POST http://localhost:8000/long
+Content-Type: application/json
+
+{
+  "percent": 10
+}
+
+
+### 숏 포지션 총자산 10% 진입 테스트
+POST http://localhost:8000/short
+Content-Type: application/json
+
+{
+  "percent": 10
+}
+
+### 매수 포지션 청산
+POST http://localhost:8000/close
+Content-Type: application/json
+
+{
+  "side": "LONG"
+}
+
+
+### 매도 포지션 청산
+POST http://localhost:8000/close
+Content-Type: application/json
+
+{
+  "side": "SHORT"
+}
+
+
+### 상태 확인
+GET http://localhost:8000/status
+
