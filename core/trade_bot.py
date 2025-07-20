@@ -154,22 +154,35 @@ class TradeBot:
                 else:
                     logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
 
+
+
         # 4. 자동매매 조건 평가
-        short_reasons = get_short_entry_reasons(price, ma100, prev)
         percent = 10
+
+        ## short 진입 조건
+        recent_short_time = None
+        if "SHORT" in pos_dict and pos_dict["SHORT"]["entries"]:
+            recent_short_time = pos_dict["SHORT"]["entries"][-1][0]
+        short_reasons = get_short_entry_reasons(price, ma100, prev, recent_short_time)
         if short_reasons:
             logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
             self.binance.sell_market_100(self.symbol, price, percent, balance)
 
-        long_reasons = get_long_entry_reasons(price, ma100, prev)
+        ## long 진입 조건
+        recent_long_time = None
+        if "LONG" in pos_dict and pos_dict["LONG"]["entries"]:
+            recent_long_time = pos_dict["LONG"]["entries"][-1][0]
+        long_reasons = get_long_entry_reasons(price, ma100, prev, recent_long_time)
         if long_reasons:
             logger.info("📌 롱 진입 조건 충족:\n - " + "\n - ".join(long_reasons))
             self.binance.buy_market_100(self.symbol, price, percent, balance)
-
+        
+        ## 청산조건
         for side in ["LONG", "SHORT"]:
-            if self.position_time.get(side):
-                exit_reasons = get_exit_reasons(side, price, ma100)
+            recent_time = self.position_time.get(side)
+            if recent_time:
+                exit_reasons = get_exit_reasons(side, price, ma100, recent_time)
                 if exit_reasons:
                     pos_amt = float(pos_dict[side]["position_amt"])
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
-                    self.binance.close_position(self.symbol, side=side,qty = pos_amt)
+                    self.binance.close_position(self.symbol, side=side, qty=pos_amt)
