@@ -118,9 +118,6 @@ class TradeBot:
 
         pos_dict = {p["position"]: p for p in status_list}
 
-        has_long = "LONG" in pos_dict and float(pos_dict["LONG"]["position_amt"]) != 0
-        has_short = "SHORT" in pos_dict and float(pos_dict["SHORT"]["position_amt"]) != 0
-
         # 2. 진입시간 최신화 (entries가 있으면 첫 엔트리의 timestamp를 진입시간으로)
         self.position_time = {
             "LONG": pos_dict.get("LONG", {}).get("entries", [[None]])[0][0] if pos_dict.get("LONG") and
@@ -161,9 +158,9 @@ class TradeBot:
         percent = 10 # 총자산의 진입비율
         ma_threshold = 0.002
         momentum_threshold = ma_threshold/2
+        leverage_limit = 20
 
         ## short 진입 조건
-        
         recent_short_time = None
         if "SHORT" in pos_dict and pos_dict["SHORT"]["entries"]:
             recent_short_time = self.position_time['SHORT']
@@ -171,7 +168,16 @@ class TradeBot:
                                                 ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
         if short_reasons:
             logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
-            self.binance.sell_market_100(self.symbol, price, percent, balance)
+            # 포지션 비중 제한 검사 (40% 이상이면 실행 막기)
+            short_amt = abs(float(pos_dict["SHORT"]["position_amt"]))
+            short_position_value = short_amt * price
+            total_balance = balance["total"]
+            position_ratio = short_position_value / total_balance
+
+            if position_ratio >= leverage_limit:
+                logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+            else:
+                self.binance.sell_market_100(self.symbol, price, percent, balance)
 
         ## long 진입 조건
         recent_long_time = None
@@ -181,7 +187,15 @@ class TradeBot:
                                               ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
         if long_reasons:
             logger.info("📌 롱 진입 조건 충족:\n - " + "\n - ".join(long_reasons))
-            self.binance.buy_market_100(self.symbol, price, percent, balance)
+            long_amt = abs(float(pos_dict["LONG"]["position_amt"]))
+            long_position_value = long_amt * price
+            total_balance = balance["total"]
+            position_ratio = long_position_value / total_balance
+
+            if position_ratio >= leverage_limit:
+                logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.2%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+            else:
+                self.binance.buy_market_100(self.symbol, price, percent, balance)
         
         ## 청산조건
         for side in ["LONG", "SHORT"]:
