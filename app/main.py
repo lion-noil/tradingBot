@@ -101,5 +101,7 @@ async def manual_close(request: ManualCloseRequest):
     return {"status": f"close triggered for {request.side}"}
 
 if __name__ == "__main__":
+
     import uvicorn
+
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
