@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import time
 from typing import Optional
 
-def get_long_entry_reasons(price, ma100, prev, recent_entry_time=None):
+def get_long_entry_reasons(price, ma100, prev, recent_entry_time):
     reasons = []
 
     # 1. 기술적 조건
@@ -18,12 +18,12 @@ def get_long_entry_reasons(price, ma100, prev, recent_entry_time=None):
         seconds_since_entry = (now_ts - recent_entry_time) / 1000
         if seconds_since_entry < 3600:
             reasons.append(f"최근 롱 진입 {int(seconds_since_entry)}초 전 → 추매 제한")
+            return []  # ⛔ 시간 조건 미충족 → 진입 제한
 
-    # 3. 판단: 기술적 조건 2개 충족 + 1시간 경과
+    # 3. 기술적 조건이 2개 모두 충족된 경우만 진입
     if len(reasons) == 2:
         return reasons
-    else:
-        return []
+    return []
 
 def get_short_entry_reasons(price, ma100, prev, recent_entry_time):
     reasons = []
@@ -40,27 +40,26 @@ def get_short_entry_reasons(price, ma100, prev, recent_entry_time):
         seconds_since_entry = (now_ts - recent_entry_time) / 1000
         if seconds_since_entry < 3600:
             reasons.append(f"최근 숏 진입 {int(seconds_since_entry)}초 전 → 추매 제한")
+            return []  # ⛔ 추매 제한 → 바로 중단
 
-        # 3. 유효한 경우만 반환 (2개만 있을 경우만 진입 허용)
-    return reasons if len(reasons) == 2 else []
+    # 3. 유효한 경우만 반환 (2개 있을 경우만 진입 허용)
+    if len(reasons) == 2:
+        return reasons
+    return []
 
 def get_exit_reasons(position: str, price: float, ma100: float, recent_entry_time: Optional[int] = None) -> list[str]:
-    reasons = []
+    # 1. 기술적 조건
+    if position == "LONG" and price > ma100 * 0.9998:
+        return ["🔻 MA100 근처 도달 (롱 청산 조건)"]
+    if position == "SHORT" and price < ma100 * 1.0002:
+        return ["🔺 MA100 근처 도달 (숏 청산 조건)"]
 
-    # 기술적 조건
-    if position == "LONG":
-        if price > ma100 * 0.9998:
-            reasons.append("🔻 MA100 근처 도달 (롱 청산 조건)")
-    elif position == "SHORT":
-        if price < ma100 * 1.0002:
-            reasons.append("🔺 MA100 근처 도달 (숏 청산 조건)")
-
-    # 시간 기반 조건 (2시간 이상 유지)
+    # 2. 시간 조건: 진입 후 2시간 이상 경과
     if recent_entry_time:
         now_ts = int(time.time() * 1000)
         time_held_sec = (now_ts - recent_entry_time) / 1000
         if time_held_sec >= 7200:
-            reasons.append(f"⏰ 진입 후 {int(time_held_sec)}초 경과 (2시간 초과)")
+            return [f"⏰ 진입 후 {int(time_held_sec)}초 경과 (2시간 초과)"]
 
-    return reasons
+    return []
 
