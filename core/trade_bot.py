@@ -169,7 +169,7 @@ class TradeBot:
         if short_reasons:
             logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
             # 포지션 비중 제한 검사 (40% 이상이면 실행 막기)
-            short_amt = abs(float(pos_dict["SHORT"]["position_amt"]))
+            short_amt = abs(float(pos_dict.get("SHORT", {}).get("position_amt", 0)))
             short_position_value = short_amt * price
             total_balance = balance["total"]
             position_ratio = short_position_value / total_balance
@@ -187,7 +187,7 @@ class TradeBot:
                                               ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
         if long_reasons:
             logger.info("📌 롱 진입 조건 충족:\n - " + "\n - ".join(long_reasons))
-            long_amt = abs(float(pos_dict["LONG"]["position_amt"]))
+            long_amt = abs(float(pos_dict.get("LONG", {}).get("position_amt", 0)))
             long_position_value = long_amt * price
             total_balance = balance["total"]
             position_ratio = long_position_value / total_balance
