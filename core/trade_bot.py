@@ -96,7 +96,7 @@ class TradeBot:
         try:
             all_positions = self.binance.client.futures_account()["positions"]
             for pos in all_positions:
-                if pos["symbol"] == symbol and pos["positionSide"] == side:
+                if pos["symbol"] == symbol:
                     leverage = int(pos["leverage"])
         except Exception as e:
             logger.warning(f"❗ 레버리지 조회 실패: {e}")
