@@ -169,5 +169,6 @@ class TradeBot:
             if self.position_time.get(side):
                 exit_reasons = get_exit_reasons(side, price, ma100)
                 if exit_reasons:
+                    pos_amt = float(pos_dict[side]["position_amt"])
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
-                    self.binance.close_position(self.symbol, side=side)
+                    self.binance.close_position(self.symbol, side=side,qty = pos_amt)
