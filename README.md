@@ -11,4 +11,3 @@ start chrome --remote-debugging-port=9222 --user-data-dir="C:\chrometemp"
 
 cd C:\Users\Hyeongeon\Hansoldeco_s3_comp\tradingBot
 uvicorn app.main:app --port 8001
-수동order테스트 : http://localhost:8001/docs#/default/manual_sell_sell_post
