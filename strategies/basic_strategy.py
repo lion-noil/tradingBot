@@ -31,7 +31,7 @@ def get_short_entry_reasons(price, ma100, prev, recent_entry_time,
     reasons = []
 
     # 1. 기술적 조건
-    if price > ma100 * (1 - ma_threshold):  # MA100보다 +x%
+    if price > ma100 * (1 + ma_threshold):  # MA100보다 +x%
         reasons.append(f"MA100 대비 +{ma_threshold*100:.2f}% 이상 돌파")
     if (price - prev) / prev > momentum_threshold:
         reasons.append(f"3분 전 대비 {momentum_threshold*100:.2f}% 이상 급등")
