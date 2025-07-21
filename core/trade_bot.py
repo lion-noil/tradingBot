@@ -159,6 +159,7 @@ class TradeBot:
         ma_threshold = 0.002
         momentum_threshold = ma_threshold/2
         leverage_limit = 20
+        exit_ma_threshold = 0.0002
 
         ## short 진입 조건
         recent_short_time = None
@@ -201,7 +202,14 @@ class TradeBot:
         for side in ["LONG", "SHORT"]:
             recent_time = self.position_time.get(side)
             if recent_time:
-                exit_reasons = get_exit_reasons(side, price, ma100, recent_time)
+                exit_reasons = get_exit_reasons(
+                    side,
+                    price,
+                    ma100,
+                    recent_time,
+                    ma_threshold=exit_ma_threshold
+                )
+
                 if exit_reasons:
                     pos_amt = float(pos_dict[side]["position_amt"])
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")

@@ -49,19 +49,27 @@ def get_short_entry_reasons(price, ma100, prev, recent_entry_time,
         return reasons
     return []
 
-def get_exit_reasons(position: str, price: float, ma100: float, recent_entry_time: Optional[int] = None) -> list[str]:
-    # 1. 기술적 조건
-    if position == "LONG" and price > ma100 * 0.9998:
-        return ["🔻 MA100 근처 도달 (롱 청산 조건)"]
-    if position == "SHORT" and price < ma100 * 1.0002:
-        return ["🔺 MA100 근처 도달 (숏 청산 조건)"]
+def get_exit_reasons(
+    position: str,
+    price: float,
+    ma100: float,
+    recent_entry_time: Optional[int] = None,
+    ma_threshold: float = 0.0002,   # 예: 0.0002 → 0.02% (원래 코드와 동일 기본값)
+    time_limit_sec: int = 7200      # 기본 2시간
+) -> list[str]:
+    # 1. 기술적 조건 (입력 % 기준)
+    if position == "LONG" and price > ma100 * (1 - ma_threshold):
+        return [f"🔻 MA100 대비 -{ma_threshold*100:.4f}% 근처 도달 (롱 청산 조건)"]
+    if position == "SHORT" and price < ma100 * (1 + ma_threshold):
+        return [f"🔺 MA100 대비 +{ma_threshold*100:.4f}% 근처 도달 (숏 청산 조건)"]
 
-    # 2. 시간 조건: 진입 후 2시간 이상 경과
+    # 2. 시간 조건: 진입 후 x초 이상 경과
     if recent_entry_time:
         now_ts = int(time.time() * 1000)
         time_held_sec = (now_ts - recent_entry_time) / 1000
-        if time_held_sec >= 7200:
-            return [f"⏰ 진입 후 {int(time_held_sec)}초 경과 (2시간 초과)"]
+        if time_held_sec >= time_limit_sec:
+            hours = time_limit_sec / 3600
+            return [f"⏰ 진입 후 {int(time_held_sec)}초 경과 ({hours:.1f}시간 초과)"]
 
     return []
 
