@@ -2,7 +2,6 @@
 from utils.logger import setup_logger
 from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_reasons, get_exit_reasons
 
-from datetime import datetime
 logger = setup_logger()
 
 class TradeBot:
@@ -14,7 +13,29 @@ class TradeBot:
         self.running = True
 
 
-    async def run_once(self, price, ma100, prev, status_list, balance):
+    async def run_once(self,):
+
+        price, ma100, prev = self.binance.get_real_data()
+
+        closes = self.binance.get_ohlc_1m(minutes=1440, ma_window=100)
+        ma100s = self.binance.ma100_list(closes)
+
+        target_cross = 6
+        optimal_thr = self.binance.find_optimal_threshold(closes, ma100s,target_cross=target_cross)
+        ma_threshold = optimal_thr
+        momentum_threshold = ma_threshold / 3
+
+        log_msg = (
+            f"💹 현재가: {price}, MA100: {ma100}, 3분전: {prev}\n"
+            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+        )
+
+        status = self.binance.get_current_position_status()
+        status_list = status.get("positions", [])
+        balance = status.get("balance", {})
+        log_msg += self.binance.make_status_log_msg(status)
+
+        logger.debug(log_msg)
 
         pos_dict = {p["position"]: p for p in status_list}
 
@@ -52,12 +73,12 @@ class TradeBot:
                 else:
                     logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
 
-
-
         # 4. 자동매매 조건 평가
+
+
+
         percent = 10 # 총자산의 진입비율
-        ma_threshold = 0.002 #진입 기준
-        momentum_threshold = ma_threshold/2
+
         leverage_limit = 20
         exit_ma_threshold = 0.0002 # 청산 기준
 
@@ -68,7 +89,13 @@ class TradeBot:
         short_reasons = get_short_entry_reasons(price, ma100, prev, recent_short_time,
                                                 ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
         if short_reasons:
-            logger.info("📌 숏 진입 조건 충족:\n - " + "\n - ".join(short_reasons))
+            short_reason_msg = (
+                    "📌 숏 진입 조건 충족:\n - " +
+                    "\n - ".join(short_reasons) +
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+            )
+
+            logger.info(short_reason_msg)
             # 포지션 비중 제한 검사 (40% 이상이면 실행 막기)
             short_amt = abs(float(pos_dict.get("SHORT", {}).get("position_amt", 0)))
             short_position_value = short_amt * price
@@ -86,8 +113,14 @@ class TradeBot:
             recent_long_time = self.position_time['LONG']
         long_reasons = get_long_entry_reasons(price, ma100, prev, recent_long_time,
                                               ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
+
         if long_reasons:
-            logger.info("📌 롱 진입 조건 충족:\n - " + "\n - ".join(long_reasons))
+            long_reason_msg = (
+                    "📌 롱 진입 조건 충족:\n - " +
+                    "\n - ".join(long_reasons) +
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+            )
+            logger.info(long_reason_msg)
             long_amt = abs(float(pos_dict.get("LONG", {}).get("position_amt", 0)))
             long_position_value = long_amt * price
             total_balance = balance["total"]

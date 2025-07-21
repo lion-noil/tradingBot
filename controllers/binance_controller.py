@@ -5,6 +5,7 @@ from binance.enums import *
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+import time
 from utils.logger import setup_logger
 logger = setup_logger()
 load_dotenv()
@@ -409,4 +410,77 @@ class BinanceFuturesController:
 
         except Exception as e:
             logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
+
+    def get_ohlc_1m(self, symbol="BTCUSDT", minutes=1440, ma_window=100):
+        total_needed = minutes + (ma_window - 1)
+        url = "https://api.binance.com/api/v3/klines"
+        now = int(time.time() * 1000)
+        minute_ms = 60 * 1000
+        closes = []
+        left = total_needed
+        end_time = now
+
+        while left > 0:
+            get_num = min(left, 1000)
+            params = dict(symbol=symbol, interval="1m", limit=get_num, endTime=end_time)
+            res = requests.get(url, params=params)
+            res.raise_for_status()
+            candles = res.json()
+            if not candles:
+                break
+
+            closes_chunk = [float(c[4]) for c in candles]
+            closes = closes_chunk + closes  # 앞에 붙이기(과거→최근순)
+            end_time = candles[0][0] - 1  # 다음 요청은 더 과거로 이동
+            left -= get_num
+        closes = closes[-total_needed:]
+
+        return closes
+
+    def ma100_list(self, closes):
+        ma100s = []
+        for i in range(99, len(closes)):
+            ma = sum(closes[i - 99:i + 1]) / 100
+            ma100s.append(ma)
+        return ma100s  # len = len(closes) - 99
+
+    def count_cross(self, closes, ma100s, threshold):
+        count = 0
+        last_state = None  # "above", "below", "in"
+
+        for price, ma in zip(closes[99:], ma100s):
+            upper = ma * (1 + threshold)
+            lower = ma * (1 - threshold)
+
+            if price > upper:
+                state = "above"
+            elif price < lower:
+                state = "below"
+            else:
+                state = "in"
+
+            # 아래에서 위로 upper 크로스
+            if last_state in ("below", "in") and state == "above":
+                count += 1
+
+            # 위에서 아래로 lower 크로스
+            if last_state in ("above", "in") and state == "below":
+                count += 1
+
+            last_state = state
+
+        return count
+
+    def find_optimal_threshold(self, closes, ma100s, min_thr=0.002, max_thr=0.05, target_cross=4):
+        left, right = min_thr, max_thr
+        optimal = max_thr
+        for _ in range(10):  # 충분히 반복
+            mid = (left + right) / 2
+            crosses = self.count_cross(closes, ma100s, mid)
+            if crosses > target_cross:
+                left = mid  # threshold를 키워야 cross가 줄어듦
+            else:
+                optimal = mid
+                right = mid
+        return max(optimal, min_thr)
 

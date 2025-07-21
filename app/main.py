@@ -31,17 +31,8 @@ async def bot_loop():
     global bot
     while bot.running:
         try:
-            price_now, ma, prev = bot.binance.get_real_data()
-            log_msg = f"💹 현재가: {price_now}, MA100: {ma}, 3분전: {prev} \n"
 
-            status = bot.binance.get_current_position_status()
-            status_list = status.get("positions", [])
-            balance = status.get("balance", {})
-            log_msg+=bot.binance.make_status_log_msg(status)
-
-            logger.debug(log_msg)
-
-            await bot.run_once(price_now, ma, prev, status_list,balance)
+            await bot.run_once()
             await asyncio.sleep(10)
 
         except Exception as e:
