@@ -58,7 +58,7 @@ class BinanceFuturesController:
         cleaned_local = [clean_position(p) for p in local_positions]
         cleaned_new = [clean_position(p) for p in new_positions]
         if json.dumps(cleaned_local, sort_keys=True) != json.dumps(cleaned_new, sort_keys=True):
-            logger.info(f"포지션 변경 감지됨 → 로컬 파일 업데이트")
+            logger.debug(f"포지션 변경 감지됨 → 로컬 파일 업데이트")
 
             self.save_local_positions(new_positions)
 
@@ -140,7 +140,7 @@ class BinanceFuturesController:
 
             if appended > 0:
                 self.save_orders(local_orders)
-                logger.info(f"📥 신규 주문 {appended}건 저장됨")
+                logger.debug(f"📥 신규 주문 {appended}건 저장됨")
 
             return local_orders  # 전체 저장된 주문 리스트를 리턴
 
@@ -164,7 +164,7 @@ class BinanceFuturesController:
                 logger.warning("❗ 주문 수량이 너무 작습니다. 매수 중단.")
                 return None
 
-            logger.info(f"🟩 롱 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
+            logger.debug(f"🟩 롱 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
 
             order = self.client.futures_create_order(
                 symbol=symbol,
@@ -175,8 +175,12 @@ class BinanceFuturesController:
             )
 
             order_id = order.get("orderId")
-            avg_price = order.get("avgFillPrice", price)  # 테스트넷은 avgFillPrice 없을 수 있음
-            logger.info(f"✅ 롱 진입 완료 | 주문ID: {order_id}, 진입가: {avg_price}")
+            avg_price = order.get("avgFillPrice", price)
+            logger.info(
+                f"✅ 롱 진입 완료\n"
+                f" | 주문ID: {order_id}\n"
+                f" | 진입가: {avg_price}"
+            )
 
             return order  # 성공 시 주문 정보 리턴
 
@@ -201,7 +205,7 @@ class BinanceFuturesController:
                 logger.warning("❗ 주문 수량이 너무 작습니다. 매도 중단.")
                 return None
 
-            logger.info(f"🟥 숏 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
+            logger.debug(f"🟥 숏 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
 
             order = self.client.futures_create_order(
                 symbol=symbol,
@@ -213,7 +217,11 @@ class BinanceFuturesController:
 
             order_id = order.get("orderId")
             avg_price = order.get("avgFillPrice", price)  # 테스트넷에서는 avgFillPrice 없을 수 있음
-            logger.info(f"✅ 숏 진입 완료 | 주문ID: {order_id}, 진입가: {avg_price}")
+            logger.info(
+                f"✅ 숏 진입 완료\n"
+                f" | 주문ID: {order_id}\n"
+                f" | 진입가: {avg_price}"
+            )
 
             return order  # 성공 시 주문 정보 리턴
 
@@ -239,8 +247,8 @@ class BinanceFuturesController:
                 profit = (entry_price - close_price) * qty
                 profit_rate = ((entry_price - close_price) / entry_price) * 100
 
-            logger.info(
-                f"📉 {side} 포지션 청산 시도 | 수량: {qty} | 진입가: {entry_price:.2f} | 청산가: {close_price:.2f} | 수익금: {profit:.2f} | 수익률: {profit_rate:.2f}%"
+            logger.debug(
+                f"📉 {side} 포지션 청산 시도 | 수량: {qty}"
             )
 
             order = self.client.futures_create_order(
@@ -252,7 +260,11 @@ class BinanceFuturesController:
             )
 
             logger.info(
-                f"✅ {side} 포지션 청산 완료 | 주문ID: {order.get('orderId')}  | 수익금: {profit:.2f} | 수익률: {profit_rate:.2f}%")
+                f"✅ {side} 포지션 청산 완료\n"
+                f" | 주문ID: {order.get('orderId')}\n"
+                f" | 수익금: {profit:.2f}\n"
+                f" | 수익률: {profit_rate:.2f}%"
+            )
 
         except Exception as e:
             logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
