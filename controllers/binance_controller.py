@@ -221,29 +221,6 @@ class BinanceFuturesController:
             logger.error(f"❌ 숏 진입 실패: {e}")
             return None
 
-    def close_position(self, symbol="BTCUSDT", side=None, qty=None):
-        try:
-            if not side or not qty:
-                logger.error(f"❌ 청산 요청 실패: side 또는 qty가 제공되지 않음")
-                return
-            qty = abs(float(qty))
-
-            logger.info(f"📉 {side} 포지션 청산 시도 | 수량: {qty}")
-
-            order = self.client.futures_create_order(
-                symbol=symbol,
-                side=SIDE_SELL if side == "LONG" else SIDE_BUY,
-                type=FUTURE_ORDER_TYPE_MARKET,
-                quantity=qty,
-                positionSide=side
-            )
-
-
-            logger.info(f"✅ {side} 포지션 청산 완료 | 주문ID: {order.get('orderId')}")
-
-        except Exception as e:
-            logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
-
     def close_position(self, symbol="BTCUSDT", side=None, qty=None, entry_price=None):
         try:
             if not side or not qty or not entry_price:

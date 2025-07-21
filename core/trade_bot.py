@@ -156,10 +156,10 @@ class TradeBot:
 
         # 4. 자동매매 조건 평가
         percent = 10 # 총자산의 진입비율
-        ma_threshold = 0.002
+        ma_threshold = 0.002 #진입 기준
         momentum_threshold = ma_threshold/2
         leverage_limit = 20
-        exit_ma_threshold = 0.0002
+        exit_ma_threshold = 0.0002 # 청산 기준
 
         ## short 진입 조건
         recent_short_time = None
@@ -202,6 +202,7 @@ class TradeBot:
         for side in ["LONG", "SHORT"]:
             recent_time = self.position_time.get(side)
             if recent_time:
+                entry_price = pos_dict[side]["entryPrice"]
                 exit_reasons = get_exit_reasons(
                     side,
                     price,
@@ -211,6 +212,6 @@ class TradeBot:
                 )
 
                 if exit_reasons:
-                    pos_amt = float(pos_dict[side]["position_amt"])
+                    pos_amt = abs(float(pos_dict[side]["position_amt"]))
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
-                    self.binance.close_position(self.symbol, side=side, qty=pos_amt)
+                    self.binance.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)
