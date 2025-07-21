@@ -1,9 +1,10 @@
 # controllers/binance_controller.py
-
+import requests
 from binance.client import Client
 from binance.enums import *
 from dotenv import load_dotenv
 import os
+from datetime import datetime
 from utils.logger import setup_logger
 logger = setup_logger()
 load_dotenv()
@@ -19,8 +20,26 @@ class BinanceFuturesController:
         self.client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
         self.positions_file = "positions.json"
         self.orders_file = "orders.json"
+        self.BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
         # controllers에서 한 번 상위로(app) 올라감
 
+    def get_real_data(self, symbol="BTCUSDT"):
+        try:
+            url = f"{self.BINANCE_API_URL}?symbol={symbol}&interval=1m&limit=100"
+            res = requests.get(url, timeout=10)
+            res.raise_for_status()
+            candles = res.json()
+
+            closes = [float(c[4]) for c in candles]
+            ma100 = sum(closes) / len(closes)
+            price_now = closes[-1]
+            price_3min_ago = closes[-4]
+
+            return round(price_now, 3), round(ma100, 3), round(price_3min_ago, 3)
+
+        except Exception as e:
+            print(f"❌ 실시간 데이터 가져오기 실패: {e}")
+            return None, None, None
     def load_local_positions(self):
         if not os.path.exists(self.positions_file):
             return []
@@ -63,23 +82,6 @@ class BinanceFuturesController:
             self.save_local_positions(new_positions)
 
         return new_positions
-
-    def load_orders(self):
-        if not os.path.exists(self.orders_file):
-            return []
-        try:
-            with open(self.orders_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                return json.loads(content) if content else []
-        except Exception as e:
-            logger.error(f"거래기록 로드 실패: {e}")
-            return []
-    def save_orders(self, trades):
-        try:
-            with open(self.orders_file, "w", encoding="utf-8") as f:
-                json.dump(trades, f, indent=2)
-        except Exception as e:
-            logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
     def sync_orders_from_binance(self, symbol="BTCUSDT"):
         try:
             # 최신 100개 주문 가져오기
@@ -148,6 +150,136 @@ class BinanceFuturesController:
             logger.error(f"[ERROR] 바이낸스 주문 동기화 실패: {e}")
             return self.load_orders()  # 실패 시 기존 것이라도 리턴
 
+    def get_current_position_status(self, symbol="BTCUSDT"):
+        posinfo_list = self.get_full_position_info(symbol)
+        all_orders = self.sync_orders_from_binance(symbol)
+
+        results = []
+
+        for pos in posinfo_list or []:
+            side = pos["positionSide"]
+            remaining_qty = abs(float(pos["positionAmt"]))
+            direction = side
+            entry_price = float(pos["entryPrice"])
+
+            price_now = float(pos.get("markPrice", entry_price))  # 기본값 방어
+
+            # 수익률 계산
+            if direction.upper() == "SHORT":
+                profit_rate = (entry_price - price_now) / entry_price * 100
+            else:
+                profit_rate = (price_now - entry_price) / entry_price * 100
+            unrealized_profit = profit_rate / 100 * abs(remaining_qty) * entry_price
+
+            open_orders = [
+                o for o in all_orders
+                if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
+            ]
+            open_orders.sort(key=lambda x: x["time"], reverse=True)
+
+            entry_logs = []  # (time, qty, price)
+            for order in open_orders:
+                order_qty = float(order["qty"])
+
+                if remaining_qty == 0:
+                    break
+
+                used_qty = min(order_qty, remaining_qty)
+                price = float(order["price"])
+                order_time = order["time"]
+                entry_logs.append((order_time, used_qty, price))
+                remaining_qty -= used_qty
+
+            results.append({
+                "position": direction,
+                "position_amt": pos["positionAmt"],
+                "entryPrice": entry_price,
+                "entries": entry_logs,  # 리스트 of (timestamp, qty, price)
+                "profit_rate": profit_rate,
+                "unrealized_profit": unrealized_profit,
+                "current_price": price_now
+            })
+
+        balances = self.client.futures_account_balance()
+
+        for b in balances:
+            if b["asset"] == "USDT":
+                total = float(b["balance"])
+                avail = float(b["availableBalance"])
+                upnl = float(b["crossUnPnl"])
+                break
+        else:
+            total = avail = upnl = 0.0
+            logger.warning("❗ USDT 잔액 정보 없음")
+
+        # 레버리지 조회
+        try:
+            all_positions = self.client.futures_account()["positions"]
+            for pos in all_positions:
+                if pos["symbol"] == symbol:
+                    leverage = int(pos["leverage"])
+        except Exception as e:
+            logger.warning(f"❗ 레버리지 조회 실패: {e}")
+            leverage = 0
+
+            # 합쳐서 반환
+        return {
+            "balance": {
+                "total": total,
+                "available": avail,
+                "unrealized_pnl": upnl,
+                "leverage": leverage
+            },
+            "positions": results
+        }
+
+    def make_status_log_msg(self, status):
+        status_list = status.get("positions", [])
+        balance = status.get("balance", {})
+
+        total = balance.get("total", 0.0)
+        available = balance.get("available", 0.0)
+        upnl = balance.get("unrealized_pnl", 0.0)
+        leverage = balance.get("leverage", 0)
+
+        log_msg = ""
+        log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f}\n    미실현 손익: {upnl:+.2f} (레버리지: {leverage}x)\n"
+
+        if status_list:
+            for position in status_list:
+                log_msg += f"  📈 포지션: {position['position']} ({position['position_amt']})\n"
+                log_msg += f"    평균가: {position['entryPrice']:.3f}\n"
+                log_msg += f"    수익률: {position['profit_rate']:.3f}%\n"
+                log_msg += f"    수익금: {position['unrealized_profit']:+.3f} USDT\n"
+                if position["entries"]:
+                    for i, (timestamp, qty, entryPrice) in enumerate(position["entries"], start=1):
+                        t_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                        signed_qty = -qty if position["position"] == "SHORT" else qty
+                        log_msg += f"        └ 진입시간 #{i}: {t_str} ({signed_qty:.3f} BTC), 진입가 : {entryPrice:.2f} \n"
+                else:
+                    log_msg += f"        └ 진입시간: 없음\n"
+        else:
+            log_msg += "  📉 포지션 없음\n"
+        return log_msg.rstrip()
+
+    def load_orders(self):
+        if not os.path.exists(self.orders_file):
+            return []
+        try:
+            with open(self.orders_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else []
+        except Exception as e:
+            logger.error(f"거래기록 로드 실패: {e}")
+            return []
+    def save_orders(self, trades):
+        try:
+            with open(self.orders_file, "w", encoding="utf-8") as f:
+                json.dump(trades, f, indent=2)
+        except Exception as e:
+            logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
+
+
     def buy_market_100(self, symbol="BTCUSDT", price = None, percent=10,balance=None):
         try:
             if price is None or balance is None:
@@ -179,8 +311,12 @@ class BinanceFuturesController:
             logger.info(
                 f"✅ 롱 진입 완료\n"
                 f" | 주문ID: {order_id}\n"
-                f" | 진입가: {avg_price}"
+                f" | 진입가: {avg_price}\n"
+                f" | 수량: {qty}"
             )
+            status = self.get_current_position_status()
+            logger.info(self.make_status_log_msg(status))
+
 
             return order  # 성공 시 주문 정보 리턴
 
@@ -220,8 +356,13 @@ class BinanceFuturesController:
             logger.info(
                 f"✅ 숏 진입 완료\n"
                 f" | 주문ID: {order_id}\n"
-                f" | 진입가: {avg_price}"
+                f" | 진입가: {avg_price}\n"
+                f" | 수량: {qty}"
             )
+
+            status = self.get_current_position_status()
+            logger.info(self.make_status_log_msg(status))
+
 
             return order  # 성공 시 주문 정보 리턴
 

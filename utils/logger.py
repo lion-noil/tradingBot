@@ -43,7 +43,9 @@ def setup_logger():
 
 
     # ✅ 텔레그램 핸들러 추가
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # .env에서 읽는 게 좋음
+    telegram_formatter = logging.Formatter("%(message)s")
+
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
     telegram_handler = TelegramLogHandler(
@@ -51,7 +53,7 @@ def setup_logger():
         chat_id=TELEGRAM_CHAT_ID,
         level=logging.INFO  # WARNING 이상만 전송
     )
-    telegram_handler.setFormatter(formatter)
+    telegram_handler.setFormatter(telegram_formatter)
 
 
     # 중복 핸들러 방지

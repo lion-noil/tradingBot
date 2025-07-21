@@ -1,7 +1,8 @@
 
 from utils.logger import setup_logger
 from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_reasons, get_exit_reasons
-import requests
+
+from datetime import datetime
 logger = setup_logger()
 
 class TradeBot:
@@ -10,109 +11,8 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.position_time = {}  # LONG/SHORT 별 진입시간
-        self.BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
         self.running = True
 
-    def get_real_data(self, symbol="BTCUSDT"):
-        try:
-            url = f"{self.BINANCE_API_URL}?symbol={symbol}&interval=1m&limit=100"
-            res = requests.get(url, timeout=10)
-            res.raise_for_status()
-            candles = res.json()
-
-            closes = [float(c[4]) for c in candles]
-            ma100 = sum(closes) / len(closes)
-            price_now = closes[-1]
-            price_3min_ago = closes[-4]
-
-            return round(price_now, 3), round(ma100, 3), round(price_3min_ago, 3)
-
-        except Exception as e:
-            print(f"❌ 실시간 데이터 가져오기 실패: {e}")
-            return None, None, None
-
-    def get_current_position_status(self, symbol="BTCUSDT"):
-        posinfo_list = self.binance.get_full_position_info(symbol)
-        all_orders = self.binance.sync_orders_from_binance(symbol)
-
-        results = []
-
-        for pos in posinfo_list or []:
-            side = pos["positionSide"]
-            remaining_qty = abs(float(pos["positionAmt"]))
-            direction = side
-            entry_price = float(pos["entryPrice"])
-
-            price_now = float(pos.get("markPrice", entry_price))  # 기본값 방어
-
-            # 수익률 계산
-            if direction.upper() == "SHORT":
-                profit_rate = (entry_price - price_now) / entry_price * 100
-            else:
-                profit_rate = (price_now - entry_price) / entry_price * 100
-            unrealized_profit = profit_rate / 100 * abs(remaining_qty) * entry_price
-
-            open_orders = [
-                o for o in all_orders
-                if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
-            ]
-            open_orders.sort(key=lambda x: x["time"], reverse=True)
-
-            entry_logs = []  # (time, qty, price)
-            for order in open_orders:
-                order_qty = float(order["qty"])
-
-                if remaining_qty == 0:
-                    break
-
-                used_qty = min(order_qty, remaining_qty)
-                price = float(order["price"])
-                order_time = order["time"]
-                entry_logs.append((order_time, used_qty, price))
-                remaining_qty -= used_qty
-
-            results.append({
-                "position": direction,
-                "position_amt": pos["positionAmt"],
-                "entryPrice": entry_price,
-                "entries": entry_logs,  # 리스트 of (timestamp, qty, price)
-                "profit_rate": profit_rate,
-                "unrealized_profit": unrealized_profit,
-                "current_price": price_now
-            })
-
-        balances = self.binance.client.futures_account_balance()
-
-        for b in balances:
-            if b["asset"] == "USDT":
-                total = float(b["balance"])
-                avail = float(b["availableBalance"])
-                upnl = float(b["crossUnPnl"])
-                break
-        else:
-            total = avail = upnl = 0.0
-            logger.warning("❗ USDT 잔액 정보 없음")
-
-        # 레버리지 조회
-        try:
-            all_positions = self.binance.client.futures_account()["positions"]
-            for pos in all_positions:
-                if pos["symbol"] == symbol:
-                    leverage = int(pos["leverage"])
-        except Exception as e:
-            logger.warning(f"❗ 레버리지 조회 실패: {e}")
-            leverage = 0
-
-            # 합쳐서 반환
-        return {
-            "balance": {
-                "total": total,
-                "available": avail,
-                "unrealized_pnl": upnl,
-                "leverage": leverage
-            },
-            "positions": results
-        }
 
     async def run_once(self, price, ma100, prev, status_list, balance):
 
@@ -197,6 +97,7 @@ class TradeBot:
                 logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.2%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
                 self.binance.buy_market_100(self.symbol, price, percent, balance)
+
         
         ## 청산조건
         for side in ["LONG", "SHORT"]:

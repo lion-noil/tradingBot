@@ -25,7 +25,6 @@ def get_long_entry_reasons(price, ma100, prev, recent_entry_time,
     if len(reasons) == 2:
         return reasons
     return []
-
 def get_short_entry_reasons(price, ma100, prev, recent_entry_time,
                             ma_threshold=0.002, momentum_threshold=0.001):
     reasons = []
