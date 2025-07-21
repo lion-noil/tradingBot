@@ -66,11 +66,11 @@ async def bot_loop():
             logger.debug(log_msg.rstrip())
 
             await bot.run_once(price_now, ma, prev, status_list,balance)
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
         except Exception as e:
             logger.error(f"❌ bot_loop 오류: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
 
 @app.on_event("startup")

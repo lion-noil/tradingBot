@@ -16,7 +16,7 @@ class TradeBot:
     def get_real_data(self, symbol="BTCUSDT"):
         try:
             url = f"{self.BINANCE_API_URL}?symbol={symbol}&interval=1m&limit=100"
-            res = requests.get(url, timeout=5)
+            res = requests.get(url, timeout=10)
             res.raise_for_status()
             candles = res.json()
 

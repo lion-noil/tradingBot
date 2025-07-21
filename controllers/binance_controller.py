@@ -244,3 +244,39 @@ class BinanceFuturesController:
         except Exception as e:
             logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
 
+    def close_position(self, symbol="BTCUSDT", side=None, qty=None, entry_price=None):
+        try:
+            if not side or not qty or not entry_price:
+                logger.error(f"❌ 청산 요청 실패: side, qty 또는 entry_price가 제공되지 않음")
+                return
+            qty = abs(float(qty))
+
+            # 1. 현재가(청산가) 가져오기 (ticker price 사용)
+            close_price = float(self.client.futures_symbol_ticker(symbol=symbol)["price"])
+
+            # 2. 수익금/수익률 계산
+            if side == "LONG":
+                profit = (close_price - entry_price) * qty
+                profit_rate = ((close_price - entry_price) / entry_price) * 100
+            else:  # SHORT
+                profit = (entry_price - close_price) * qty
+                profit_rate = ((entry_price - close_price) / entry_price) * 100
+
+            logger.info(
+                f"📉 {side} 포지션 청산 시도 | 수량: {qty} | 진입가: {entry_price:.2f} | 청산가: {close_price:.2f} | 수익금: {profit:.2f} | 수익률: {profit_rate:.2f}%"
+            )
+
+            order = self.client.futures_create_order(
+                symbol=symbol,
+                side=SIDE_SELL if side == "LONG" else SIDE_BUY,
+                type=FUTURE_ORDER_TYPE_MARKET,
+                quantity=qty,
+                positionSide=side
+            )
+
+            logger.info(
+                f"✅ {side} 포지션 청산 완료 | 주문ID: {order.get('orderId')}  | 수익금: {profit:.2f} | 수익률: {profit_rate:.2f}%")
+
+        except Exception as e:
+            logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
+
