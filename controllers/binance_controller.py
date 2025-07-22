@@ -316,7 +316,7 @@ class BinanceFuturesController:
                 f" | 수량: {qty}"
             )
             status = self.get_current_position_status()
-            logger.info(self.make_status_log_msg(status))
+            logger.info(self.make_status_log_msg(status) + '\n')
 
 
             return order  # 성공 시 주문 정보 리턴
@@ -362,7 +362,7 @@ class BinanceFuturesController:
             )
 
             status = self.get_current_position_status()
-            logger.info(self.make_status_log_msg(status))
+            logger.info(self.make_status_log_msg(status) + '\n')
 
 
             return order  # 성공 시 주문 정보 리턴
@@ -390,7 +390,7 @@ class BinanceFuturesController:
                 profit_rate = ((entry_price - close_price) / entry_price) * 100
 
             logger.debug(
-                f"📉 {side} 포지션 청산 시도 | 수량: {qty}"
+                f"📉 {side} 포지션 청산 시도 | 수량: {qty}@ 현재가 {close_price:.2f}"
             )
 
             order = self.client.futures_create_order(
@@ -404,9 +404,14 @@ class BinanceFuturesController:
             logger.info(
                 f"✅ {side} 포지션 청산 완료\n"
                 f" | 주문ID: {order.get('orderId')}\n"
+                f" | 평균진입가: {entry_price:.2f}\n"
+                f" | 청산시도가: {close_price:.2f}"
                 f" | 수익금: {profit:.2f}\n"
                 f" | 수익률: {profit_rate:.2f}%"
             )
+
+            status = self.get_current_position_status()
+            logger.info(self.make_status_log_msg(status) + '\n')
 
         except Exception as e:
             logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
@@ -415,7 +420,6 @@ class BinanceFuturesController:
         total_needed = minutes + (ma_window - 1)
         url = "https://api.binance.com/api/v3/klines"
         now = int(time.time() * 1000)
-        minute_ms = 60 * 1000
         closes = []
         left = total_needed
         end_time = now

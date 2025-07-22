@@ -27,7 +27,7 @@ class TradeBot:
 
         log_msg = (
             f"💹 현재가: {price}, MA100: {ma100}, 3분전: {prev}\n"
-            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
         )
 
         status = self.binance.get_current_position_status()
@@ -92,7 +92,7 @@ class TradeBot:
             short_reason_msg = (
                     "📌 숏 진입 조건 충족:\n - " +
                     "\n - ".join(short_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
             )
 
             logger.info(short_reason_msg)
@@ -118,7 +118,7 @@ class TradeBot:
             long_reason_msg = (
                     "📌 롱 진입 조건 충족:\n - " +
                     "\n - ".join(long_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)\n"
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
             )
             logger.info(long_reason_msg)
             long_amt = abs(float(pos_dict.get("LONG", {}).get("position_amt", 0)))

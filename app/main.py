@@ -12,7 +12,6 @@ from core.trade_bot import TradeBot
 from controllers.binance_controller import BinanceFuturesController
 from asyncio import Queue
 from utils.logger import setup_logger
-from datetime import datetime
 from pydantic import BaseModel
 from typing import Literal
 class ManualOrderRequest(BaseModel):
