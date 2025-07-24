@@ -1,39 +1,47 @@
 
 from utils.logger import setup_logger
 from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_reasons, get_exit_reasons
-
+from collections import deque
+import time
 logger = setup_logger()
 
 class TradeBot:
-    def __init__(self, controller, manual_queue, symbol="BTCUSDT"):
-        self.binance = controller
+    def __init__(self, controller, bybit_controller,manual_queue, symbol="BTCUSDT"):
+        self.controller = controller
+        self.bybit_controller = bybit_controller
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.position_time = {}  # LONG/SHORT 별 진입시간
         self.running = True
-
+        self.closes = deque(maxlen=1539)
+        self.last_closes_update = 0  # 마지막 업데이트 시간 (timestamp)
+        self.target_cross = 6
 
     async def run_once(self,):
+        now = time.time()
+        if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
+            self.bybit_controller._update_closes(self.closes,count=1539)
+            self.last_closes_update = now
 
-        price, ma100, prev = self.binance.get_real_data()
+        price= self.bybit_controller.get_price()
+        ma100s = self.bybit_controller.ma100_list(self.closes )  # len = 1440
+        ma100 = ma100s[-1]
+        prev = self.closes[-4]
 
-        closes = self.binance.get_ohlc_1m(minutes=1440, ma_window=100)
-        ma100s = self.binance.ma100_list(closes)
 
-        target_cross = 6
-        optimal_thr = self.binance.find_optimal_threshold(closes, ma100s,target_cross=target_cross)
+        optimal_thr = self.controller.find_optimal_threshold(self.closes , ma100s,target_cross=self.target_cross )
         ma_threshold = optimal_thr
         momentum_threshold = ma_threshold / 3
 
         log_msg = (
-            f"💹 현재가: {price}, MA100: {ma100}, 3분전: {prev}\n"
-            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
+            f"💹 현재가: {price}, MA100: {ma100:.1f}, 3분전: {prev}\n"
+            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
         )
 
-        status = self.binance.get_current_position_status()
+        status = self.controller.get_current_position_status()
         status_list = status.get("positions", [])
         balance = status.get("balance", {})
-        log_msg += self.binance.make_status_log_msg(status)
+        log_msg += self.controller.make_status_log_msg(status)
 
         logger.debug(log_msg)
 
@@ -60,14 +68,14 @@ class TradeBot:
                 percent = 10
 
             if command == "long":
-                self.binance.buy_market_100(self.symbol, price, percent, balance)
+                self.controller.buy_market_100(self.symbol, price, percent, balance)
             elif command == "short":
-                self.binance.sell_market_100(self.symbol, price, percent, balance)
+                self.controller.sell_market_100(self.symbol, price, percent, balance)
             elif command == "close":
                 if close_side and close_side in pos_dict:
                     pos_amt = float(pos_dict[close_side]["position_amt"])
                     if pos_amt != 0:
-                        self.binance.close_position(self.symbol, side=close_side,qty = pos_amt)
+                        self.controller.close_position(self.symbol, side=close_side,qty = pos_amt)
                     else:
                         logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
                 else:
@@ -92,7 +100,7 @@ class TradeBot:
             short_reason_msg = (
                     "📌 숏 진입 조건 충족:\n - " +
                     "\n - ".join(short_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
             )
 
             logger.info(short_reason_msg)
@@ -105,7 +113,7 @@ class TradeBot:
             if position_ratio >= leverage_limit:
                 logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
-                self.binance.sell_market_100(self.symbol, price, percent, balance)
+                self.controller.sell_market_100(self.symbol, price, percent, balance)
 
         ## long 진입 조건
         recent_long_time = None
@@ -118,7 +126,7 @@ class TradeBot:
             long_reason_msg = (
                     "📌 롱 진입 조건 충족:\n - " +
                     "\n - ".join(long_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {target_cross}회)"
+                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
             )
             logger.info(long_reason_msg)
             long_amt = abs(float(pos_dict.get("LONG", {}).get("position_amt", 0)))
@@ -129,7 +137,7 @@ class TradeBot:
             if position_ratio >= leverage_limit:
                 logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.2%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
-                self.binance.buy_market_100(self.symbol, price, percent, balance)
+                self.controller.buy_market_100(self.symbol, price, percent, balance)
 
         
         ## 청산조건
@@ -148,4 +156,4 @@ class TradeBot:
                 if exit_reasons:
                     pos_amt = abs(float(pos_dict[side]["position_amt"]))
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
-                    self.binance.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)
+                    self.controller.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)

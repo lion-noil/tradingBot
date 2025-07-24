@@ -3,3 +3,4 @@ uvicorn
 playwright
 requests
 python-binance
+websocket-client

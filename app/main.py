@@ -9,7 +9,8 @@ if sys.platform.startswith("win"):
 
 from fastapi import FastAPI
 from core.trade_bot import TradeBot
-from controllers.binance_controller import BinanceFuturesController
+from controllers.controller import CoinFuturesController
+from controllers.controller import BybitWebSocketController
 from asyncio import Queue
 from utils.logger import setup_logger
 from pydantic import BaseModel
@@ -25,7 +26,7 @@ app = FastAPI()
 manual_queue = Queue()
 bot = None
 controller = None
-
+bybit_controller = None
 async def bot_loop():
     global bot
     while bot.running:
@@ -41,10 +42,12 @@ async def bot_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global bot, controller
+    global bot, controller,bybit_controller
     logger.info("🚀 FastAPI 기반 봇 서버 시작")
-    controller = BinanceFuturesController()  # ✅ 동기 방식, await 필요 없음
-    bot = TradeBot(controller, manual_queue)
+    controller = CoinFuturesController()  # ✅ 동기 방식, await 필요 없음
+    bybit_controller = BybitWebSocketController()  # ✅ 비동기 아님, 그대로 사용 가능
+
+    bot = TradeBot(controller, bybit_controller, manual_queue)
     asyncio.create_task(bot_loop())
 
     status = controller.get_current_position_status()
