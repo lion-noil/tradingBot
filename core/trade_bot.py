@@ -15,7 +15,7 @@ class TradeBot:
         self.running = True
         self.closes = deque(maxlen=1539)
         self.last_closes_update = 0  # 마지막 업데이트 시간 (timestamp)
-        self.target_cross = 6
+        self.target_cross = 4
 
     async def run_once(self,):
         now = time.time()
