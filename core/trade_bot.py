@@ -3,28 +3,30 @@ from utils.logger import setup_logger
 from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_reasons, get_exit_reasons
 from collections import deque
 import time
+import json
 logger = setup_logger()
 
 class TradeBot:
-    def __init__(self, controller, bybit_controller,manual_queue, symbol="BTCUSDT"):
+    def __init__(self, controller, bybit_websocket_controller, bybit_rest_controller, manual_queue, symbol="BTCUSDT"):
         self.controller = controller
-        self.bybit_controller = bybit_controller
+        self.bybit_websocket_controller = bybit_websocket_controller
+        self.bybit_rest_controller = bybit_rest_controller
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.position_time = {}  # LONG/SHORT 별 진입시간
         self.running = True
         self.closes = deque(maxlen=1539)
-        self.last_closes_update = 0  # 마지막 업데이트 시간 (timestamp)
+        self.last_closes_update = 0
         self.target_cross = 4
 
     async def run_once(self,):
         now = time.time()
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
-            self.bybit_controller._update_closes(self.closes,count=1539)
+            self.bybit_rest_controller.update_closes(self.closes,count=1539)
             self.last_closes_update = now
 
-        price= self.bybit_controller.get_price()
-        ma100s = self.bybit_controller.ma100_list(self.closes )  # len = 1440
+        price= self.bybit_websocket_controller.price
+        ma100s = self.bybit_rest_controller.ma100_list(self.closes)
         ma100 = ma100s[-1]
         prev = self.closes[-4]
 
@@ -82,8 +84,6 @@ class TradeBot:
                     logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
 
         # 4. 자동매매 조건 평가
-
-
 
         percent = 10 # 총자산의 진입비율
 

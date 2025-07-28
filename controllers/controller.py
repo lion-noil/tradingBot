@@ -1,10 +1,10 @@
 # controllers/controller.py
+
 import requests
 from binance.client import Client
 from binance.enums import *
-import json
+import hmac, hashlib
 import threading
-from collections import deque
 from websocket import WebSocketApp
 from dotenv import load_dotenv
 import os
@@ -497,63 +497,157 @@ class BybitWebSocketController:
     def __init__(self, symbol="BTCUSDT"):
         self.symbol = symbol
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
+        self.private_ws_url = "wss://stream-demo.bybit.com/v5/private"
+        # self.private_ws_url = "wss://stream.bybit.com/v5/private"  # 실전용
         self.price = None
         self.ws = None
-        self._start_websocket()
+        self.api_key = os.getenv("BYBIT_TEST_API_KEY")
+        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET")
 
-    def _start_websocket(self):
-        self.ws = WebSocketApp(
-            self.ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
-        thread = threading.Thread(target=self.ws.run_forever)
+        self.position = None
+        # self._start_private_websocket()
+        self._start_public_websocket()
+
+    def _start_public_websocket(self):
+        def on_open(ws):
+            logger.debug("✅ Public WebSocket 연결됨")
+            subscribe = {
+                "op": "subscribe",
+                "args": [f"tickers.{self.symbol}"]
+            }
+            ws.send(json.dumps(subscribe))
+
+        def on_message(ws, message):
+            try:
+                parsed = json.loads(message)
+                if "data" not in parsed or not parsed["data"]:
+                    return
+                data = parsed["data"]
+                if "lastPrice" in data:
+                    self.price = float(data["lastPrice"])
+                elif "ask1Price" in data:
+                    self.price = float(data["ask1Price"])
+            except Exception as e:
+                logger.debug(f"❌ Public 메시지 처리 오류: {e}")
+
+        def on_error(ws, error):
+            logger.debug(f"❌ Public WebSocket 오류: {error}")
+
+        def on_close(ws, *args):
+            logger.warning("🔌 WebSocket closed. Reconnecting in 5 seconds...")
+            time.sleep(5)
+            self._start_public_websocket()  # or private
+
+        def run():
+            try:
+                ws_app = WebSocketApp(
+                    self.ws_url,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                ws_app.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
+                time.sleep(5)
+                self._start_public_websocket()
+
+        thread = threading.Thread(target=run)
+
+
+
         thread.daemon = True
         thread.start()
 
-    def _on_open(self, ws):
-        logger.debug("✅ Bybit WebSocket connected.")
-        subscribe = {
-            "op": "subscribe",
-            "args": [f"tickers.{self.symbol}"]
-        }
-        ws.send(json.dumps(subscribe))
+    def _start_private_websocket(self):
+        def on_open(ws):
+            try:
+                logger.debug("🔐 Private WebSocket 연결됨")
+                expires = str(int((time.time() + 10) * 1000))  # ✅ ms 단위로 변경
 
-    def _on_message(self, ws, message):
+                signature_payload = f"GET/realtime{expires}"
+                signature = hmac.new(
+                    self.api_secret.encode("utf-8"),
+                    signature_payload.encode("utf-8"),
+                    hashlib.sha256
+                ).hexdigest()
+
+                auth_payload = {
+                    "op": "auth",
+                    "args": [self.api_key, expires, signature]
+                }
+                ws.send(json.dumps(auth_payload))
+            except Exception as e:
+                logger.exception(f"❌ 인증 요청 실패: {e}")
+
+        def on_message(ws, message):
+            try:
+                parsed = json.loads(message)
+                if parsed.get("op") == "auth":
+                    if parsed.get("success"):
+                        logger.debug("✅ 인증 성공, 포지션 구독 시작")
+                        time.sleep(0.5)  # 🔧 구독 전 0.5초 대기
+                        ws.send(json.dumps({
+                            "op": "subscribe",
+                            "args": ["position.linear", "execution", "order", "wallet"]
+                        }))
+                    else:
+                        logger.error(f"❌ 인증 실패: {parsed}")
+
+                elif parsed.get("op") == "subscribe":
+                    logger.debug(f"✅ 구독 성공 응답: {parsed}")
+
+
+                elif "topic" in parsed and parsed["topic"].startswith("position"):
+
+                    data = parsed.get("data", [])
+                    if data:
+                        self.position = data[0]
+            except Exception as e:
+                logger.debug(f"❌ Private 메시지 처리 오류: {e}")
+
+        def on_error(ws, error):
+            logger.error(f"❌ WebSocket 오류 발생: {error}")
+            ws.close()
+
+        def on_close(ws, *args):
+            logger.warning("🔌 Private WebSocket 종료됨. 5초 후 재연결 시도...")
+            time.sleep(5)
+            self._start_private_websocket()
+
+        def run():
+            try:
+                ws_app = WebSocketApp(
+                    self.private_ws_url,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                ws_app.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                logger.exception(f"🔥 Private WebSocket 스레드 예외: {e}")
+                time.sleep(5)
+                self._start_private_websocket()
+
+        thread = threading.Thread(target=run)
+        thread.daemon = True
+        thread.start()
+
+class BybitRestController:
+    def __init__(self, symbol="BTCUSDT"):
+        self.symbol = symbol
+        self.base_url = "https://api-demo.bybit.com"
+
+    def update_closes(self, closes, count=1440):
         try:
-            parsed = json.loads(message)
-
-            if "data" not in parsed or not parsed["data"]:
-                return  # ⛔ 데이터 없음, 무시
-
-            data = parsed["data"]
-            if "lastPrice" in data:
-                self.price = float(data["lastPrice"])
-            elif "ask1Price" in data:
-                self.price = float(data["ask1Price"])
-
-        except Exception as e:
-            print(f"❌ 메시지 처리 중 오류: {e}")
-
-    def _on_error(self, ws, error):
-        print(f"❌ WebSocket error: {error}")
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        print("🔌 WebSocket closed.")
-
-    def get_price(self):
-        return self.price
-
-    def _update_closes(self, closes: deque, count: int = 1440):
-        try:
-            url = "https://api.bybit.com/v5/market/kline"
+            url = f"{self.base_url}/v5/market/kline"
             params = {
                 "category": "linear",
                 "symbol": self.symbol,
                 "interval": "1",
-                "limit": 1000  # 최대 1000
+                "limit": 1000
             }
 
             all_closes = []
@@ -570,31 +664,28 @@ class BybitWebSocketController:
                 if not data:
                     break
 
-                data = data[::-1]  # ⬅️ 최신 → 과거를 과거 → 최신으로 정렬
-
+                data = data[::-1]
                 closes_chunk = [float(c[4]) for c in data]
-                all_closes = closes_chunk + all_closes  # 앞에 붙이기
-
-                latest_end = int(data[0][0]) - 1  # ⬅️ 가장 오래된 타임스탬프 기준
+                all_closes = closes_chunk + all_closes
+                latest_end = int(data[0][0]) - 1
 
                 if len(data) < 1000:
                     break
 
-            all_closes = all_closes[-count:]  # 최신 count개만 유지
+            all_closes = all_closes[-count:]
             closes.clear()
             closes.extend(all_closes)
 
-            logger.debug(f"📊 1분봉 closes 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
-
+            logger.debug(f"📊 캔들 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
         except Exception as e:
-            logger.warning(f"❌ 1분봉 closes 갱신 실패: {e}")
+            logger.warning(f"❌ 캔들 요청 실패: {e}")
 
     def ma100_list(self, closes):
         closes_list = list(closes)
-        ma100s = []
-        for i in range(99, len(closes_list)):
-            ma = sum(closes_list[i - 99:i + 1]) / 100
-            ma100s.append(ma)
-        return ma100s  # len = len(closes) - 99
+        return [
+            sum(closes_list[i - 99:i + 1]) / 100
+            for i in range(99, len(closes_list))
+        ]
+
 
 
