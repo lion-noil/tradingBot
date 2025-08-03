@@ -983,6 +983,7 @@ class BybitRestController:
     def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
         """
         Bybit에서 지정한 심볼의 레버리지를 설정합니다 (단일모드용, buy/sell 동일).
+        이미 설정된 값과 동일할 경우 경고만 출력하고 True 반환.
         """
         try:
             endpoint = "/v5/position/set-leverage"
@@ -1003,11 +1004,15 @@ class BybitRestController:
 
             if response.status_code == 200:
                 data = response.json()
-                if data.get("retCode") == 0:
+                ret_code = data.get("retCode")
+                if ret_code == 0:
                     logger.debug(f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}")
                     return True
+                elif ret_code == 110043:
+                    logger.warning(f"⚠️ 이미 설정된 레버리지입니다: {leverage}x | 심볼: {symbol}")
+                    return True  # 이건 실패 아님
                 else:
-                    logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {data.get('retCode')})")
+                    logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {ret_code})")
             else:
                 logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
         except Exception as e:
