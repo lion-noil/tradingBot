@@ -41,7 +41,7 @@ class TradeBot:
             self.bybit_rest_controller.update_closes(self.closes,count=1539)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
             self.last_closes_update = now
-            ma_threshold = self.controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
+            self.ma_threshold = self.controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
 
         price= self.bybit_websocket_controller.price
@@ -51,7 +51,7 @@ class TradeBot:
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
         exit_ma_threshold = 0.0002  # 청산 기준
-        momentum_threshold = ma_threshold / 3
+        momentum_threshold = self.ma_threshold / 3
 
         log_msg = (
             f"💹 현재가: {price}, MA100: {ma100:.1f}, 3분전: {prev}\n"
