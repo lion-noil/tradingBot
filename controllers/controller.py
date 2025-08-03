@@ -14,7 +14,6 @@ from utils.logger import setup_logger
 logger = setup_logger()
 load_dotenv()
 import json
-from pybit.unified_trading import HTTP
 
 
 class CoinFuturesController:
