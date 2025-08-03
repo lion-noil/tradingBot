@@ -231,7 +231,7 @@ class CoinFuturesController:
         upnl = balance.get("unrealized_pnl", 0.0)
         leverage = balance.get("leverage", 0)
 
-        log_msg = ""
+        log_msg = "\n"
         log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f}\n    미실현 손익: {upnl:+.2f} (레버리지: {leverage}x)\n"
 
         if status_list:
@@ -403,31 +403,6 @@ class CoinFuturesController:
 
         except Exception as e:
             logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
-
-    def get_ohlc_1m(self, symbol="BTCUSDT", minutes=1440, ma_window=100):
-        total_needed = minutes + (ma_window - 1)
-        url = "https://api.binance.com/api/v3/klines"
-        now = int(time.time() * 1000)
-        closes = []
-        left = total_needed
-        end_time = now
-
-        while left > 0:
-            get_num = min(left, 1000)
-            params = dict(symbol=symbol, interval="1m", limit=get_num, endTime=end_time)
-            res = requests.get(url, params=params)
-            res.raise_for_status()
-            candles = res.json()
-            if not candles:
-                break
-
-            closes_chunk = [float(c[4]) for c in candles]
-            closes = closes_chunk + closes  # 앞에 붙이기(과거→최근순)
-            end_time = candles[0][0] - 1  # 다음 요청은 더 과거로 이동
-            left -= get_num
-        closes = closes[-total_needed:]
-
-        return closes
 
     def ma100_list(self, closes):
         ma100s = []
@@ -629,11 +604,51 @@ class BybitRestController:
         self.recv_window = "5000"
         self.positions_file = f"{symbol}_positions.json"
         self.orders_file = f"{symbol}_orders.json"
+        self.leverage = 50
+        self.set_leverage(leverage = self.leverage)
 
-    def _generate_signature(self, timestamp, method, endpoint, params="", body=""):
+    def _generate_signature(self, timestamp, method, params="", body=""):
         query_string = params if method == "GET" else body
         payload = f"{timestamp}{self.api_key}{self.recv_window}{query_string}"
         return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
+
+    def _get_headers(self, method, endpoint, params="", body=""):
+        timestamp = str(int(time.time() * 1000))
+        sign = self._generate_signature(timestamp, method,params=params, body=body)
+        return {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": self.recv_window,
+            "X-BAPI-SIGN": sign
+        }
+
+    def count_cross(self, closes, ma100s, threshold):
+        count = 0
+        last_state = None  # "above", "below", "in"
+        closes = list(closes)  # 🔧 deque → list로 변환
+
+        for price, ma in zip(closes[99:], ma100s):
+            upper = ma * (1 + threshold)
+            lower = ma * (1 - threshold)
+
+            if price > upper:
+                state = "above"
+            elif price < lower:
+                state = "below"
+            else:
+                state = "in"
+
+            # 아래에서 위로 upper 크로스
+            if last_state in ("below", "in") and state == "above":
+                count += 1
+
+            # 위에서 아래로 lower 크로스
+            if last_state in ("above", "in") and state == "below":
+                count += 1
+
+            last_state = state
+
+        return count
 
     def find_optimal_threshold(self, closes, ma100s, min_thr=0.002, max_thr=0.05, target_cross=4):
         left, right = min_thr, max_thr
@@ -654,21 +669,10 @@ class BybitRestController:
         endpoint = "/v5/position/list"
         params = f"category={category}&symbol={symbol}"
         url = f"{self.base_url}{endpoint}?{params}"
-
-        timestamp = str(int(time.time() * 1000))
-        sign = self._generate_signature(timestamp, method, endpoint, params=params)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": sign,
-            "X-BAPI-RECV-WINDOW": self.recv_window,
-        }
-
+        headers = self._get_headers(method, endpoint, params=params, body="")
         response = requests.get(url, headers=headers)
         return response.json()
 
-        # REST client 초기화
 
     def load_local_positions(self):
         if not os.path.exists(self.positions_file):
@@ -725,7 +729,7 @@ class BybitRestController:
         url = f"{self.base_url}{endpoint}?{params}"
 
         timestamp = str(int(time.time() * 1000))
-        sign = self._generate_signature(timestamp, method, endpoint, params=params)
+        sign = self._generate_signature(timestamp, method, params=params)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -841,7 +845,7 @@ class BybitRestController:
                 order_time = int(order["time"])
                 entry_logs.append((order_time, used_qty, price))
                 remaining_qty -= used_qty
-                if remaining_qty <= 0:
+                if abs(remaining_qty) < 1e-8:
                     break
 
             results.append({
@@ -884,7 +888,7 @@ class BybitRestController:
         url = f"{self.base_url}{endpoint}?{params}"
 
         timestamp = str(int(time.time() * 1000))
-        sign = self._generate_signature(timestamp, method, endpoint, params=params)
+        sign = self._generate_signature(timestamp, method, params=params)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -910,7 +914,6 @@ class BybitRestController:
             "available_balance": float(account_data.get("totalAvailableBalance", 0)),
             "coin_unrealized_pnl": float(coin_data.get("unrealisedPnl", 0))
         }
-
 
     def load_orders(self):
         if not os.path.exists(self.orders_file):
@@ -977,6 +980,41 @@ class BybitRestController:
             for i in range(99, len(closes_list))
         ]
 
+    def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
+        """
+        Bybit에서 지정한 심볼의 레버리지를 설정합니다 (단일모드용, buy/sell 동일).
+        """
+        try:
+            endpoint = "/v5/position/set-leverage"
+            url = self.base_url + endpoint
+            method = "POST"
+
+            payload = {
+                "category": category,
+                "symbol": symbol,
+                "buyLeverage": str(leverage),
+                "sellLeverage": str(leverage)
+            }
+
+            body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._get_headers(method, endpoint, body=body)
+
+            response = requests.post(url, headers=headers, data=body)
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("retCode") == 0:
+                    logger.debug(f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}")
+                    return True
+                else:
+                    logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {data.get('retCode')})")
+            else:
+                logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
+        except Exception as e:
+            logger.error(f"❌ 레버리지 설정 중 예외 발생: {e}")
+
+        return False
+
     def make_status_log_msg(self, status):
         status_list = status.get("positions", [])
         balance = status.get("balance", {})
@@ -984,10 +1022,8 @@ class BybitRestController:
         total = balance.get("total", 0.0)
         available = balance.get("available", 0.0)
         upnl = balance.get("unrealized_pnl", 0.0)
-        leverage = balance.get("leverage", 0)
-
         log_msg = ""
-        log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f}\n    미실현 손익: {upnl:+.2f} (레버리지: {leverage}x)\n"
+        log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f}\n    미실현 손익: {upnl:+.2f} (레버리지: {self.leverage}x)\n"
 
         if status_list:
             for position in status_list:
@@ -1005,6 +1041,185 @@ class BybitRestController:
         else:
             log_msg += "  📉 포지션 없음\n"
         return log_msg.rstrip()
+
+    def buy_market_100(self,symbol="BTCUSDT", price=None, percent=10, balance=None):
+        try:
+            if price is None or balance is None:
+                logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
+                return None
+
+            if self.leverage <= 0:
+                logger.warning("❗ 유효하지 않은 레버리지 값. 기본값 1배 적용.")
+
+            total_balance = balance.get('total', 0)
+            qty = round(total_balance * self.leverage / price * percent / 100, 3)
+            if qty < 0.001:
+                logger.warning("❗ 주문 수량이 너무 작습니다. 매수 중단.")
+                return None
+
+            logger.debug(f"🟩 롱 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
+
+
+            endpoint = "/v5/order/create"
+            url = self.base_url + endpoint
+            method = "POST"
+
+            payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": "Buy",
+                "orderType": "Market",
+                "qty": str(qty),
+                "positionIdx": 1,
+                "timeInForce": "IOC"
+            }
+            body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._get_headers(method, endpoint, body=body)
+            response = requests.post(url, headers=headers, data=body)
+
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("retCode") == 0:
+                    result = data.get("result", {})
+                    logger.info(
+                        f"✅ 롱 진입 완료\n"
+                        f" | 주문ID: {result.get('orderId')}\n"
+                        f" | 수량: {qty}"
+                    )
+                    return result
+                else:
+                    logger.error(f"❌ 주문 실패: {data.get('retMsg')}")
+                    return None
+            else:
+                logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ 롱 진입 실패: {e}")
+            return None
+
+    def sell_market_100(self, symbol="BTCUSDT", price=None, percent=10, balance=None):
+        try:
+            if price is None or balance is None:
+                logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
+                return None
+
+            total_balance = balance.get('total', 0)
+            qty = round(total_balance * self.leverage / price * percent / 100, 3)
+            if qty < 0.001:
+                logger.warning("❗ 주문 수량이 너무 작습니다. 매도 중단.")
+                return None
+
+            logger.debug(f"🟥 숏 진입 시작 | 수량: {qty} @ 현재가 {price:.2f}")
+
+            endpoint = "/v5/order/create"
+            url = self.base_url + endpoint
+            method = "POST"
+
+            payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": "Sell",
+                "orderType": "Market",
+                "qty": str(qty),
+                "positionIdx": 2,  # 숏 포지션
+                "timeInForce": "IOC"
+            }
+
+            body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._get_headers(method, endpoint, body=body)
+            response = requests.post(url, headers=headers, data=body)
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("retCode") == 0:
+                    result = data.get("result", {})
+                    logger.info(
+                        f"✅ 숏 진입 완료\n"
+                        f" | 주문ID: {result.get('orderId')}\n"
+                        f" | 수량: {qty}"
+                    )
+                    return result
+                else:
+                    logger.error(f"❌ 주문 실패: {data.get('retMsg')}")
+                    return None
+            else:
+                logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ 숏 진입 실패: {e}")
+            return None
+
+    def close_position(self, symbol="BTCUSDT", side=None, qty=None, entry_price=None):
+        try:
+            if not side or not qty or not entry_price:
+                logger.error(f"❌ 청산 요청 실패: side, qty 또는 entry_price가 제공되지 않음")
+                return
+            qty = abs(float(qty))
+
+            # 현재가 조회 (Bybit Ticker API 사용)
+            ticker_endpoint = f"/v5/market/tickers?category=linear&symbol={symbol}"
+            ticker_url = self.base_url + ticker_endpoint
+            response = requests.get(ticker_url)
+            close_price = float(response.json()["result"]["list"][0]["lastPrice"])
+
+            # 수익금 계산
+            if side == "LONG":
+                profit = (close_price - entry_price) * qty
+                profit_rate = ((close_price - entry_price) / entry_price) * 100
+                close_side = "Sell"
+                positionIdx = 1
+            else:  # SHORT
+                profit = (entry_price - close_price) * qty
+                profit_rate = ((entry_price - close_price) / entry_price) * 100
+                close_side = "Buy"
+                positionIdx = 2
+
+            logger.debug(
+                f"📉 {side} 포지션 청산 시도 | 수량: {qty}@ 현재가 {close_price:.2f}"
+            )
+
+            endpoint = "/v5/order/create"
+            url = self.base_url + endpoint
+            method = "POST"
+
+            payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": close_side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "positionIdx": positionIdx,
+                "reduceOnly": True,
+                "timeInForce": "IOC"
+            }
+
+            body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._get_headers(method, endpoint, body=body)
+            response = requests.post(url, headers=headers, data=body)
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("retCode") == 0:
+                    logger.info(
+                        f"✅ {side} 포지션 청산 완료\n"
+                        f" | 주문ID: {data['result'].get('orderId')}\n"
+                        f" | 평균진입가: {entry_price:.2f}\n"
+                        f" | 청산시도가: {close_price:.2f}\n"
+                        f" | 수익금: {profit:.2f}\n"
+                        f" | 수익률: {profit_rate:.2f}%"
+                    )
+                    return data
+                else:
+                    logger.error(f"❌ 청산 실패: {data.get('retMsg')}")
+            else:
+                logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
+
+        except Exception as e:
+            logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
+
 
 
 

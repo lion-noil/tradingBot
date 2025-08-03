@@ -17,6 +17,7 @@ class TradeBot:
         self.closes = deque(maxlen=1539)
         self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
         self.last_closes_update = 0
+
         self.status = self.bybit_rest_controller.get_current_position_status()
         self.balance = self.status.get("balance", {})
         self.status_list = self.status.get("positions", [])
@@ -27,12 +28,16 @@ class TradeBot:
             "SHORT": self.pos_dict.get("SHORT", {}).get("entries", [[None]])[0][0] if self.pos_dict.get("SHORT") and
                                                                                  self.pos_dict["SHORT"]["entries"] else None,
         }
+
         self.target_cross = 4
         self.ma_threshold = 0.005
 
 
+
     async def run_once(self,):
         now = time.time()
+
+
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
             self.bybit_rest_controller.update_closes(self.closes,count=1539)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
@@ -43,6 +48,7 @@ class TradeBot:
         price= self.bybit_websocket_controller.price
         ma100 = self.ma100s[-1]
         prev = self.closes[-4]
+
 
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
@@ -69,14 +75,17 @@ class TradeBot:
                 percent = 10
 
             if command == "long":
-                self.controller.buy_market_100(self.symbol, price, percent, self.balance)
+                self.bybit_rest_controller.buy_market_100(self.symbol, price, percent, self.balance)
             elif command == "short":
-                self.controller.sell_market_100(self.symbol, price, percent, self.balance)
+                self.bybit_rest_controller.sell_market_100(self.symbol, price, percent, self.balance)
             elif command == "close":
                 if close_side and close_side in self.pos_dict:
                     pos_amt = float(self.pos_dict[close_side]["position_amt"])
+                    entry_price = self.pos_dict[close_side]["entryPrice"]
                     if pos_amt != 0:
-                        self.controller.close_position(self.symbol, side=close_side,qty = pos_amt)
+                        self.bybit_rest_controller.close_position(self.symbol, side=close_side, qty=pos_amt,
+                                                                  entry_price=entry_price)
+
                     else:
                         logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
                 else:
@@ -93,7 +102,6 @@ class TradeBot:
                                                                                           self.pos_dict["SHORT"][
                                                                                               "entries"] else None,
             }
-
 
         # 4. 자동매매 조건 평가
         ## short 진입 조건
@@ -119,7 +127,7 @@ class TradeBot:
             if position_ratio >= leverage_limit:
                 logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
-                self.controller.sell_market_100(self.symbol, price, percent, self.balance)
+                self.bybit_rest_controller.sell_market_100(self.symbol, price, percent, self.balance)
                 self.status = self.bybit_rest_controller.get_current_position_status()
                 self.status_list = self.status.get("positions", [])
                 self.balance = self.status.get("balance", {})
@@ -158,7 +166,7 @@ class TradeBot:
             if position_ratio >= leverage_limit:
                 logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.2%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
-                self.controller.buy_market_100(self.symbol, price, percent, self.balance)
+                self.bybit_rest_controller.buy_market_100(self.symbol, price, percent, self.balance)
                 self.status = self.bybit_rest_controller.get_current_position_status()
                 self.status_list = self.status.get("positions", [])
                 self.balance = self.status.get("balance", {})
@@ -191,7 +199,7 @@ class TradeBot:
                 if exit_reasons:
                     pos_amt = abs(float(self.pos_dict[side]["position_amt"]))
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
-                    self.controller.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)
+                    self.bybit_rest_controller.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)
                     self.status = self.bybit_rest_controller.get_current_position_status()
                     self.status_list = self.status.get("positions", [])
                     self.balance = self.status.get("balance", {})
