@@ -159,3 +159,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("👋 종료 요청됨")
         ws.close()
+
+

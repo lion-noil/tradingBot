@@ -33,7 +33,7 @@ async def bot_loop():
     while bot.running:
         try:
             await bot.run_once()
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(f"❌ bot_loop 오류: {e}")

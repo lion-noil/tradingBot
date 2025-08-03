@@ -89,8 +89,8 @@ class CoinFuturesController:
         return new_positions
     def sync_orders_from_binance(self, symbol="BTCUSDT"):
         try:
-            # 최신 100개 주문 가져오기
-            new_orders = self.client.futures_get_all_orders(symbol=symbol, limit=100)
+            # 최신 30개 주문 가져오기
+            new_orders = self.client.futures_get_all_orders(symbol=symbol, limit=30)
             local_orders = self.load_orders()
 
             # 이미 저장된 주문 ID 목록
