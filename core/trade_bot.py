@@ -28,14 +28,14 @@ class TradeBot:
                                                                                  self.pos_dict["SHORT"]["entries"] else None,
         }
 
+        self.status = self.bybit_rest_controller.get_full_position_info()
 
         self.target_cross = 4
-
+        self.ma_threshold = 0.005
 
 
     async def run_once(self,):
         now = time.time()
-        ma_threshold = 0.005
 
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
             self.bybit_rest_controller.update_closes(self.closes,count=1539)

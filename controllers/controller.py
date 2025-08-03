@@ -14,6 +14,8 @@ from utils.logger import setup_logger
 logger = setup_logger()
 load_dotenv()
 import json
+from pybit.unified_trading import HTTP
+
 
 class CoinFuturesController:
     def __init__(self):
@@ -28,23 +30,6 @@ class CoinFuturesController:
         self.BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
         # controllers에서 한 번 상위로(app) 올라감
 
-    def get_real_data(self, symbol="BTCUSDT"):
-        try:
-            url = f"{self.BINANCE_API_URL}?symbol={symbol}&interval=1m&limit=100"
-            res = requests.get(url, timeout=10)
-            res.raise_for_status()
-            candles = res.json()
-
-            closes = [float(c[4]) for c in candles]
-            ma100 = sum(closes) / len(closes)
-            price_now = closes[-1]
-            price_3min_ago = closes[-4]
-
-            return round(price_now, 3), round(ma100, 3), round(price_3min_ago, 3)
-
-        except Exception as e:
-            print(f"❌ 실시간 데이터 가져오기 실패: {e}")
-            return None, None, None
     def load_local_positions(self):
         if not os.path.exists(self.positions_file):
             return []
@@ -639,6 +624,80 @@ class BybitRestController:
     def __init__(self, symbol="BTCUSDT"):
         self.symbol = symbol
         self.base_url = "https://api-demo.bybit.com"
+        self.api_key = os.getenv("BYBIT_TEST_API_KEY")
+        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET")
+        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
+        self.recv_window = "5000"
+        self.positions_file = f"{symbol}_positions.json"
+
+    def _generate_signature(self, timestamp, method, endpoint, params="", body=""):
+        query_string = params if method == "GET" else body
+        payload = f"{timestamp}{self.api_key}{self.recv_window}{query_string}"
+        return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
+
+    def get_positions(self, symbol=None, category="linear"):
+        symbol = symbol or self.symbol
+        method = "GET"
+        endpoint = "/v5/position/list"
+        params = f"category={category}&symbol={symbol}"
+        url = f"{self.base_url}{endpoint}?{params}"
+
+        timestamp = str(int(time.time() * 1000))
+        sign = self._generate_signature(timestamp, method, endpoint, params=params)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": sign,
+            "X-BAPI-RECV-WINDOW": self.recv_window,
+        }
+
+        response = requests.get(url, headers=headers)
+        return response.json()
+
+        # REST client 초기화
+
+    def load_local_positions(self):
+        if not os.path.exists(self.positions_file):
+            return []
+        try:
+            with open(self.positions_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else []
+        except Exception as e:
+            logger.error(f"[ERROR] 로컬 포지션 파일 읽기 오류: {e}")
+            return []
+
+    def save_local_positions(self, data):
+        try:
+            with open(self.positions_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[ERROR] 포지션 저장 실패: {e}")
+
+    def get_full_position_info(self, symbol="BTCUSDT"):
+        # Bybit에서 포지션 조회
+        result = self.get_positions(symbol=symbol)
+        new_positions = result.get("result", {}).get("list", [])
+        new_positions = [p for p in new_positions if float(p.get("size", 0)) != 0]
+
+        local_positions = self.load_local_positions()
+
+        def clean_position(pos):
+            ignore_keys = {
+                "markPrice", "unrealisedPnl", "updatedTime",
+                "cumRealisedPnl", "positionValue"
+            }
+            return {k: v for k, v in pos.items() if k not in ignore_keys}
+
+        cleaned_local = [clean_position(p) for p in local_positions]
+        cleaned_new = [clean_position(p) for p in new_positions]
+
+        if json.dumps(cleaned_local, sort_keys=True) != json.dumps(cleaned_new, sort_keys=True):
+            logger.debug("📌 포지션 변경 감지됨 → 로컬 파일 업데이트")
+            self.save_local_positions(new_positions)
+
+        return new_positions
 
     def update_closes(self, closes, count=1440):
         try:
@@ -686,6 +745,5 @@ class BybitRestController:
             sum(closes_list[i - 99:i + 1]) / 100
             for i in range(99, len(closes_list))
         ]
-
 
 
