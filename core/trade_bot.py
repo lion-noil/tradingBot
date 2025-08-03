@@ -17,7 +17,7 @@ class TradeBot:
         self.closes = deque(maxlen=1539)
         self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
         self.last_closes_update = 0
-        self.status = self.controller.get_current_position_status()
+        self.status = self.bybit_rest_controller.get_current_position_status()
         self.balance = self.status.get("balance", {})
         self.status_list = self.status.get("positions", [])
         self.pos_dict = {p["position"]: p for p in self.status_list}
@@ -27,21 +27,17 @@ class TradeBot:
             "SHORT": self.pos_dict.get("SHORT", {}).get("entries", [[None]])[0][0] if self.pos_dict.get("SHORT") and
                                                                                  self.pos_dict["SHORT"]["entries"] else None,
         }
-
-        self.by_status = self.bybit_rest_controller.get_full_position_info()
-
         self.target_cross = 4
         self.ma_threshold = 0.005
 
 
     async def run_once(self,):
         now = time.time()
-
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
             self.bybit_rest_controller.update_closes(self.closes,count=1539)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
             self.last_closes_update = now
-            self.ma_threshold = self.controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
+            self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
 
         price= self.bybit_websocket_controller.price
@@ -57,7 +53,7 @@ class TradeBot:
             f"💹 현재가: {price}, MA100: {ma100:.1f}, 3분전: {prev}\n"
             f"100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
         )
-        log_msg += self.controller.make_status_log_msg(self.status)
+        log_msg += self.bybit_rest_controller.make_status_log_msg(self.status)
         logger.debug(log_msg)
 
         # 3. 수동 명령 처리
@@ -85,7 +81,7 @@ class TradeBot:
                         logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
                 else:
                     logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
-            self.status = self.controller.get_current_position_status()
+            self.status = self.bybit_rest_controller.get_current_position_status()
             self.status_list = self.status.get("positions", [])
             self.balance = self.status.get("balance", {})
             self.pos_dict = {p["position"]: p for p in self.status_list}
@@ -124,7 +120,7 @@ class TradeBot:
                 logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
                 self.controller.sell_market_100(self.symbol, price, percent, self.balance)
-                self.status = self.controller.get_current_position_status()
+                self.status = self.bybit_rest_controller.get_current_position_status()
                 self.status_list = self.status.get("positions", [])
                 self.balance = self.status.get("balance", {})
                 self.pos_dict = {p["position"]: p for p in self.status_list}
@@ -163,7 +159,7 @@ class TradeBot:
                 logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.2%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
             else:
                 self.controller.buy_market_100(self.symbol, price, percent, self.balance)
-                self.status = self.controller.get_current_position_status()
+                self.status = self.bybit_rest_controller.get_current_position_status()
                 self.status_list = self.status.get("positions", [])
                 self.balance = self.status.get("balance", {})
                 self.pos_dict = {p["position"]: p for p in self.status_list}
@@ -196,7 +192,7 @@ class TradeBot:
                     pos_amt = abs(float(self.pos_dict[side]["position_amt"]))
                     logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
                     self.controller.close_position(self.symbol, side=side, qty=pos_amt, entry_price=entry_price)
-                    self.status = self.controller.get_current_position_status()
+                    self.status = self.bybit_rest_controller.get_current_position_status()
                     self.status_list = self.status.get("positions", [])
                     self.balance = self.status.get("balance", {})
                     self.pos_dict = {p["position"]: p for p in self.status_list}

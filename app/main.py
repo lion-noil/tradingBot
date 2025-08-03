@@ -50,7 +50,7 @@ async def startup_event():
     bot = TradeBot(controller, bybit_websocket_controller, bybit_rest_controller, manual_queue)
     asyncio.create_task(bot_loop())
 
-    status = controller.get_current_position_status()
+    status = bybit_rest_controller.get_current_position_status()
     logger.info(controller.make_status_log_msg(status) + '\n')
 @app.get("/status")
 async def status():

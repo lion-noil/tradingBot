@@ -628,11 +628,25 @@ class BybitRestController:
         self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
         self.recv_window = "5000"
         self.positions_file = f"{symbol}_positions.json"
+        self.orders_file = f"{symbol}_orders.json"
 
     def _generate_signature(self, timestamp, method, endpoint, params="", body=""):
         query_string = params if method == "GET" else body
         payload = f"{timestamp}{self.api_key}{self.recv_window}{query_string}"
         return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
+
+    def find_optimal_threshold(self, closes, ma100s, min_thr=0.002, max_thr=0.05, target_cross=4):
+        left, right = min_thr, max_thr
+        optimal = max_thr
+        for _ in range(10):  # 충분히 반복
+            mid = (left + right) / 2
+            crosses = self.count_cross(closes, ma100s, mid)
+            if crosses > target_cross:
+                left = mid  # threshold를 키워야 cross가 줄어듦
+            else:
+                optimal = mid
+                right = mid
+        return max(optimal, min_thr)
 
     def get_positions(self, symbol=None, category="linear"):
         symbol = symbol or self.symbol
@@ -683,11 +697,15 @@ class BybitRestController:
         local_positions = self.load_local_positions()
 
         def clean_position(pos):
-            ignore_keys = {
-                "markPrice", "unrealisedPnl", "updatedTime",
-                "cumRealisedPnl", "positionValue"
+            """불변 비교를 위한 핵심 필드만 필터링"""
+            return {
+                "symbol": pos.get("symbol"),
+                "side": pos.get("side"),
+                "size": str(pos.get("size")),
+                "avgPrice": str(pos.get("avgPrice")),
+                "leverage": str(pos.get("leverage")),
+                # 필요한 경우 추가 가능
             }
-            return {k: v for k, v in pos.items() if k not in ignore_keys}
 
         cleaned_local = [clean_position(p) for p in local_positions]
         cleaned_new = [clean_position(p) for p in new_positions]
@@ -697,6 +715,220 @@ class BybitRestController:
             self.save_local_positions(new_positions)
 
         return new_positions
+
+    def sync_orders_from_bybit(self, symbol="BTCUSDT"):
+        method = "GET"
+        endpoint = "/v5/order/history"
+        category = "linear"
+        limit = 30
+        params = f"category={category}&symbol={symbol}&limit={limit}"
+        url = f"{self.base_url}{endpoint}?{params}"
+
+        timestamp = str(int(time.time() * 1000))
+        sign = self._generate_signature(timestamp, method, endpoint, params=params)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": sign,
+            "X-BAPI-RECV-WINDOW": self.recv_window
+        }
+
+        try:
+            response = requests.get(url, headers=headers)
+            data = response.json()
+            new_orders = data.get("result", {}).get("list", [])
+
+            local_orders = self.load_orders()
+            existing_ids = {str(order["id"]) for order in local_orders}
+
+            appended = 0
+            for o in new_orders:
+                if o["orderStatus"] != "Filled" or float(o.get("cumExecQty", 0)) == 0:
+                    continue
+
+                order_id = str(o["orderId"])
+                if order_id in existing_ids:
+                    continue
+
+                # 진입/청산 판단
+                reduce_only = o.get("reduceOnly", False)
+                is_close = o.get("isClose", False)
+                side = o["side"]  # "Buy" or "Sell"
+                trade_type = "CLOSE" if reduce_only or is_close else "OPEN"
+                position_side = "LONG" if side == "Buy" else "SHORT"
+
+                try:
+                    avg_price = float(o.get("avgPrice") or o["price"])
+                except (ValueError, TypeError):
+                    avg_price = 0.0
+
+                trade = {
+                    "id": order_id,
+                    "symbol": o["symbol"],
+                    "side": position_side,  # LONG / SHORT
+                    "type": trade_type,  # OPEN / CLOSE
+                    "qty": float(o["cumExecQty"]),
+                    "price": avg_price,
+                    "time": int(o["createdTime"]),
+                    "orderSide": side,
+                    "reduceOnly": reduce_only,
+                    "closePosition": is_close,
+                    "status": o["orderStatus"],
+                    "orderType": o["orderType"],
+                    "cumQuote": float(o.get("cumExecValue", 0)),
+                    "clientOrderId": o.get("orderLinkId", ""),
+                    "source": "bybit"
+                }
+
+                local_orders.append(trade)
+                appended += 1
+
+            if appended > 0:
+                self.save_orders(local_orders)
+                logger.debug(f"📥 신규 주문 {appended}건 저장됨")
+
+            return local_orders
+
+        except Exception as e:
+            logger.error(f"[ERROR] 주문 동기화 실패: {e}")
+            return self.load_orders()
+
+    def get_current_position_status(self, symbol="BTCUSDT"):
+        posinfo_list = self.get_full_position_info(symbol)
+        all_orders = self.sync_orders_from_bybit(symbol)
+
+        results = []
+
+        for pos in posinfo_list or []:
+            position_amt = abs(float(pos.get("size", 0)))
+            if position_amt == 0:
+                continue
+
+            side = pos.get("side", "").upper()
+            direction = "LONG" if side == "BUY" else "SHORT"
+
+            # 진입가 / 현재가
+            entry_price = float(pos.get("avgPrice", 0)) or 0.0
+            price_now = float(pos.get("markPrice", entry_price)) or entry_price
+            leverage = int(pos.get("leverage", 0))
+
+            # 수익률 계산
+            if direction == "SHORT":
+                profit_rate = (entry_price - price_now) / entry_price * 100
+            else:
+                profit_rate = (price_now - entry_price) / entry_price * 100
+
+            # 미실현 손익
+            try:
+                unrealized_profit = float(pos.get("unrealisedPnl", 0.0))
+            except:
+                unrealized_profit = profit_rate / 100 * position_amt * entry_price
+
+            # 진입 주문 로그 추출 (sync_orders_from_bybit 사용)
+            remaining_qty = position_amt
+            open_orders = [
+                o for o in all_orders
+                if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
+            ]
+            open_orders.sort(key=lambda x: x["time"], reverse=True)
+
+            entry_logs = []
+            for order in open_orders:
+                order_qty = float(order["qty"])
+                used_qty = min(order_qty, remaining_qty)
+                price = float(order["price"])
+                order_time = int(order["time"])
+                entry_logs.append((order_time, used_qty, price))
+                remaining_qty -= used_qty
+                if remaining_qty <= 0:
+                    break
+
+            results.append({
+                "position": direction,
+                "position_amt": position_amt,
+                "entryPrice": entry_price,
+                "entries": entry_logs,
+                "profit_rate": profit_rate,
+                "unrealized_profit": unrealized_profit,
+                "current_price": price_now
+            })
+
+
+        # 지갑 잔고 조회
+        try:
+            balance_info = self.get_wallet_balance("USDT")
+            total = float(balance_info.get("coin_equity", 0.0))  # ✅ 수정됨
+            avail = float(balance_info.get("available_balance", 0.0))  # ✅
+            upnl = float(balance_info.get("coin_unrealized_pnl", 0.0))  # ✅ 수정됨
+        except Exception as e:
+            logger.warning(f"❗ USDT 잔액 정보 조회 실패: {e}")
+            total = avail = upnl = 0.0
+
+        return {
+            "balance": {
+                "total": total,
+                "available": avail,
+                "unrealized_pnl": upnl,
+                "leverage": leverage if results else 0  # 포지션 없으면 0
+            },
+            "positions": results
+        }
+
+    def get_wallet_balance(self, coin="USDT"):
+        method = "GET"
+        endpoint = "/v5/account/wallet-balance"
+        account_type = "UNIFIED"
+        params = f"accountType={account_type}&coin={coin}"
+
+        url = f"{self.base_url}{endpoint}?{params}"
+
+        timestamp = str(int(time.time() * 1000))
+        sign = self._generate_signature(timestamp, method, endpoint, params=params)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": sign,
+            "X-BAPI-RECV-WINDOW": self.recv_window
+        }
+
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        if data["retCode"] != 0:
+            raise Exception(f"잔고 조회 실패: {data['retMsg']}")
+
+        account_data = data["result"]["list"][0]
+        coin_data = next((c for c in account_data["coin"] if c["coin"] == coin), {})
+
+
+
+        # 첫 번째 코인 정보 반환
+        return {
+            # 계정 요약 정보 (전체 기준)
+            "coin_equity": float(coin_data.get("equity", 0)),
+            "available_balance": float(account_data.get("totalAvailableBalance", 0)),
+            "coin_unrealized_pnl": float(coin_data.get("unrealisedPnl", 0))
+        }
+
+
+    def load_orders(self):
+        if not os.path.exists(self.orders_file):
+            return []
+        try:
+            with open(self.orders_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else []
+        except Exception as e:
+            logger.error(f"거래기록 로드 실패: {e}")
+            return []
+
+    def save_orders(self, trades):
+        try:
+            with open(self.orders_file, "w", encoding="utf-8") as f:
+                json.dump(trades, f, indent=2)
+        except Exception as e:
+            logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
 
     def update_closes(self, closes, count=1440):
         try:
@@ -744,5 +976,35 @@ class BybitRestController:
             sum(closes_list[i - 99:i + 1]) / 100
             for i in range(99, len(closes_list))
         ]
+
+    def make_status_log_msg(self, status):
+        status_list = status.get("positions", [])
+        balance = status.get("balance", {})
+
+        total = balance.get("total", 0.0)
+        available = balance.get("available", 0.0)
+        upnl = balance.get("unrealized_pnl", 0.0)
+        leverage = balance.get("leverage", 0)
+
+        log_msg = ""
+        log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f}\n    미실현 손익: {upnl:+.2f} (레버리지: {leverage}x)\n"
+
+        if status_list:
+            for position in status_list:
+                log_msg += f"  📈 포지션: {position['position']} ({position['position_amt']})\n"
+                log_msg += f"    평균가: {position['entryPrice']:.3f}\n"
+                log_msg += f"    수익률: {position['profit_rate']:.3f}%\n"
+                log_msg += f"    수익금: {position['unrealized_profit']:+.3f} USDT\n"
+                if position["entries"]:
+                    for i, (timestamp, qty, entryPrice) in enumerate(position["entries"], start=1):
+                        t_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                        signed_qty = -qty if position["position"] == "SHORT" else qty
+                        log_msg += f"        └ 진입시간 #{i}: {t_str} ({signed_qty:.3f} BTC), 진입가 : {entryPrice:.2f} \n"
+                else:
+                    log_msg += f"        └ 진입시간: 없음\n"
+        else:
+            log_msg += "  📉 포지션 없음\n"
+        return log_msg.rstrip()
+
 
 
