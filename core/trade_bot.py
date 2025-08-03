@@ -55,7 +55,7 @@ class TradeBot:
 
         log_msg = (
             f"💹 현재가: {price}, MA100: {ma100:.1f}, 3분전: {prev}\n"
-            f"100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
+            f"100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
         )
         log_msg += self.controller.make_status_log_msg(self.status)
         logger.debug(log_msg)
