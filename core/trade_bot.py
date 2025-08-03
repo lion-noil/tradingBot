@@ -28,7 +28,7 @@ class TradeBot:
                                                                                  self.pos_dict["SHORT"]["entries"] else None,
         }
 
-        self.status = self.bybit_rest_controller.get_full_position_info()
+        self.by_status = self.bybit_rest_controller.get_full_position_info()
 
         self.target_cross = 4
         self.ma_threshold = 0.005
@@ -105,12 +105,12 @@ class TradeBot:
         if "SHORT" in self.pos_dict and self.pos_dict["SHORT"]["entries"]:
             recent_short_time = self.position_time['SHORT']
         short_reasons = get_short_entry_reasons(price, ma100, prev, recent_short_time,
-                                                ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
+                                                ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold)
         if short_reasons:
             short_reason_msg = (
                     "📌 숏 진입 조건 충족:\n - " +
                     "\n - ".join(short_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
+                    f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
             )
 
             logger.info(short_reason_msg)
@@ -145,13 +145,13 @@ class TradeBot:
         if "LONG" in self.pos_dict and self.pos_dict["LONG"]["entries"]:
             recent_long_time = self.position_time['LONG']
         long_reasons = get_long_entry_reasons(price, ma100, prev, recent_long_time,
-                                              ma_threshold=ma_threshold, momentum_threshold=momentum_threshold)
+                                              ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold)
 
         if long_reasons:
             long_reason_msg = (
                     "📌 롱 진입 조건 충족:\n - " +
                     "\n - ".join(long_reasons) +
-                    f"\n100평 ±{ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
+                    f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
             )
             logger.info(long_reason_msg)
             long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
