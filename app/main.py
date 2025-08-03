@@ -24,7 +24,6 @@ logger = setup_logger()
 app = FastAPI()
 manual_queue = Queue()
 bot = None
-controller = None
 bybit_websocket_controller = None
 bybit_rest_controller = None
 
@@ -42,16 +41,12 @@ async def bot_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global bot, controller,bybit_websocket_controller, bybit_rest_controller
+    global bot, bybit_websocket_controller, bybit_rest_controller
     logger.info("🚀 FastAPI 기반 봇 서버 시작")
-    controller = CoinFuturesController()
     bybit_websocket_controller = BybitWebSocketController()
     bybit_rest_controller = BybitRestController()
-    bot = TradeBot(controller, bybit_websocket_controller, bybit_rest_controller, manual_queue)
+    bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue)
     asyncio.create_task(bot_loop())
-
-    status = bybit_rest_controller.get_current_position_status()
-    logger.info(controller.make_status_log_msg(status) + '\n')
 @app.get("/status")
 async def status():
     if bot is None:

@@ -7,16 +7,18 @@ import json
 logger = setup_logger()
 
 class TradeBot:
-    def __init__(self, controller, bybit_websocket_controller, bybit_rest_controller, manual_queue, symbol="BTCUSDT"):
-        self.controller = controller
+    def __init__(self, bybit_websocket_controller, bybit_rest_controller, manual_queue, symbol="BTCUSDT"):
+
         self.bybit_websocket_controller = bybit_websocket_controller
         self.bybit_rest_controller = bybit_rest_controller
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.running = True
         self.closes = deque(maxlen=1539)
+        self.bybit_rest_controller.update_closes(self.closes, count=1539)
+
         self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
-        self.last_closes_update = 0
+        self.last_closes_update = time.time()
 
         self.status = self.bybit_rest_controller.get_current_position_status()
         self.balance = self.status.get("balance", {})
@@ -30,14 +32,19 @@ class TradeBot:
         }
 
         self.target_cross = 4
-        self.ma_threshold = 0.005
+        self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
+                                                                 target_cross=self.target_cross)
 
+        log_msg = (
+            f"💹 현재가: {self.bybit_websocket_controller.price}, MA100: {self.ma100s[-1]:.1f}, 3분전: {self.closes[-4]}\n"
+            f"100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{self.ma_threshold / 3 * 100:.3f}% (목표 크로스 {self.target_cross}회)"
+        )
+        log_msg += self.bybit_rest_controller.make_status_log_msg(self.status)
+        logger.debug(log_msg)
 
 
     async def run_once(self,):
         now = time.time()
-
-
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
             self.bybit_rest_controller.update_closes(self.closes,count=1539)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)

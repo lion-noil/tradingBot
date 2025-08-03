@@ -1009,7 +1009,7 @@ class BybitRestController:
                     logger.debug(f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}")
                     return True
                 elif ret_code == 110043:
-                    logger.warning(f"⚠️ 이미 설정된 레버리지입니다: {leverage}x | 심볼: {symbol}")
+                    logger.debug(f"⚠️ 이미 설정된 레버리지입니다: {leverage}x | 심볼: {symbol}")
                     return True  # 이건 실패 아님
                 else:
                     logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {ret_code})")
