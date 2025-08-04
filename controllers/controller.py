@@ -747,7 +747,7 @@ class BybitRestController:
             existing_ids = {str(order["id"]) for order in local_orders}
 
             appended = 0
-            for o in new_orders:
+            for o in reversed(new_orders):
                 if o["orderStatus"] != "Filled" or float(o.get("cumExecQty", 0)) == 0:
                     continue
 
