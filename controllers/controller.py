@@ -721,10 +721,9 @@ class BybitRestController:
         return new_positions
 
     def sync_orders_from_bybit(self, symbol="BTCUSDT"):
+        """
         method = "GET"
         endpoint = "/v5/order/history"
-        category = "linear"
-        limit = 30
         params = f"category={category}&symbol={symbol}&limit={limit}"
         url = f"{self.base_url}{endpoint}?{params}"
 
@@ -737,51 +736,70 @@ class BybitRestController:
             "X-BAPI-SIGN": sign,
             "X-BAPI-RECV-WINDOW": self.recv_window
         }
+        """
+        ####
+        method = "GET"
+        category = "linear"
+        limit = 5
+        endpoint = "/v5/execution/list"
+        params_dict = {
+            "category": category,
+            "symbol": symbol,
+            "limit": limit
+        }
+        params_str = "&".join([f"{k}={params_dict[k]}" for k in sorted(params_dict)])
+        url = f"{self.base_url}{endpoint}?{params_str}"
 
+        headers = self._get_headers(method, endpoint, params=params_str, body="")
+
+        ####
         try:
             response = requests.get(url, headers=headers)
             data = response.json()
-            new_orders = data.get("result", {}).get("list", [])
+            executions = data.get("result", {}).get("list", [])
 
             local_orders = self.load_orders()
             existing_ids = {str(order["id"]) for order in local_orders}
 
             appended = 0
-            for o in reversed(new_orders):
-                if o["orderStatus"] != "Filled" or float(o.get("cumExecQty", 0)) == 0:
+            for e in reversed(executions):
+                if e.get("execType") != "Trade" or float(e.get("execQty", 0)) == 0:
                     continue
 
-                order_id = str(o["orderId"])
-                if order_id in existing_ids:
+                exec_id = str(e["execId"])
+                if exec_id in existing_ids:
                     continue
 
-                # 진입/청산 판단
-                reduce_only = o.get("reduceOnly", False)
-                is_close = o.get("isClose", False)
-                side = o["side"]  # "Buy" or "Sell"
-                trade_type = "CLOSE" if reduce_only or is_close else "OPEN"
+                # 포지션 방향 추정 (Buy → Long / Sell → Short)
+                side = e["side"]
                 position_side = "LONG" if side == "Buy" else "SHORT"
 
+                # 진입/청산 추정: 임시 기준 - 시장가 + 잔여 수량 0이면 청산
+                trade_type = "OPEN" if float(e.get("closedSize", 0)) == 0 else "CLOSE"
+
                 try:
-                    avg_price = float(o.get("avgPrice") or o["price"])
+                    exec_price = float(e["execPrice"])
                 except (ValueError, TypeError):
-                    avg_price = 0.0
+                    exec_price = 0.0
 
                 trade = {
-                    "id": order_id,
-                    "symbol": o["symbol"],
+                    "id": exec_id,
+                    "symbol": e["symbol"],
                     "side": position_side,  # LONG / SHORT
                     "type": trade_type,  # OPEN / CLOSE
-                    "qty": float(o["cumExecQty"]),
-                    "price": avg_price,
-                    "time": int(o["createdTime"]),
-                    "orderSide": side,
-                    "reduceOnly": reduce_only,
-                    "closePosition": is_close,
-                    "status": o["orderStatus"],
-                    "orderType": o["orderType"],
-                    "cumQuote": float(o.get("cumExecValue", 0)),
-                    "clientOrderId": o.get("orderLinkId", ""),
+                    "qty": float(e["execQty"]),
+                    "price": exec_price,
+                    "time": int(e["execTime"]),
+                    "orderSide": side,  # Buy / Sell
+                    "reduceOnly": False,  # 체결 데이터에 없음 → 기본 False
+                    "closePosition": False,  # 체결 데이터에 없음 → 기본 False
+                    "status": "Filled",
+                    "orderType": e["orderType"],
+                    "cumQuote": float(e.get("execValue", 0)),
+                    "clientOrderId": e.get("orderLinkId", ""),
+                    "fee": float(e.get("execFee", 0)),
+                    "feeRate": float(e.get("feeRate", 0)),
+                    "isMaker": e.get("isMaker", False),
                     "source": "bybit"
                 }
 
@@ -790,7 +808,7 @@ class BybitRestController:
 
             if appended > 0:
                 self.save_orders(local_orders)
-                logger.debug(f"📥 신규 주문 {appended}건 저장됨")
+                logger.debug(f"📥 신규 체결 {appended}건 저장됨")
 
             return local_orders
 
@@ -835,6 +853,8 @@ class BybitRestController:
                 o for o in all_orders
                 if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
             ]
+
+
             open_orders.sort(key=lambda x: x["time"], reverse=True)
 
             entry_logs = []
