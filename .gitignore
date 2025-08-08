@@ -1,6 +1,7 @@
 # 루트의 JSON 파일 무시
 /orders.json
 /positions.json
+/*.json
 
 # app 디렉토리 내부의 JSON 파일 무시
 /app/orders.json
