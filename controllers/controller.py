@@ -721,22 +721,7 @@ class BybitRestController:
         return new_positions
 
     def sync_orders_from_bybit(self, symbol="BTCUSDT"):
-        """
-        method = "GET"
-        endpoint = "/v5/order/history"
-        params = f"category={category}&symbol={symbol}&limit={limit}"
-        url = f"{self.base_url}{endpoint}?{params}"
 
-        timestamp = str(int(time.time() * 1000))
-        sign = self._generate_signature(timestamp, method, params=params)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": sign,
-            "X-BAPI-RECV-WINDOW": self.recv_window
-        }
-        """
         ####
         method = "GET"
         category = "linear"
@@ -762,7 +747,7 @@ class BybitRestController:
             existing_ids = {str(order["id"]) for order in local_orders}
 
             appended = 0
-            for e in reversed(executions):
+            for e in executions:
                 if e.get("execType") != "Trade" or float(e.get("execQty", 0)) == 0:
                     continue
 
@@ -804,11 +789,14 @@ class BybitRestController:
                 }
 
                 local_orders.append(trade)
+                existing_ids.add(exec_id)
                 appended += 1
 
             if appended > 0:
+                # ⭐ 저장 전 정렬 (time, id 기준)
+                local_orders.sort(key=lambda o: (int(o["time"]), str(o["id"])))
                 self.save_orders(local_orders)
-                logger.debug(f"📥 신규 체결 {appended}건 저장됨")
+                logger.debug(f"📥 신규 체결 {appended}건 저장됨 (시간순 정렬 완료)")
 
             return local_orders
 
