@@ -190,10 +190,19 @@ class BybitRestController:
 
     def count_cross(self, closes, ma100s, threshold):
         count = 0
+        cross_times = []  # 📌 크로스 발생 시간 저장
+
         last_state = None  # "above", "below", "in"
         closes = list(closes)  # 🔧 deque → list로 변환
+        now_kst = datetime.now(KST)
 
-        for price, ma in zip(closes[99:], ma100s):
+        last_cross_time_up = None
+        last_cross_time_down = None
+
+
+        for i, (price, ma) in enumerate(zip(closes, ma100s)):
+            if ma is None:  # MA100 계산 안된 구간은 건너뜀
+                continue
             upper = ma * (1 + threshold)
             lower = ma * (1 - threshold)
 
@@ -204,29 +213,40 @@ class BybitRestController:
             else:
                 state = "in"
 
-            # 아래에서 위로 upper 크로스
+            # 📌 크로스 감지
             if last_state in ("below", "in") and state == "above":
-                count += 1
+                cross_time = now_kst - timedelta(minutes=len(closes) - i)
+                if not last_cross_time_up or (cross_time - last_cross_time_up).total_seconds() > 3600:
+                    count += 1
+                    cross_times.append(("UP", cross_time.strftime("%Y-%m-%d %H:%M:%S"), upper, price, ma))
+                    last_cross_time_up = cross_time
 
-            # 위에서 아래로 lower 크로스
+
             if last_state in ("above", "in") and state == "below":
-                count += 1
+                cross_time = now_kst - timedelta(minutes=len(closes) - i)
+                if not last_cross_time_down or (cross_time - last_cross_time_down).total_seconds() > 3600:
+                    count += 1
+                    cross_times.append(("DOWN", cross_time.strftime("%Y-%m-%d %H:%M:%S"), lower, price, ma))
+                    last_cross_time_down = cross_time
 
             last_state = state
 
-        return count
+        return count, cross_times
 
-    def find_optimal_threshold(self, closes, ma100s, min_thr=0.002, max_thr=0.05, target_cross=4):
+    def find_optimal_threshold(self, closes, ma100s, min_thr=0.005, max_thr=0.05, target_cross=None):
         left, right = min_thr, max_thr
         optimal = max_thr
-        for _ in range(10):  # 충분히 반복
+        for _ in range(20):  # 충분히 반복
             mid = (left + right) / 2
-            crosses = self.count_cross(closes, ma100s, mid)
+            crosses, _ = self.count_cross(closes, ma100s, mid)  # 시간은 무시
+
             if crosses > target_cross:
                 left = mid  # threshold를 키워야 cross가 줄어듦
             else:
                 optimal = mid
                 right = mid
+        crosses, cross_times = self.count_cross(closes, ma100s, optimal)
+
         return max(optimal, min_thr)
 
     def get_positions(self, symbol=None, category="linear"):
@@ -482,7 +502,7 @@ class BybitRestController:
         except Exception as e:
             logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
 
-    def update_closes(self, closes, count=1440):
+    def update_closes(self, closes, count=None):
         try:
             url = f"{self.base_url}/v5/market/kline"
             params = {
@@ -524,10 +544,13 @@ class BybitRestController:
 
     def ma100_list(self, closes):
         closes_list = list(closes)
-        return [
-            sum(closes_list[i - 99:i + 1]) / 100
-            for i in range(99, len(closes_list))
-        ]
+        ma100s = []
+        for i in range(len(closes_list)):
+            if i < 99:
+                ma100s.append(None)  # MA100 계산 안 되는 구간
+            else:
+                ma100s.append(sum(closes_list[i - 99:i + 1]) / 100)
+        return ma100s
 
     def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
         """
@@ -569,14 +592,39 @@ class BybitRestController:
 
         return False
 
-    def make_status_log_msg(self, status, current_price):
+    def make_status_log_msg(self, status, price, ma100=None, prev=None,
+                            ma_threshold=None, target_cross=None, momentum_threshold=None):
+        # ==============================
+        #  시세 및 조건 범위
+        # ==============================
+        if ma100 is not None and prev is not None:
+            ma_upper = ma100 * (1 + ma_threshold)
+            ma_lower = ma100 * (1 - ma_threshold)
+
+            ma_diff_pct = ((price - ma100) / ma100) * 100  # 현재가가 MA100 대비 몇 % 차이인지
+
+            log_msg = (
+                f"\n💹 시세 정보\n"
+                f"  • 현재가      : {price:,.1f} "
+                f"(MA대비 {ma_diff_pct:+.3f}%)\n"
+                f"  • MA100       : {ma100:,.1f}\n"
+                f"  • 진입목표(롱/숏) : {ma_lower:,.2f} / {ma_upper:,.2f} "
+                f"(±{ma_threshold * 100:.3f}%)\n"
+                f"  • 목표 크로스: {target_cross}회\n"
+            )
+        else:
+            log_msg = ""
+
         status_list = status.get("positions", [])
         balance = status.get("balance", {})
 
         total = balance.get("total", 0.0)
         available = balance.get("available", 0.0)
-        log_msg = ""
-        log_msg += f"  💰 자산: 총 {total:.2f} USDT\n    사용 가능: {available:.2f} (레버리지: {self.leverage}x)\n"
+        available_pct = (available / total * 100) if total else 0
+        log_msg += (
+            f"  💰 자산: 총 {total:.2f} USDT\n"
+            f"    사용 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)\n"
+        )
 
         if status_list:
             for position in status_list:
@@ -587,11 +635,11 @@ class BybitRestController:
                 # 현재가 기준 수익률 / 수익금
                 if pos_amt != 0:
                     if side == "LONG":
-                        profit_rate = ((current_price - entry_price) / entry_price) * 100
-                        gross_profit = (current_price - entry_price) * pos_amt
+                        profit_rate = ((price - entry_price) / entry_price) * 100
+                        gross_profit = (price - entry_price) * pos_amt
                     else:  # SHORT
-                        profit_rate = ((entry_price - current_price) / entry_price) * 100
-                        gross_profit = (entry_price - current_price) * abs(pos_amt)
+                        profit_rate = ((entry_price - price) / entry_price) * 100
+                        gross_profit = (entry_price - price) * abs(pos_amt)
                 else:
                     profit_rate = 0.0
                     gross_profit = 0.0
@@ -603,7 +651,7 @@ class BybitRestController:
                 net_profit = gross_profit - fee_total
 
                 log_msg += f"  📈 포지션: {side} ({pos_amt})\n"
-                log_msg += f"    평균가: {entry_price:.3f} | 현재가: {current_price:.3f}\n"
+                log_msg += f"    평균가: {entry_price:.3f} | 현재가: {price:.3f}\n"
                 log_msg += f"    수익률: {profit_rate:.3f}%\n"
                 log_msg += f"    수익금: {net_profit:+.3f} USDT (fee {fee_total:.3f} USDT)\n"
 

@@ -14,55 +14,51 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.running = True
-        self.closes = deque(maxlen=1539)
-        self.bybit_rest_controller.update_closes(self.closes, count=1539)
+        self.closes = deque(maxlen=7200)
 
-        self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
-        self.last_closes_update = time.time()
+        self.ma100s = None
+        self.last_closes_update = 0
 
         self.status = self.bybit_rest_controller.get_current_position_status()
         self._apply_status(self.status)
-        self.target_cross = 4
-        self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
-                                                                 target_cross=self.target_cross)
+        self.target_cross = 5
+        self.ma_threshold = None
 
         # 동시 진입/중복 업데이트 방지
         self._sync_lock = asyncio.Lock()
         self._just_traded_until = 0.0  # 직후 틱 자동진입/중복 실행 방지 쿨다운
 
-        log_msg = (
-            f"💹 현재가: {self.bybit_websocket_controller.price}, MA100: {self.ma100s[-1]:.1f}, 3분전: {self.closes[-4]}\n"
-            f"100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{self.ma_threshold / 3 * 100:.3f}% (목표 크로스 {self.target_cross}회)"
-        )
-        log_msg += self.bybit_rest_controller.make_status_log_msg(self.status, self.bybit_websocket_controller.price)
-        logger.debug(log_msg)
+        # 현재값을 다음 비교를 위해 저장
+        self.last_price_ts = time.time()  #설정된 주기 바로전 가격(현재 0.5초임)
+        self.last_price = None #설정된 주기 바로전 가격(현재 0.5초임)
+        self.now_ma100 = None
+        self.prev = None
 
+        # 최근 가격 2개 저장 (timestamp, price)
+        self.price_history = deque(maxlen=2)
 
     async def run_once(self,):
         now = time.time()
+        price = self.bybit_websocket_controller.price
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
-            self.bybit_rest_controller.update_closes(self.closes,count=1539)
+            self.bybit_rest_controller.update_closes(self.closes,count=7200)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
             self.last_closes_update = now
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
-
-        price= self.bybit_websocket_controller.price
-        ma100 = self.ma100s[-1]
-        prev = self.closes[-4]
-
+            new_status = self.bybit_rest_controller.get_current_position_status()
+            self._apply_status(new_status)
+            self.now_ma100 = self.ma100s[-1]
+            self.prev = self.closes[-4]
 
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
-        exit_ma_threshold = 0.0002  # 청산 기준
+        exit_ma_threshold = 0.0001  # 청산 기준
         momentum_threshold = self.ma_threshold / 3
 
-        log_msg = (
-            f"💹 현재가: {price}, MA100: {ma100:.1f}, 3분전: {prev}\n"
-            f"100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
-        )
-        log_msg += self.bybit_rest_controller.make_status_log_msg(self.status, price)
-        logger.debug(log_msg)
+        logger.debug(self.bybit_rest_controller.make_status_log_msg(
+            self.status, price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross, momentum_threshold
+        ))
 
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
@@ -104,7 +100,7 @@ class TradeBot:
             ## short 진입 조건
             recent_short_time = self.position_time.get("SHORT")
             short_reasons = get_short_entry_reasons(
-                price, ma100, prev, recent_short_time,
+                price, self.now_ma100, self.prev, recent_short_time,
                 ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
             )
             if short_reasons:
@@ -132,7 +128,7 @@ class TradeBot:
             ## long 진입 조건
             recent_long_time = self.position_time.get("LONG")
             long_reasons = get_long_entry_reasons(
-                price, ma100, prev, recent_long_time,
+                price, self.now_ma100, self.prev, recent_long_time,
                 ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
             )
 
@@ -162,7 +158,7 @@ class TradeBot:
                 if recent_time:
                     entry_price = self.pos_dict[side]["entryPrice"]
                     exit_reasons = get_exit_reasons(
-                        side, price, ma100, recent_time, ma_threshold=exit_ma_threshold
+                        side, price, self.now_ma100, recent_time, ma_threshold=exit_ma_threshold
                     )
 
                     if exit_reasons:
@@ -172,6 +168,9 @@ class TradeBot:
                             self.bybit_rest_controller.close_position,
                             self.symbol, side=side, qty=pos_amt, entry_price=entry_price
                         )
+        print(1.5>=now - self.last_price_ts >= 0.5)
+        self.last_price = self.bybit_websocket_controller.price
+        self.last_price_ts = time.time()
 
     def _apply_status(self, status):
         """로컬 상태 일괄 갱신(중복 코드 제거)"""
