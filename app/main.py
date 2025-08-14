@@ -9,7 +9,7 @@ if sys.platform.startswith("win"):
 
 from fastapi import FastAPI
 from core.trade_bot import TradeBot
-from controllers.controller import CoinFuturesController,BybitWebSocketController, BybitRestController
+from controllers.controller import BybitWebSocketController, BybitRestController
 from asyncio import Queue
 from utils.logger import setup_logger
 from pydantic import BaseModel
