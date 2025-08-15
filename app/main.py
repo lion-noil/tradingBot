@@ -29,6 +29,19 @@ bybit_rest_controller = None
 
 async def bot_loop():
     global bot
+
+    # 🟢 웜업 단계: 최신가, ma100, ma_threshold 준비될 때까지 대기
+    while True:
+        bot.record_price()
+        if (
+                bot.price_history
+                and len(bot.price_history) == bot.price_history.maxlen
+        ):
+            logger.debug("✅ 데이터 준비 완료, 메인 루프 시작")
+            break
+        logger.debug("⏳ 데이터 준비 중...")
+        await asyncio.sleep(0.5)
+
     while bot.running:
         try:
             await bot.run_once()
@@ -42,7 +55,7 @@ async def bot_loop():
 @app.on_event("startup")
 async def startup_event():
     global bot, bybit_websocket_controller, bybit_rest_controller
-    logger.info("🚀 FastAPI 기반 봇 서버 시작")
+    logger.debug("🚀 FastAPI 기반 봇 서버 시작")
     bybit_websocket_controller = BybitWebSocketController()
     bybit_rest_controller = BybitRestController()
     bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue)

@@ -35,7 +35,7 @@ class TradeBot:
         self.price_history.append((time.time(), price))
 
     def check_price_jump(self, min_sec=0.5, max_sec=2, jump_pct=0.002):
-        if len(self.price_history) < 2:
+        if len(self.price_history) < 4:
             return None  # 데이터 부족
 
         now_ts, now_price = self.price_history[-1]
@@ -55,9 +55,6 @@ class TradeBot:
         # 1️⃣ 현재 가격 기록
         self.record_price()
         _, latest_price = self.price_history[-1]
-
-
-
 
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
             self.bybit_rest_controller.update_closes(self.closes,count=7200)
@@ -84,9 +81,8 @@ class TradeBot:
         momentum_threshold = self.ma_threshold / 3
 
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross, momentum_threshold
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross
         ))
-
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
             command_data = await self.manual_queue.get()

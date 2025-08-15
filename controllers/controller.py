@@ -593,15 +593,18 @@ class BybitRestController:
         return False
 
     def make_status_log_msg(self, status, price, ma100=None, prev=None,
-                            ma_threshold=None, target_cross=None, momentum_threshold=None):
+                            ma_threshold=None, target_cross=None):
         # ==============================
         #  시세 및 조건 범위
         # ==============================
         if ma100 is not None and prev is not None:
+
             ma_upper = ma100 * (1 + ma_threshold)
             ma_lower = ma100 * (1 - ma_threshold)
 
+
             ma_diff_pct = ((price - ma100) / ma100) * 100  # 현재가가 MA100 대비 몇 % 차이인지
+
 
             log_msg = (
                 f"\n💹 시세 정보\n"
