@@ -4,8 +4,8 @@
 /*.json
 
 # app 디렉토리 내부의 JSON 파일 무시
-/app/orders.json
-/app/positions.json
+/app/*.json
+
 
 # Python cache
 __pycache__/
