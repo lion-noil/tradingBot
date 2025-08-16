@@ -303,14 +303,13 @@ class BybitRestController:
             logger.debug("📌 포지션 변경 감지됨 → 로컬 파일 업데이트")
             self.save_local_positions(cleaned_new)
 
-        return cleaned_new
 
     def sync_orders_from_bybit(self, symbol="BTCUSDT"):
 
         ####
         method = "GET"
         category = "linear"
-        limit = 5
+        limit = 20
         endpoint = "/v5/execution/list"
         params_dict = {
             "category": category,
@@ -320,19 +319,54 @@ class BybitRestController:
         params_str = "&".join([f"{k}={params_dict[k]}" for k in sorted(params_dict)])
         url = f"{self.base_url}{endpoint}?{params_str}"
 
-        headers = self._get_headers(method, endpoint, params=params_str, body="")
+        def _fetch_once():
+            # 매 호출마다 재서명(타임스탬프 최신화)
+            headers = self._get_headers(method, endpoint, params=params_str, body="")
+            try:
+                resp = requests.get(url, headers=headers, timeout=5)
+                # HTTP 레벨 오류
+                if resp.status_code != 200:
+                    logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
+                    return None
+                try:
+                    data = resp.json()
+                except Exception:
+                    logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
+                    return None
+                # Bybit API 레벨 오류
+                ret_code = data.get("retCode")
+                if ret_code != 0:
+                    logger.error(f"❌ Bybit 오류 retCode={ret_code}, retMsg={data.get('retMsg')}")
+                    return None
+                result = data.get("result") or {}
+                lst = result.get("list")
+                if not isinstance(lst, list):
+                    logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
+                    return None
+                return lst
+            except requests.exceptions.Timeout:
+                logger.error("⏱️ 요청 타임아웃")
+                return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"🌐 네트워크 예외: {e}")
+                return None
+
+        # 1차 요청
+        executions = _fetch_once()
+        # (옵션) 실패 시 1회 재시도
+        if executions is None:
+            logger.debug("↻ 재시도: 서명/타임스탬프 갱신")
+            executions = _fetch_once()
+            if executions is None:
+                # 완전 실패면 기존 로컬 그대로 반환
+                return self.load_orders()
 
         ####
         try:
-            response = requests.get(url, headers=headers)
-            data = response.json()
-            executions = data.get("result", {}).get("list", [])
-
             local_orders = self.load_orders()
             existing_ids = {str(order["id"]) for order in local_orders}
-
             appended = 0
-            for e in executions:
+            for e in reversed(executions):
                 if e.get("execType") != "Trade" or float(e.get("execQty", 0)) == 0:
                     continue
 
@@ -368,25 +402,125 @@ class BybitRestController:
                 existing_ids.add(exec_id)
                 appended += 1
 
-            if appended > 0:
-                # ⭐ 저장 전 정렬 (time, id 기준)
-                local_orders.sort(key=lambda o: (int(o["time"]), str(o["id"])))
-                self.save_orders(local_orders)
-                logger.debug(f"📥 신규 체결 {appended}건 저장됨 (시간순 정렬 완료)")
+            # ✅ 시간순 정렬 (옛날 → 최신)
+            if local_orders:
+                local_orders.sort(key=lambda x: x.get("time", 0))
 
+            if appended > 0:
+                self.save_orders(local_orders)
+                logger.debug(f"📥 신규 체결 {appended}건 저장됨")
             return local_orders
 
         except Exception as e:
             logger.error(f"[ERROR] 주문 동기화 실패: {e}")
             return self.load_orders()
 
+    def get_trade_w_order_id(self, symbol="BTCUSDT",order_id=None):
+
+        ####
+        if not order_id:
+            logger.error("❌ order_id가 필요합니다.")
+            return self.load_orders()
+
+        method = "GET"
+        endpoint = "/v5/execution/list"
+        params_dict = {
+            "category": "linear",
+            "symbol": symbol,
+            "orderId": order_id,  # orderId 필터링 → limit 불필요
+        }
+
+        # 공통 GET 유틸
+        def _fetch_once() -> list | None:
+            params_str = "&".join([f"{k}={params_dict[k]}" for k in sorted(params_dict)])
+            url = f"{self.base_url}{endpoint}?{params_str}"
+            headers = self._get_headers(method, endpoint, params=params_str, body="")
+            try:
+                resp = requests.get(url, headers=headers, timeout=5)
+                if resp.status_code != 200:
+                    logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
+                    return None
+                try:
+                    data = resp.json()
+                except Exception:
+                    logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
+                    return None
+                if data.get("retCode") != 0:
+                    logger.error(f"❌ Bybit 오류 retCode={data.get('retCode')}, retMsg={data.get('retMsg')}")
+                    return None
+                result = data.get("result") or {}
+                lst = result.get("list")
+                if not isinstance(lst, list):
+                    logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
+                    return None
+                return lst
+            except requests.exceptions.Timeout:
+                logger.error("⏱️ 요청 타임아웃")
+                return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"🌐 네트워크 예외: {e}")
+                return None
+
+        t1 = time.time()
+        exec_timeout_sec = 10
+        found = False
+        poll_interval_sec = 1
+
+        method = "GET"
+        category = "linear"
+        endpoint = "/v5/execution/list"
+        params_dict = {
+            "category": category,
+            "symbol": symbol,
+            "orderId": order_id,
+        }
+
+        while True:
+            executions = _fetch_once()
+            if executions !=[]:
+                found = True
+            if found:
+                break
+            if time.time() - t1 > exec_timeout_sec:
+                logger.error(f"⏰ executions 반영 대기 타임아웃({exec_timeout_sec}s). 부분 체결/전파 지연 가능.")
+
+            time.sleep(poll_interval_sec)
+        e = executions[0]
+        exec_id = str(e["execId"])
+
+        # 포지션 방향 추정 (Buy → Long / Sell → Short)
+        side = e["side"]
+        position_side = "LONG" if side == "Buy" else "SHORT"
+
+        # 진입/청산 추정: 임시 기준 - 시장가 + 잔여 수량 0이면 청산
+        trade_type = "OPEN" if float(e.get("closedSize", 0)) == 0 else "CLOSE"
+
+        try:
+            exec_price = float(e["execPrice"])
+        except (ValueError, TypeError):
+            exec_price = 0.0
+
+        trade = {
+            "id": exec_id,
+            "symbol": e["symbol"],
+            "side": position_side,  # LONG / SHORT
+            "type": trade_type,  # OPEN / CLOSE
+            "qty": float(e["execQty"]),
+            "price": exec_price,
+            "time": int(e["execTime"]),
+            "time_str": datetime.fromtimestamp(int(e["execTime"]) / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "fee": float(e.get("execFee", 0))
+        }
+
+        return trade
+
     def get_current_position_status(self, symbol="BTCUSDT"):
-        posinfo_list = self.get_full_position_info(symbol)
-        all_orders = self.sync_orders_from_bybit(symbol)
+        local_positions = self.load_local_positions()
+        local_orders = self.load_orders()
 
         results = []
-
-        for pos in posinfo_list or []:
+        leverage = self.leverage
+        for pos in local_positions or []:
             position_amt = abs(float(pos.get("size", 0)))
             if position_amt == 0:
                 continue
@@ -396,15 +530,13 @@ class BybitRestController:
 
             # 진입가 / 현재가
             entry_price = float(pos.get("avgPrice", 0)) or 0.0
-            leverage = int(pos.get("leverage", 0))
 
-            # 진입 주문 로그 추출 (sync_orders_from_bybit 사용)
+            # 진입 주문 로그 추출
             remaining_qty = position_amt
             open_orders = [
-                o for o in all_orders
+                o for o in local_orders
                 if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
             ]
-
 
             open_orders.sort(key=lambda x: x["time"], reverse=True)
 
@@ -428,7 +560,6 @@ class BybitRestController:
                 "entries": entry_logs
             })
 
-
         # 지갑 잔고 조회
         try:
             balance_info = self.get_wallet_balance("USDT")
@@ -436,7 +567,7 @@ class BybitRestController:
             avail = float(balance_info.get("available_balance", 0.0))  # ✅
         except Exception as e:
             logger.warning(f"❗ USDT 잔액 정보 조회 실패: {e}")
-            total = avail = upnl = 0.0
+            total = avail = 0.0
 
         return {
             "balance": {
@@ -500,6 +631,36 @@ class BybitRestController:
         except Exception as e:
             logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
 
+    def append_order(self, trade: dict):
+        """
+        trade 하나를 로컬 파일에 append (중복 방지)
+        """
+        try:
+            local_orders = []
+            if os.path.exists(self.orders_file):
+                with open(self.orders_file, "r", encoding="utf-8") as f:
+                    try:
+                        local_orders = json.load(f)
+                    except json.JSONDecodeError:
+                        logger.warning("⚠️ orders_file JSON 파싱 실패, 새로 시작")
+                        local_orders = []
+
+            # 중복 확인 (execId 또는 id 기준)
+            existing_ids = {str(o.get("id")) for o in local_orders}
+            if str(trade.get("id")) in existing_ids:
+                logger.debug(f"⏩ 이미 존재하는 trade id={trade.get('id')}, 스킵")
+                return local_orders
+
+            local_orders.append(trade)
+
+            with open(self.orders_file, "w", encoding="utf-8") as f:
+                json.dump(local_orders, f, indent=2, ensure_ascii=False)
+
+            logger.debug(f"📥 신규 trade {trade.get('id')} 저장됨")
+
+        except Exception as e:
+            logger.error(f"[ERROR] 거래기록 append 실패: {e}")
+            return self.load_orders()
     def update_closes(self, closes, count=None):
         try:
             url = f"{self.base_url}/v5/market/kline"
@@ -666,61 +827,6 @@ class BybitRestController:
             log_msg += "  📉 포지션 없음\n"
         return log_msg.rstrip()
 
-    def place_market_order(self, symbol, side, price, percent, balance):
-        if price is None or balance is None:
-            logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
-            return None
-
-        total_balance = balance.get("total", 0)
-        qty = round(total_balance * self.leverage / price * percent / 100, 3)
-        if qty < 0.001:
-            logger.warning("❗ 주문 수량이 너무 작습니다. 주문 중단.")
-            return None
-
-        if side.upper() == "LONG":
-            order_side = "Buy"
-            position_idx = 1
-        elif side.upper() == "SHORT":
-            order_side = "Sell"
-            position_idx = 2
-        else:
-            logger.error(f"❌ 알 수 없는 side 값: {side}")
-            return None
-
-        logger.debug(f"📥 {side.upper()} 진입 시도 | 수량: {qty} @ {price:.2f}")
-
-        endpoint = "/v5/order/create"
-        url = self.base_url + endpoint
-        method = "POST"
-
-        payload = {
-            "category": "linear",
-            "symbol": symbol,
-            "side": order_side,
-            "orderType": "Market",
-            "qty": str(qty),
-            "positionIdx": position_idx,
-            "timeInForce": "IOC"
-        }
-
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        headers = self._get_headers(method, endpoint, body=body)
-        response = requests.post(url, headers=headers, data=body)
-
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("retCode") == 0:
-                result = data.get("result", {})
-                logger.debug(
-                    f"✅ {side.upper()} 주문 완료 | 주문ID: {result.get('orderId')} | 수량: {qty}"
-                )
-                return result
-            else:
-                logger.error(f"❌ 주문 실패: {data.get('retMsg')}")
-        else:
-            logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
-        return None
-
     def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1):
         endpoint = "/v5/order/realtime"
         base = self.base_url + endpoint
@@ -734,109 +840,127 @@ class BybitRestController:
         # 2) 실제 전송될 쿼리스트링(인코딩 포함) 생성
         query_string = urlencode(params_pairs, doseq=False)
 
-        # 3) 이 쿼리스트링으로 서명 생성 (GET은 body 대신 queryString 사용)
-        headers = self._get_headers("GET", endpoint, params=query_string, body="")
-
         # 4) 요청에도 '동일한 문자열'을 그대로 사용 (dict/params 쓰지 말고 완성 URL로)
         url = f"{base}?{query_string}"
 
-        for _ in range(max_retries):
+        for i in range(max_retries):
+            # 3) 이 쿼리스트링으로 서명 생성 (GET은 body 대신 queryString 사용)
+            headers = self._get_headers("GET", endpoint, params=query_string, body="")
+
             r = requests.get(url, headers=headers, timeout=5)
-            data = r.json()
+            # retCode 확인 (에러면 디버그 찍고 다음 루프)
+            try:
+                data = r.json()
+            except Exception:
+                logger.debug(f"응답 JSON 파싱 실패: {r.text[:200]}")
+                data = {}
+
             orders = data.get("result", {}).get("list", [])
             if orders:
                 o = orders[0]
-                if o.get("cumExecQty") not in ("0", 0, None, "", "0.0"):
+                status = (o.get("orderStatus") or "").upper()
+                # ✅ 가득 체결만 인정
+                if status == "FILLED" and str(o.get("cumExecQty")) not in ("0", "0.0", "", None):
                     return o
+                # ❌ 취소/거절이면 즉시 반환 (호출부에서 분기)
+                if status in ("CANCELLED", "REJECTED"):
+                    return o
+
+                # 그 외(New/PartiallyFilled 등)는 계속 대기
             logger.debug(
                 f"⌛ 주문 체결 대기중... ({i + 1}/{max_retries}) | 심볼: {symbol} | 주문ID: {order_id[-6:]}"
             )
             time.sleep(sleep_sec)
+
+            # ⏰ 타임아웃: 호출부가 분기할 수 있게 '타임아웃 상태' 반환
+        return {"orderId": order_id, "orderStatus": "TIMEOUT"}
+
+    def submit_market_order(self, symbol, order_side, qty, position_idx, reduce_only=False):
+        endpoint = "/v5/order/create"
+        url = self.base_url + endpoint
+        method = "POST"
+
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": order_side,  # "Buy" / "Sell"
+            "orderType": "Market",
+            "qty": str(qty),
+            "positionIdx": position_idx,  # 1: Long pos, 2: Short pos
+            "reduceOnly": bool(reduce_only),
+            "timeInForce": "IOC",
+        }
+        # Bybit는 JSON 키 정렬한 문자열로 서명 권장
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        headers = self._get_headers(method, endpoint, body=body)
+        headers["Content-Type"] = "application/json"
+
+        try:
+            r = requests.post(url, headers=headers, data=body, timeout=5)
+            if r.status_code != 200:
+                logger.error(f"❌ HTTP 오류: {r.status_code} {r.text}")
+                return None
+            data = r.json()
+            if data.get("retCode") == 0:
+                return data.get("result", {})
+            logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
+        except Exception as e:
+            logger.error(f"❌ 주문 예외: {e}")
         return None
 
+    def open_market(self, symbol, side, price, percent, balance):
+        if price is None or balance is None:
+            logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
+            return None
 
-def close_position(self, symbol="BTCUSDT", side=None, qty=None, entry_price=None):
-        try:
-            if not side or not qty or not entry_price:
-                logger.error(f"❌ 청산 요청 실패: side, qty 또는 entry_price가 제공되지 않음")
-                return
-            qty = abs(float(qty))
+        total_balance = balance.get("total", 0)
+        qty = round(total_balance * self.leverage / price * percent / 100, 3)
+        if qty < 0.001:
+            logger.warning("❗ 주문 수량이 너무 작습니다. 주문 중단.")
+            return None
 
-            # 현재가 조회 (Bybit Ticker API 사용)
-            ticker_endpoint = f"/v5/market/tickers?category=linear&symbol={symbol}"
-            ticker_url = self.base_url + ticker_endpoint
-            response = requests.get(ticker_url)
-            close_price = float(response.json()["result"]["list"][0]["lastPrice"])
+        if side.lower() == "long":
+            order_side, position_idx = "Buy", 1
+        elif side.lower() == "short":
+            order_side, position_idx = "Sell", 2
+        else:
+            logger.error(f"❌ 알 수 없는 side 값: {side}")
+            return None
 
-            # 수익금 계산
-            if side == "LONG":
-                profit = (close_price - entry_price) * qty
-                profit_rate = ((close_price - entry_price) / entry_price) * 100
-                close_side = "Sell"
-                positionIdx = 1
-            else:  # SHORT
-                profit = (entry_price - close_price) * qty
-                profit_rate = ((entry_price - close_price) / entry_price) * 100
-                close_side = "Buy"
-                positionIdx = 2
+        logger.debug(f"📥 {side.upper()} 진입 시도 | 수량: {qty} @ {price:.2f}")
+        return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
 
-            logger.debug(
-                f"📉 {side} 포지션 청산 시도 | 수량: {qty}@ 현재가 {close_price:.2f}"
-            )
+    def close_market(self, symbol, side, qty):
+        qty = float(qty)
+        if qty < 0.001:
+            logger.warning("❗ 청산 수량이 너무 작습니다. 중단.")
+            return None
 
-            endpoint = "/v5/order/create"
-            url = self.base_url + endpoint
-            method = "POST"
+        if side.upper() == "LONG":
+            order_side, position_idx = "Sell", 1
+        elif side.upper() == "SHORT":
+            order_side, position_idx = "Buy", 2
+        else:
+            logger.error(f"❌ 알 수 없는 side 값: {side}")
+            return None
 
-            payload = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": close_side,
-                "orderType": "Market",
-                "qty": str(qty),
-                "positionIdx": positionIdx,
-                "reduceOnly": True,
-                "timeInForce": "IOC"
-            }
+        logger.debug(f"📤 {side.upper()} 포지션 청산 시도 | 수량: {qty}")
+        return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
 
-            body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-            headers = self._get_headers(method, endpoint, body=body)
-            response = requests.post(url, headers=headers, data=body)
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("retCode") == 0:
-                    logger.info(
-                        f"✅ {side} 포지션 청산 완료\n"
-                        f" | 주문ID: {data['result'].get('orderId')}\n"
-                        f" | 평균진입가: {entry_price:.2f}\n"
-                        f" | 청산시도가: {close_price:.2f}\n"
-                        f" | 수익금: {profit:.2f}\n"
-                        f" | 수익률: {profit_rate:.2f}%"
-                    )
-                    return data
-                else:
-                    logger.error(f"❌ 청산 실패: {data.get('retMsg')}")
-            else:
-                logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
-
-        except Exception as e:
-            logger.error(f"❌ 포지션 청산 실패 ({side}): {e}")
-
-def cancel_order(self, symbol, order_id):
-    endpoint = "/v5/order/cancel"
-    url = self.base_url + endpoint
-    method = "POST"
-    payload = {
-        "category": "linear",
-        "symbol": symbol,
-        "orderId": order_id
-    }
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    headers = self._get_headers(method, endpoint, body=body)
-    headers["Content-Type"] = "application/json"
-    r = requests.post(url, headers=headers, data=body, timeout=5)
-    return r.json()
+    def cancel_order(self, symbol, order_id):
+        endpoint = "/v5/order/cancel"
+        url = self.base_url + endpoint
+        method = "POST"
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "orderId": order_id
+        }
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        headers = self._get_headers(method, endpoint, body=body)
+        headers["Content-Type"] = "application/json"
+        r = requests.post(url, headers=headers, data=body, timeout=5)
+        return r.json()
 
 
 

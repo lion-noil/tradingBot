@@ -14,13 +14,11 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.running = True
-        self.closes = deque(maxlen=7200)
+        self.closes_num = 7200
+        self.closes = deque(maxlen=self.closes_num)
 
         self.ma100s = None
         self.last_closes_update = 0
-
-        self.status = self.bybit_rest_controller.get_current_position_status()
-        self._apply_status(self.status)
         self.target_cross = 5
         self.ma_threshold = None
 
@@ -57,11 +55,14 @@ class TradeBot:
         _, latest_price = self.price_history[-1]
 
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
-            self.bybit_rest_controller.update_closes(self.closes,count=7200)
+            self.bybit_rest_controller.update_closes(self.closes,count=self.closes_num)
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
             self.last_closes_update = now
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
+
+            self.bybit_rest_controller.get_full_position_info(self.symbol)
+            self.bybit_rest_controller.sync_orders_from_bybit()
             new_status = self.bybit_rest_controller.get_current_position_status()
             self._apply_status(new_status)
             self.now_ma100 = self.ma100s[-1]
@@ -97,7 +98,8 @@ class TradeBot:
 
             if command in ("long", "short"):
                 await self._execute_and_sync(
-                    self.bybit_rest_controller.place_market_order,
+                    self.bybit_rest_controller.open_market,
+                    self.status,
                     self.symbol,
                     command,  # "long" or "short"
                     latest_price,
@@ -108,11 +110,13 @@ class TradeBot:
             elif command == "close":
                 if close_side and close_side in self.pos_dict:
                     pos_amt = float(self.pos_dict[close_side]["position_amt"])
-                    entry_price = self.pos_dict[close_side]["entryPrice"]
                     if pos_amt != 0:
                         await self._execute_and_sync(
-                            self.bybit_rest_controller.close_position,
-                            self.symbol, side=close_side, qty=pos_amt, entry_price=entry_price
+                            self.bybit_rest_controller.close_market,
+                            self.status,
+                            self.symbol,
+                            side=close_side,  # "LONG" or "SHORT"
+                            qty=pos_amt
                         )
                     else:
                         logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
@@ -131,7 +135,7 @@ class TradeBot:
                 short_reason_msg = (
                         "📌 숏 진입 조건 충족:\n - " +
                         "\n - ".join(short_reasons) +
-                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회)"
+                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / ({self.closes_num} 분봉))"
                 )
 
                 logger.info(short_reason_msg)
@@ -145,7 +149,8 @@ class TradeBot:
                     logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     await self._execute_and_sync(
-                        self.bybit_rest_controller.place_market_order,
+                        self.bybit_rest_controller.open_market,
+                        self.status,
                         self.symbol,
                         "short",  # "long" or "short"
                         latest_price,
@@ -177,7 +182,8 @@ class TradeBot:
                     logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     await self._execute_and_sync(
-                        self.bybit_rest_controller.place_market_order,
+                        self.bybit_rest_controller.open_market,
+                        self.status,
                         self.symbol,
                         "long",  # "long" or "short"
                         latest_price,
@@ -190,7 +196,6 @@ class TradeBot:
             for side in ["LONG", "SHORT"]:
                 recent_time = self.position_time.get(side)
                 if recent_time:
-                    entry_price = self.pos_dict[side]["entryPrice"]
                     exit_reasons = get_exit_reasons(
                         side, latest_price, self.now_ma100, recent_time, ma_threshold=exit_ma_threshold
                     )
@@ -199,8 +204,11 @@ class TradeBot:
                         pos_amt = abs(float(self.pos_dict[side]["position_amt"]))
                         logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
                         await self._execute_and_sync(
-                            self.bybit_rest_controller.close_position,
-                            self.symbol, side=side, qty=pos_amt, entry_price=entry_price
+                            self.bybit_rest_controller.close_market,
+                            self.status,
+                            self.symbol,
+                            side=side,  # "LONG" or "SHORT"
+                            qty=pos_amt
                         )
 
 
@@ -241,66 +249,133 @@ class TradeBot:
             short_p.get("updatedTime") or short_p.get("updated_at"),
         )
 
-    async def _refresh_until_change(self, prev_fp, timeout=6.0):
-        """REST로 포지션/밸런스 변화가 감지될 때까지 짧게 대기"""
-        delay = 0.18
-        end = time.monotonic() + timeout
-        latest = None
-        while time.monotonic() < end:
-            latest = self.bybit_rest_controller.get_current_position_status()
-            if self._extract_fp(latest) != prev_fp:
-                return latest
-            await asyncio.sleep(delay + random.random() * 0.08)
-            delay = min(delay * 1.7, 1.0)
-        return latest or self.bybit_rest_controller.get_current_position_status()
-
-    async def _execute_and_sync(self, fn, *args, **kwargs):
-        """
-        단일 엔트리포인트:
-        1) 주문 실행
-        2) 포지션/밸런스 변화 감지까지 대기
-        3) 로컬 상태 일괄 갱신
-        """
+    async def _execute_and_sync(self, fn, prev_status, *args, **kwargs):
         async with self._sync_lock:
-            prev_status = self.status or self.bybit_rest_controller.get_current_position_status()
-            prev_fp = self._extract_fp(prev_status)
+            # 1) 주문 실행
+            result = fn(*args, **kwargs)  # place_market_order / close_position 등
+            order_id = result.get("orderId")
 
-            result = fn(*args, **kwargs)  # buy/sell/close (동기 가정)
-            order_id = result.get("orderId") if result else None
-
-            # 2) 주문 체결 확인
+            # 2) 체결 확인
             filled = None
             if order_id:
                 filled = self.bybit_rest_controller.wait_order_fill(self.symbol, order_id)
 
-            if not filled:
-                logger.warning(f"⚠️ 주문 {order_id} 체결 확인 실패 → 취소 시도")
-                # 2-1) 해당 주문만 취소
+            orderStatus = (filled or {}).get("orderStatus", "").upper()
+
+            if orderStatus == "FILLED":
+                self._log_fill(filled, prev_status=prev_status)
+
+                self.bybit_rest_controller.get_full_position_info(self.symbol)
+                trade = self.bybit_rest_controller.get_trade_w_order_id(self.symbol,order_id)
+                self.bybit_rest_controller.append_order(trade)
+                now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
+                self._apply_status(now_status)
+
+            elif orderStatus in ("CANCELLED", "REJECTED"):
+                logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
+                # 이미 취소/거절 상태 → 추가 취소 API 호출 불필요
+            elif orderStatus == "TIMEOUT":
+                logger.warning(f"⚠️ 주문 {order_id[-6:]} 체결 대기 타임아웃 → 취소 시도")
                 try:
                     cancel_res = self.bybit_rest_controller.cancel_order(self.symbol, order_id)
                     logger.warning(f"🗑️ 단일 주문 취소 결과: {cancel_res}")
                 except Exception as e:
                     logger.error(f"단일 주문 취소 실패: {e}")
-
             else:
-                order_tail = order_id[-6:] if order_id else "UNKNOWN"
-                side_raw = (filled.get("side") or "").upper()
-                side_disp = "LONG" if side_raw == "BUY" else "SHORT"
-                avg_price = float(filled.get("avgPrice") or 0.0)
-                qty = float(filled.get("cumExecQty") or 0.0)
+                # 예상치 못한 상태(New/PartiallyFilled 등) → 정책에 따라 취소할지, 더 기다릴지
+                logger.warning(f"ℹ️ 주문 {order_id[-6:]} 상태: {orderStatus or 'UNKNOWN'} → 정책에 따라 처리")
 
-                logger.info(
-                    f"✅ {side_disp} 주문 체결 완료\n"
-                    f" | 주문ID(뒷6자리): {order_tail}\n"
-                    f" | 체결가: {avg_price:.2f}\n"
-                    f" | 체결수량: {qty}"
-                )
-
-            new_status = await self._refresh_until_change(prev_fp, timeout=6.0)
-            self._apply_status(new_status)
 
             # 같은 루프에서 자동 조건이 바로 또 트리거되지 않도록 짧은 쿨다운
             self._just_traded_until = time.monotonic() + 0.8
             return result
 
+    def _classify_intent(self, filled: dict) -> str:
+        side = (filled.get("side") or "").upper()  # BUY/SELL
+        pos = int(filled.get("positionIdx") or 0)  # 1/2
+        ro = bool(filled.get("reduceOnly"))  # True/False
+        if ro:  # 청산
+            if pos == 1 and side == "SELL":  return "LONG_CLOSE"
+            if pos == 2 and side == "BUY":   return "SHORT_CLOSE"
+        else:  # 진입
+            if pos == 1 and side == "BUY":   return "LONG_OPEN"
+            if pos == 2 and side == "SELL":  return "SHORT_OPEN"
 
+    def _log_fill(self, filled: dict, prev_status: dict | None = None):
+        side,intent = self._classify_intent(filled).split("_") # LONG_OPEN / SHORT_OPEN / LONG_CLOSE / SHORT_CLOSE ...
+        order_tail = (filled.get("orderId") or "")[-6:] or "UNKNOWN"
+        avg_price = float(filled.get("avgPrice") or 0.0)  # 이번 체결가 (청산가)
+        exec_qty = float(filled.get("cumExecQty") or filled.get("qty") or 0.0)
+        fee = float(filled.get("cumExecFee") or 0.0)  # USDT, 보통 음수
+
+
+        # 진입(OPEN): 기본 로그
+        if not intent.endswith("CLOSE"):
+            logger.info(
+                f"✅ {side} 주문 체결 완료\n"
+                f" | 주문ID(뒷6자리): {order_tail}\n"
+                f" | 평균진입가: {avg_price:.2f}\n"
+                f" | 체결수량: {exec_qty}"
+            )
+            return
+
+        # 청산(CLOSE): prev_status에서 평균진입가 자동 해석
+        entry_price = self._extract_entry_price_from_prev(filled, prev_status)
+
+        # 손익 계산
+        if (side,intent) == ("LONG","CLOSE"):
+            profit_gross = (avg_price - entry_price) * exec_qty
+        else:  # SHORT_CLOSE
+            profit_gross = (entry_price - avg_price) * exec_qty
+
+        profit_net = profit_gross + fee
+        profit_rate = (profit_gross / entry_price) * 100 if entry_price else 0.0
+
+        logger.info(
+            f"✅ {side} 포지션 청산 완료\n"
+            f" | 주문ID: {order_tail}\n"
+            f" | 평균진입가: {entry_price:.2f}\n"
+            f" | 청산가: {avg_price:.2f}\n"
+            f" | 체결수량: {exec_qty}\n"
+            f" | 수익금(수수료 제외): {profit_net:.2f}\n"
+            f" | 수익금(총): {profit_gross:.2f}, 수수료: {fee:.2f}\n"
+            f" | 수익률: {profit_rate:.2f}%"
+        )
+
+    def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:
+        """
+        prev_status 예:
+        {
+          'balance': {...},
+          'positions': [
+            {'position': 'LONG', 'position_amt': 0.025, 'entryPrice': 117421.7,
+             'entries': [(1755328360633, 0.025, 117393.4, '2025-08-16 16:12:40')]}
+          ]
+        }
+        """
+        if not prev_status:
+            return None
+
+        # filled의 포지션 방향 파악
+        pos_idx = int(filled.get("positionIdx") or 0)  # 1: LONG, 2: SHORT
+        side_key = "LONG" if pos_idx == 1 else "SHORT"
+
+        positions = prev_status.get("positions") or []
+        # 1) 우선 entryPrice 필드
+        for p in positions:
+            if (p.get("position") or "").upper() == side_key:
+                ep = p.get("entryPrice") or p.get("avgPrice")
+                if ep is not None:
+                    try:
+                        return float(ep)
+                    except Exception:
+                        pass
+                # 2) 없으면 entries 마지막 체결가로 폴백
+                entries = p.get("entries") or []
+                if entries:
+                    try:
+                        # (ts, qty, price, time_str)
+                        return float(entries[-1][2])
+                    except Exception:
+                        pass
+        return None
