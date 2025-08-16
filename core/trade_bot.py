@@ -48,6 +48,7 @@ class TradeBot:
         return None  # 변화 없음
 
     async def run_once(self,):
+
         now = time.time()
 
         # 1️⃣ 현재 가격 기록
@@ -67,7 +68,7 @@ class TradeBot:
             self._apply_status(new_status)
             self.now_ma100 = self.ma100s[-1]
             self.prev = self.closes[-3]
-
+        print(2)
         # 2️⃣ 급등락 테스트
         change = self.check_price_jump(min_sec=0.5, max_sec=2, jump_pct=self.ma_threshold)
         if change:
@@ -75,7 +76,7 @@ class TradeBot:
                 logger.info(" 📈 급등 감지!")
             elif change == "DOWN":
                 logger.info(" 📉 급락 감지!")
-
+        print(3)
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
         exit_ma_threshold = 0.0001  # 청산 기준
@@ -84,6 +85,7 @@ class TradeBot:
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
             self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross
         ))
+        print(4)
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
             command_data = await self.manual_queue.get()
