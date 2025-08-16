@@ -154,7 +154,7 @@ class TradeBot:
                 short_reason_msg = (
                         "📌 숏 진입 조건 충족:\n - " +
                         "\n - ".join(short_reasons) +
-                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / ({self.closes_num} 분))"
+                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / {self.closes_num} 분)"
                 )
 
                 logger.info(short_reason_msg)
@@ -189,7 +189,7 @@ class TradeBot:
                 long_reason_msg = (
                         "📌 롱 진입 조건 충족:\n - " +
                         "\n - ".join(long_reasons) +
-                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / ({self.closes_num} 분))"
+                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / {self.closes_num} 분)"
                 )
                 logger.info(long_reason_msg)
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))

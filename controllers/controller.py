@@ -772,7 +772,7 @@ class BybitRestController:
                 f"  • MA100       : {ma100:,.1f}\n"
                 f"  • 진입목표(롱/숏) : {ma_lower:,.2f} / {ma_upper:,.2f} "
                 f"(±{ma_threshold * 100:.3f}%)\n"
-                f"  • 목표 크로스: {target_cross}회 / ({closes_num} 분))\n"
+                f"  • 목표 크로스: {target_cross}회 / {closes_num} 분)\n"
             )
         else:
             log_msg = ""
