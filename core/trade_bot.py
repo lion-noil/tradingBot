@@ -103,7 +103,6 @@ class TradeBot:
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
             self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross
         ))
-        print(4)
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
             command_data = await self.manual_queue.get()
