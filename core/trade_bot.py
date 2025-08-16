@@ -95,13 +95,14 @@ class TradeBot:
                 command = command_data
                 percent = 10
 
-            if command == "long":
+            if command in ("long", "short"):
                 await self._execute_and_sync(
-                    self.bybit_rest_controller.buy_market_100, self.symbol, latest_price, percent, self.balance
-                )
-            elif command == "short":
-                await self._execute_and_sync(
-                    self.bybit_rest_controller.sell_market_100, self.symbol, latest_price, percent, self.balance
+                    self.bybit_rest_controller.place_market_order,
+                    self.symbol,
+                    command,  # "long" or "short"
+                    latest_price,
+                    percent,
+                    self.balance
                 )
 
             elif command == "close":
@@ -144,7 +145,12 @@ class TradeBot:
                     logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     await self._execute_and_sync(
-                        self.bybit_rest_controller.sell_market_100, self.symbol, latest_price, percent, self.balance
+                        self.bybit_rest_controller.place_market_order,
+                        self.symbol,
+                        "short",  # "long" or "short"
+                        latest_price,
+                        percent,
+                        self.balance
                     )
 
 
@@ -171,7 +177,12 @@ class TradeBot:
                     logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     await self._execute_and_sync(
-                        self.bybit_rest_controller.buy_market_100, self.symbol, latest_price, percent, self.balance
+                        self.bybit_rest_controller.place_market_order,
+                        self.symbol,
+                        "long",  # "long" or "short"
+                        latest_price,
+                        percent,
+                        self.balance
                     )
 
 
@@ -255,6 +266,35 @@ class TradeBot:
             prev_fp = self._extract_fp(prev_status)
 
             result = fn(*args, **kwargs)  # buy/sell/close (동기 가정)
+            order_id = result.get("orderId") if result else None
+
+            # 2) 주문 체결 확인
+            filled = None
+            if order_id:
+                filled = self.bybit_rest_controller.wait_order_fill(self.symbol, order_id)
+
+            if not filled:
+                logger.warning(f"⚠️ 주문 {order_id} 체결 확인 실패 → 취소 시도")
+                # 2-1) 해당 주문만 취소
+                try:
+                    cancel_res = self.bybit_rest_controller.cancel_order(self.symbol, order_id)
+                    logger.warning(f"🗑️ 단일 주문 취소 결과: {cancel_res}")
+                except Exception as e:
+                    logger.error(f"단일 주문 취소 실패: {e}")
+
+            else:
+                order_tail = order_id[-6:] if order_id else "UNKNOWN"
+                side_raw = (filled.get("side") or "").upper()
+                side_disp = "LONG" if side_raw == "BUY" else "SHORT"
+                avg_price = float(filled.get("avgPrice") or 0.0)
+                qty = float(filled.get("cumExecQty") or 0.0)
+
+                logger.info(
+                    f"✅ {side_disp} 주문 체결 완료\n"
+                    f" | 주문ID(뒷6자리): {order_tail}\n"
+                    f" | 체결가: {avg_price:.2f}\n"
+                    f" | 체결수량: {qty}"
+                )
 
             new_status = await self._refresh_until_change(prev_fp, timeout=6.0)
             self._apply_status(new_status)
