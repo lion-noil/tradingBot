@@ -4,6 +4,7 @@ from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_re
 from collections import deque
 import time
 import json
+import math
 logger = setup_logger()
 import asyncio, random
 class TradeBot:
@@ -29,8 +30,25 @@ class TradeBot:
         self.price_history = deque(maxlen=4)
 
     def record_price(self):
-        price = self.bybit_websocket_controller.price
-        self.price_history.append((time.time(), price))
+        ts = time.time()
+        price = getattr(self.bybit_websocket_controller, "price", None)
+
+        # 1) 값 유효성 검사
+        if not isinstance(price, (int, float)):
+            logger.debug("skip record_price: non-numeric price=%r", price)
+            return
+        if not (price > 0):  # 0 또는 음수 방지
+            logger.debug("skip record_price: non-positive price=%r", price)
+            return
+        # float NaN/Inf 방지
+        if math.isnan(price) or math.isinf(price):
+            logger.debug("skip record_price: NaN/Inf price=%r", price)
+            return
+
+        # 2) 타임스탬프 단조 증가(간헐적 시계 역전/동일 ts 방지)
+        if self.price_history and ts <= self.price_history[-1][0]:
+            ts = self.price_history[-1][0] + 1e-6
+        self.price_history.append((ts, float(price)))
 
     def check_price_jump(self, min_sec=0.5, max_sec=2, jump_pct=0.002):
         if len(self.price_history) < 4:
@@ -68,7 +86,7 @@ class TradeBot:
             self._apply_status(new_status)
             self.now_ma100 = self.ma100s[-1]
             self.prev = self.closes[-3]
-        print(2)
+
         # 2️⃣ 급등락 테스트
         change = self.check_price_jump(min_sec=0.5, max_sec=2, jump_pct=self.ma_threshold)
         if change:
@@ -76,7 +94,7 @@ class TradeBot:
                 logger.info(" 📈 급등 감지!")
             elif change == "DOWN":
                 logger.info(" 📉 급락 감지!")
-        print(3)
+
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
         exit_ma_threshold = 0.0001  # 청산 기준
