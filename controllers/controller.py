@@ -167,6 +167,7 @@ class BybitRestController:
         self.recv_window = "5000"
         self.positions_file = f"{symbol}_positions.json"
         self.orders_file = f"{symbol}_orders.json"
+        self.wallet_file = f"{symbol}_wallet.json"
         self.leverage = 50
         self.set_leverage(leverage = self.leverage)
         self.FEE_RATE = 0.00055  # 0.055%
@@ -276,7 +277,7 @@ class BybitRestController:
         except Exception as e:
             logger.error(f"[ERROR] 포지션 저장 실패: {e}")
 
-    def get_full_position_info(self, symbol="BTCUSDT"):
+    def set_full_position_info(self, symbol="BTCUSDT"):
         # Bybit에서 포지션 조회
         result = self.get_positions(symbol=symbol)
         new_positions = result.get("result", {}).get("list", [])
@@ -517,6 +518,9 @@ class BybitRestController:
     def get_current_position_status(self, symbol="BTCUSDT"):
         local_positions = self.load_local_positions()
         local_orders = self.load_orders()
+        balance_info = self.load_local_wallet_balance()
+        total = float(balance_info.get("coin_equity", 0.0))  # ✅ 수정됨
+        avail = float(balance_info.get("available_balance", 0.0))  # ✅
 
         results = []
         leverage = self.leverage
@@ -560,15 +564,6 @@ class BybitRestController:
                 "entries": entry_logs
             })
 
-        # 지갑 잔고 조회
-        try:
-            balance_info = self.get_wallet_balance("USDT")
-            total = float(balance_info.get("coin_equity", 0.0))  # ✅ 수정됨
-            avail = float(balance_info.get("available_balance", 0.0))  # ✅
-        except Exception as e:
-            logger.warning(f"❗ USDT 잔액 정보 조회 실패: {e}")
-            total = avail = 0.0
-
         return {
             "balance": {
                 "total": total,
@@ -578,40 +573,55 @@ class BybitRestController:
             "positions": results
         }
 
-    def get_wallet_balance(self, coin="USDT"):
+    def set_wallet_balance(self, coin="USDT", account_type="UNIFIED", save_local=True):
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
-        account_type = "UNIFIED"
-        params = f"accountType={account_type}&coin={coin}"
+        params_pairs = [("accountType", account_type), ("coin", coin)]
+        query_str = urlencode(params_pairs, doseq=True)
+        url = f"{self.base_url}{endpoint}?{query_str}"
+        headers = self._get_headers(method, endpoint, params=query_str, body="")
 
-        url = f"{self.base_url}{endpoint}?{params}"
+        try:
+            r = requests.get(url, headers=headers, timeout=5)
+            data = r.json()
+        except Exception as e:
+            logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
+            return self.load_local_wallet_balance()  # 실패 시 로컬 fallback
 
-        timestamp = str(int(time.time() * 1000))
-        sign = self._generate_signature(timestamp, method, params=params)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": sign,
-            "X-BAPI-RECV-WINDOW": self.recv_window
-        }
-
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        if data["retCode"] != 0:
-            raise Exception(f"잔고 조회 실패: {data['retMsg']}")
+        if isinstance(data, dict) and data.get("retCode") != 0:
+            logger.error(f"[ERROR] 잔고 조회 실패: {data.get('retMsg')}")
+            return self.load_local_wallet_balance()
 
         account_data = data["result"]["list"][0]
         coin_data = next((c for c in account_data["coin"] if c["coin"] == coin), {})
 
-
-
-        # 첫 번째 코인 정보 반환
-        return {
-            # 계정 요약 정보 (전체 기준)
+        result = {
             "coin_equity": float(coin_data.get("equity", 0)),
-            "available_balance": float(account_data.get("totalAvailableBalance", 0))
+            "available_balance": float(account_data.get("totalAvailableBalance", 0)),
         }
+
+        if save_local:
+            self.save_local_wallet_balance(result)
+
+        return result
+
+    def load_local_wallet_balance(self):
+        if not os.path.exists(self.wallet_file):
+            return {}
+        try:
+            with open(self.wallet_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else {}
+        except Exception as e:
+            logger.error(f"[ERROR] 로컬 지갑 파일 읽기 오류: {e}")
+            return {}
+
+    def save_local_wallet_balance(self, data):
+        try:
+            with open(self.wallet_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[ERROR] 지갑 저장 실패: {e}")
 
     def load_orders(self):
         if not os.path.exists(self.orders_file):
@@ -753,9 +763,7 @@ class BybitRestController:
 
     def make_status_log_msg(self, status, price, ma100=None, prev=None,
                             ma_threshold=None, target_cross=None, closes_num = None):
-        # ==============================
-        #  시세 및 조건 범위
-        # ==============================
+
         if ma100 is not None and prev is not None:
 
             ma_upper = ma100 * (1 + ma_threshold)

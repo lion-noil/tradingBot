@@ -6,19 +6,23 @@ from dotenv import load_dotenv
 load_dotenv()
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-from fastapi import FastAPI
+import os, requests
+import json, asyncio
+from fastapi import FastAPI, Response, HTTPException,Request  # ← Response, HTTPException 추가
+import httpx                         # ← 비동기 HTTP 클라이언트
 from core.trade_bot import TradeBot
 from controllers.controller import BybitWebSocketController, BybitRestController
 from asyncio import Queue
 from utils.logger import setup_logger
 from pydantic import BaseModel
 from typing import Literal
+
 class ManualOrderRequest(BaseModel):
     percent: float = 10  # 기본값: 10%
 class ManualCloseRequest(BaseModel):
     side: Literal["LONG", "SHORT"]
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 logger = setup_logger()
 
 app = FastAPI()
@@ -60,11 +64,28 @@ async def startup_event():
     bybit_rest_controller = BybitRestController()
     bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue)
     asyncio.create_task(bot_loop())
+
 @app.get("/status")
-async def status():
+async def status(symbol: str = "BTCUSDT", plain: bool = True):
     if bot is None:
-        return {"error": "Bot not initialized yet"}
-    return bot.get_current_position_status()
+        raise HTTPException(status_code=503, detail="Bot not initialized yet")
+    if not bot.price_history:
+        raise HTTPException(status_code=503, detail="Price history not ready")
+
+    _, latest_price = bot.price_history[-1]
+    status_text = bot.bybit_rest_controller.make_status_log_msg(
+        bot.status, latest_price, bot.now_ma100, bot.prev,
+        bot.ma_threshold, bot.target_cross, bot.closes_num
+    )
+
+    if plain:
+        return Response(content=status_text, media_type="text/plain")
+    return {
+        "symbol": symbol,
+        "latest_price": latest_price,
+        "message": status_text,
+        "position": bot.get_current_position_status(),
+    }
 
 @app.post("/long")
 async def manual_buy(request: ManualOrderRequest):
@@ -84,4 +105,4 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000 , reload=False)

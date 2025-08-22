@@ -17,6 +17,7 @@ class TradeBot:
         self.running = True
         self.closes_num = 7200
         self.closes = deque(maxlen=self.closes_num)
+        self.TAKER_FEE_RATE = 0.00055
 
         self.ma100s = None
         self.last_closes_update = 0
@@ -80,8 +81,10 @@ class TradeBot:
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
 
-            self.bybit_rest_controller.get_full_position_info(self.symbol)
+
+            self.bybit_rest_controller.set_full_position_info(self.symbol)
             self.bybit_rest_controller.sync_orders_from_bybit()
+            self.bybit_rest_controller.set_wallet_balance()
             new_status = self.bybit_rest_controller.get_current_position_status()
             self._apply_status(new_status)
             self.now_ma100 = self.ma100s[-1]
@@ -153,8 +156,7 @@ class TradeBot:
             if short_reasons:
                 short_reason_msg = (
                         "📌 숏 진입 조건 충족:\n - " +
-                        "\n - ".join(short_reasons) +
-                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / {self.closes_num} 분)"
+                        "\n - ".join(short_reasons)
                 )
 
                 logger.info(short_reason_msg)
@@ -188,8 +190,7 @@ class TradeBot:
             if long_reasons:
                 long_reason_msg = (
                         "📌 롱 진입 조건 충족:\n - " +
-                        "\n - ".join(long_reasons) +
-                        f"\n100평 ±{self.ma_threshold * 100:.3f}%, 급등 ±{momentum_threshold * 100:.3f}% (목표 크로스 {self.target_cross }회 / {self.closes_num} 분)"
+                        "\n - ".join(long_reasons)
                 )
                 logger.info(long_reason_msg)
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
@@ -221,7 +222,8 @@ class TradeBot:
 
                     if exit_reasons:
                         pos_amt = abs(float(self.pos_dict[side]["position_amt"]))
-                        logger.info(f"📤 자동 청산 사유({side}): {' / '.join(exit_reasons)}")
+                        logger.info(f"📤 자동 청산 사유({side}):"
+                                    f" {' / '.join(exit_reasons)}")
                         await self._execute_and_sync(
                             self.bybit_rest_controller.close_market,
                             self.status,
@@ -284,9 +286,10 @@ class TradeBot:
             if orderStatus == "FILLED":
                 self._log_fill(filled, prev_status=prev_status)
 
-                self.bybit_rest_controller.get_full_position_info(self.symbol)
+                self.bybit_rest_controller.set_full_position_info(self.symbol)
                 trade = self.bybit_rest_controller.get_trade_w_order_id(self.symbol,order_id)
                 self.bybit_rest_controller.append_order(trade)
+                self.bybit_rest_controller.set_wallet_balance(self.symbol)
                 now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
                 self._apply_status(now_status)
 
@@ -347,7 +350,12 @@ class TradeBot:
         else:  # SHORT_CLOSE
             profit_gross = (entry_price - avg_price) * exec_qty
 
-        profit_net = profit_gross + fee
+        notional_entry = entry_price * exec_qty
+        notional_close = avg_price * exec_qty
+        total_notional = notional_entry + notional_close
+
+        total_fee = total_notional * self.TAKER_FEE_RATE  # 양쪽 수수료 합
+        profit_net = profit_gross - total_fee
         profit_rate = (profit_gross / entry_price) * 100 if entry_price else 0.0
 
         logger.info(
@@ -360,18 +368,12 @@ class TradeBot:
             f" | 수익금(총): {profit_gross:.2f}, 수수료: {fee:.2f}\n"
             f" | 수익률: {profit_rate:.2f}%"
         )
+        _, latest_price = self.price_history[-1]
+        logger.debug(self.bybit_rest_controller.make_status_log_msg(
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold, self.target_cross, self.closes_num
+        ))
 
     def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:
-        """
-        prev_status 예:
-        {
-          'balance': {...},
-          'positions': [
-            {'position': 'LONG', 'position_amt': 0.025, 'entryPrice': 117421.7,
-             'entries': [(1755328360633, 0.025, 117393.4, '2025-08-16 16:12:40')]}
-          ]
-        }
-        """
         if not prev_status:
             return None
 

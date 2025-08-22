@@ -8,7 +8,7 @@ RENDER_WS_URL = os.getenv("RENDER_WS_URL")
 
 def get_status_text():
     # 너의 로컬 봇이 제공하는 /status?plain=true 호출
-    url = os.getenv("LOCAL_STATUS_URL", "http://127.0.0.1:8000/status?plain=true")
+    url = os.getenv("LOCAL_STATUS_URL")
     r = requests.get(url, timeout=5)
     r.raise_for_status()
     return r.text
