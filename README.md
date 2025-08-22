@@ -16,7 +16,7 @@ uvicorn app.main:app --port 8000
 # 안에 logs는 파이참 디버그로 했을때
 
 # 토큰 등록 Powershell
-$TOKEN="7651491372:AAGDnVUDcIaLxj_pRKvrLwuAAWS1euDs7CY"
+$TOKEN=""
 $WEBHOOK="https://telewebhook.onrender.com/telegram/webhook/bot1/s1"
 $SECRET="h1"
 

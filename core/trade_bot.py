@@ -21,7 +21,7 @@ class TradeBot:
 
         self.ma100s = None
         self.last_closes_update = 0
-        self.target_cross = 5
+        self.target_cross = 10
         self.ma_threshold = None
 
         # 동시 진입/중복 업데이트 방지
