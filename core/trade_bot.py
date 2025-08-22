@@ -289,7 +289,7 @@ class TradeBot:
                 self.bybit_rest_controller.set_full_position_info(self.symbol)
                 trade = self.bybit_rest_controller.get_trade_w_order_id(self.symbol,order_id)
                 self.bybit_rest_controller.append_order(trade)
-                self.bybit_rest_controller.set_wallet_balance(self.symbol)
+                self.bybit_rest_controller.set_wallet_balance()
                 now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
                 self._apply_status(now_status)
 
