@@ -169,10 +169,48 @@ async def heartbeat_task(ws: websockets.WebSocketClientProtocol, interval: int, 
     except asyncio.CancelledError:
         return
 
+async def handle_text_command(bot: Dict[str, Any], text: str) -> str:
+    """텍스트 명령을 해당 bot의 local server로 전달해보고 결과 반환"""
+    status_url = bot.get("local_status_url")  # 예: http://127.0.0.1:8000/status
+    base = status_url.rsplit("/", 1)[0] if status_url else None
+
+    if not base:
+        return "❌ 이 봇에는 local server가 연결되어 있지 않습니다."
+
+    # 명령어를 라우트 이름으로 매핑
+    txt = text.strip().lstrip("/")  # "/status" → "status"
+    route = txt.split()[0]          # "/long 20" → "long"
+
+    url = f"{base}/{route}"
+
+    try:
+        timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if route in ("long", "short"):
+                # percent 인자 처리 (없으면 기본 10)
+                parts = text.split()
+                percent = float(parts[1]) if len(parts) > 1 else 10
+                r = await client.post(url, json={"percent": percent})
+            elif route == "close":
+                parts = text.split()
+                side = parts[1].upper() if len(parts) > 1 else "LONG"
+                r = await client.post(url, json={"side": side})
+            else:
+                # GET 계열 (/status)
+                r = await client.get(url, params={"plain": "true"})
+
+            if r.status_code == 200:
+                return r.text
+            else:
+                return f"❓ 지원하지 않는 명령이거나 오류: {r.status_code}"
+
+    except Exception as e:
+        return f"❓ 처리 실패: {e}"
+
+
 
 async def run_client_once(bot: Dict[str, Any]) -> None:
     render_ws_url = bot.get("render_ws_url")
-    status_url = bot.get("local_status_url")
     caps = bot.get("caps") or DEFAULT_CAPS
     auth_token = bot.get("auth_token")  # optional Authorization header
 
@@ -210,14 +248,15 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
 
                 cmd = msg.get("command")
                 corr = msg.get("correlation_id")
+                payload = msg.get("payload") or {}
                 log("task.received", label=label, cmd=cmd, corr=corr)
                 reply_text = "unsupported"
 
-                if cmd == "STATUS_QUERY":
-                    t0 = time.perf_counter()
-                    reply_text = await http_get_status(status_url)
-                    ms = round((time.perf_counter() - t0) * 1000)
-                    log("task.status.done", label=label, corr=corr, ms=ms)
+                if cmd == "TEXT_COMMAND":
+                    # 새 버전: 서버가 넘겨준 raw text 해석
+                    text = payload.get("text", "")
+                    reply_text = await handle_text_command(bot, text)
+
 
                 if corr:
                     await ws.send(json.dumps({
