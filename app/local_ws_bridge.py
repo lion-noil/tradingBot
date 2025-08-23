@@ -36,7 +36,7 @@ async def get_status_text() -> str:
 
     try:
         # Separate connect/read timeouts for clarity (connect, read)
-        timeout = httpx.Timeout(connect=3.0, read=5.0)
+        timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(LOCAL_STATUS_URL)
             r.raise_for_status()
