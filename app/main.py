@@ -89,7 +89,7 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
         extra_line += "  • 상태      : 👀 감시 중\n"
     else:
         extra_line += "  • 상태      : 감시 아님\n"
-
+    status_text = f"{status_text}{extra_line}"
     if plain:
         return Response(content=status_text, media_type="text/plain")
     return {
