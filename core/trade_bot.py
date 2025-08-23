@@ -54,24 +54,28 @@ class TradeBot:
     def check_price_jump(self, min_sec=0.5, max_sec=2):
         jump_pct = self.ma_threshold
         if len(self.price_history) < 4:
-            return None  # 데이터 부족
+            return None, None, None  # 데이터 부족
 
         now_ts, now_price = self.price_history[-1]
-        in_window = False  # 시간 구간 내 비교를 한 번이라도 했는지
+        in_window = False
+        dts = []
 
-        # snapshot 사용(덱일 가능성 대비)
         for ts, past_price in list(self.price_history)[:-1]:
             dt = now_ts - ts
             if min_sec <= dt <= max_sec:
                 in_window = True
+                dts.append(dt)
                 if past_price == 0:
                     continue
                 change_rate = (now_price - past_price) / past_price
                 if abs(change_rate) >= jump_pct:
-                    return "UP" if change_rate > 0 else "DOWN"
+                    return ("UP" if change_rate > 0 else "DOWN",
+                            min(dts), max(dts))
 
-        # 급등/급락은 없었지만 시간 구간은 충족하여 감시 중
-        return True if in_window else None
+        if in_window:
+            return True, min(dts), max(dts)
+        else:
+            return None, None, None
 
     async def run_once(self,):
 
@@ -98,12 +102,19 @@ class TradeBot:
             self.prev = self.closes[-3]
 
         # 2️⃣ 급등락 테스트
-        change = self.check_price_jump(min_sec=0.5, max_sec=2)
-        if change:
-            if change == "UP":
-                logger.info(" 📈 급등 감지!")
-            elif change == "DOWN":
-                logger.info(" 📉 급락 감지!")
+        state, min_dt, max_dt = self.check_price_jump(min_sec=0.5, max_sec=2)
+
+        if state:
+            if state == "UP":
+                logger.info(
+                    f" 📈 급등 감지! "
+                    f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
+                )
+            elif state == "DOWN":
+                logger.info(
+                    f" 📉 급락 감지! "
+                    f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
+                )
 
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
