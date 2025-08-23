@@ -65,7 +65,7 @@ async def startup_event():
     bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue)
     asyncio.create_task(bot_loop())
 
-@app.get("/status")
+@app.get("/info")
 async def status(symbol: str = "BTCUSDT", plain: bool = True):
     if bot is None:
         raise HTTPException(status_code=503, detail="Bot not initialized yet")
@@ -99,7 +99,7 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
         "latest_price": latest_price,
         "message": status_text
     }
-
+"""
 @app.post("/long")
 async def manual_buy(request: ManualOrderRequest):
     await manual_queue.put({"command": "long", "percent": request.percent})
@@ -113,7 +113,7 @@ async def manual_sell(request: ManualOrderRequest):
 async def manual_close(request: ManualCloseRequest):
     await manual_queue.put({"command": "close", "side": request.side})
     return {"status": f"close triggered for {request.side}"}
-
+"""
 if __name__ == "__main__":
 
     import uvicorn
