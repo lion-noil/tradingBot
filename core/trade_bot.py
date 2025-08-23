@@ -30,6 +30,10 @@ class TradeBot:
 
         self.price_history = deque(maxlen=4)
 
+        # 🔴 추가: 자동매매 ON/OFF 플래그 (기본 ON)
+        self.auto_trade = True
+
+
     def record_price(self):
         ts = time.time()
         price = getattr(self.bybit_websocket_controller, "price", None)
@@ -189,6 +193,7 @@ class TradeBot:
                         )
 
                         logger.info(short_reason_msg)
+
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
                             self.status,
