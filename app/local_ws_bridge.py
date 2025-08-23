@@ -29,8 +29,8 @@ MAX_RETRY_SEC = float(os.getenv("MAX_RETRY_SEC", "30"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_HEARTBEAT = os.getenv("LOG_HEARTBEAT", "0") == "1"
 
-# Default capabilities supported by this local bridge
-DEFAULT_CAPS = ["STATUS_QUERY"]
+# Capabilities (이제는 TEXT_COMMAND만 지원)
+DEFAULT_CAPS = ["TEXT_COMMAND"]
 
 # ─────────────────────────────────────────────────────────────────────
 # Logging setup
@@ -40,11 +40,9 @@ _handler = logging.StreamHandler(sys.stdout)
 _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(_handler)
 
-
 def log(event: str, **fields):
     kv = " ".join(f"{k}={repr(v)}" for k, v in fields.items() if v is not None)
     logger.info(f"{event} {kv}")
-
 
 def _strip_quotes(v: Optional[str]) -> Optional[str]:
     if v is None:
@@ -52,10 +50,9 @@ def _strip_quotes(v: Optional[str]) -> Optional[str]:
     s = v.strip()
     if (s.startswith("'''") and s.endswith("'''")) or (s.startswith('"""') and s.endswith('"""')):
         return s[3:-3].strip()
-    if (s.startswith("'") and s.endsWith("'")) or (s.startswith('"') and s.endswith('"')):
+    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
         return s[1:-1].strip()
     return s
-
 
 def _redact_token(url: Optional[str]) -> Optional[str]:
     if not url:
@@ -70,7 +67,6 @@ def _redact_token(url: Optional[str]) -> Optional[str]:
     except Exception:
         return url
 
-
 def _host_and_id_from_url(url: Optional[str]):
     if not url:
         return None, None
@@ -83,111 +79,48 @@ def _host_and_id_from_url(url: Optional[str]):
             bot_id = parts[idx + 1]
     return p.hostname, bot_id
 
-
 def _validate_bot_dict(b: Dict[str, Any]) -> Optional[str]:
     if not isinstance(b, dict):
         return "bot entry must be an object"
     if not b.get("render_ws_url"):
         return "render_ws_url is required"
-    caps = b.get("caps") or DEFAULT_CAPS
-    if "STATUS_QUERY" in caps and not b.get("local_status_url"):
-        return "local_status_url is required when STATUS_QUERY is enabled"
     return None
 
-
 def _load_bots_config() -> List[Dict[str, Any]]:
-    """Load list of bot configs (MULTI ONLY).
-    Each item shape:
-      {
-        "name": "label for logs",                                 # optional
-        "render_ws_url": "wss://.../ws/<bot_id>?token=...",       # required
-        "local_status_url": "http://127.0.0.1:8000/status?plain=true",  # required if STATUS_QUERY
-        "caps": ["STATUS_QUERY"],                                  # optional
-        "auth_token": "..."                                       # optional; sent as Authorization: Bearer ...
-      }
-    """
-    # 1) File has highest priority
+    # 1) File 우선
     if LOCAL_BOTS_FILE and os.path.exists(LOCAL_BOTS_FILE):
-        try:
-            with open(LOCAL_BOTS_FILE, encoding="utf-8") as f:
-                arr = json.load(f)
-            if not isinstance(arr, list):
-                raise RuntimeError("LOCAL_BOTS_FILE must contain a JSON array")
-            # validate
-            errs = [(_validate_bot_dict(b), i) for i, b in enumerate(arr)]
-            bad = [(e, i) for e, i in errs if e]
-            if bad:
-                raise RuntimeError("; ".join([f"item[{i}]: {e}" for e, i in bad]))
-            log("config.multi.file", path=LOCAL_BOTS_FILE, bots=len(arr))
-            return arr
-        except Exception as e:
-            raise RuntimeError(f"Failed to load LOCAL_BOTS_FILE: {e}")
+        with open(LOCAL_BOTS_FILE, encoding="utf-8") as f:
+            arr = json.load(f)
+        if not isinstance(arr, list):
+            raise RuntimeError("LOCAL_BOTS_FILE must contain a JSON array")
+        return arr
 
-    # 2) Env JSON next
+    # 2) Env JSON
     if LOCAL_BOTS_JSON:
-        try:
-            arr = json.loads(_strip_quotes(LOCAL_BOTS_JSON) or "[]")
-            if not isinstance(arr, list):
-                raise RuntimeError("LOCAL_BOTS_JSON must be a JSON array")
-            errs = [(_validate_bot_dict(b), i) for i, b in enumerate(arr)]
-            bad = [(e, i) for e, i in errs if e]
-            if bad:
-                raise RuntimeError("; ".join([f"item[{i}]: {e}" for e, i in bad]))
-            log("config.multi.env", bots=len(arr))
-            return arr
-        except Exception as e:
-            raise RuntimeError(f"Failed to load LOCAL_BOTS_JSON: {e}")
+        arr = json.loads(_strip_quotes(LOCAL_BOTS_JSON) or "[]")
+        if not isinstance(arr, list):
+            raise RuntimeError("LOCAL_BOTS_JSON must be a JSON array")
+        return arr
 
-    # 3) Nothing configured → hard fail (single mode removed)
     raise RuntimeError("No bot config. Set LOCAL_BOTS_FILE or LOCAL_BOTS_JSON (JSON array).")
 
-
 # ─────────────────────────────────────────────────────────────────────
-async def http_get_status(status_url: Optional[str]) -> str:
-    if not status_url:
-        return "LOCAL_STATUS_URL not set for this bot"
-    try:
-        timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(status_url)
-            r.raise_for_status()
-            return r.text if r.text else json.dumps(r.json(), ensure_ascii=False)
-    except Exception as e:
-        return f"처리 오류: {e}"
-
-
-async def heartbeat_task(ws: websockets.WebSocketClientProtocol, interval: int, label: str) -> None:
-    try:
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                await ws.send(json.dumps({"type": "ping", "ts": int(time.time())}))
-                if LOG_HEARTBEAT:
-                    log("ws.ping", label=label)
-            except Exception:
-                return
-    except asyncio.CancelledError:
-        return
-
 async def handle_text_command(bot: Dict[str, Any], text: str) -> str:
-    """텍스트 명령을 해당 bot의 local server로 전달해보고 결과 반환"""
+    """텔레그램 명령어를 로컬 서버에 전달하고 결과 반환"""
     status_url = bot.get("local_status_url")  # 예: http://127.0.0.1:8000/status
     base = status_url.rsplit("/", 1)[0] if status_url else None
 
     if not base:
         return "❌ 이 봇에는 local server가 연결되어 있지 않습니다."
 
-    # 명령어를 라우트 이름으로 매핑
     txt = text.strip().lstrip("/")  # "/status" → "status"
     route = txt.split()[0]          # "/long 20" → "long"
-
     url = f"{base}/{route}"
 
     try:
         timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             if route in ("long", "short"):
-                # percent 인자 처리 (없으면 기본 10)
                 parts = text.split()
                 percent = float(parts[1]) if len(parts) > 1 else 10
                 r = await client.post(url, json={"percent": percent})
@@ -196,23 +129,18 @@ async def handle_text_command(bot: Dict[str, Any], text: str) -> str:
                 side = parts[1].upper() if len(parts) > 1 else "LONG"
                 r = await client.post(url, json={"side": side})
             else:
-                # GET 계열 (/status)
+                # 기본 GET
                 r = await client.get(url, params={"plain": "true"})
 
-            if r.status_code == 200:
-                return r.text
-            else:
-                return f"❓ 지원하지 않는 명령이거나 오류: {r.status_code}"
-
+            return r.text if r.status_code == 200 else f"❓ 명령 오류: {r.status_code}"
     except Exception as e:
         return f"❓ 처리 실패: {e}"
 
-
-
+# ─────────────────────────────────────────────────────────────────────
 async def run_client_once(bot: Dict[str, Any]) -> None:
     render_ws_url = bot.get("render_ws_url")
     caps = bot.get("caps") or DEFAULT_CAPS
-    auth_token = bot.get("auth_token")  # optional Authorization header
+    auth_token = bot.get("auth_token")
 
     host, bot_id = _host_and_id_from_url(render_ws_url)
     label = bot.get("name") or bot_id or host or "bot"
@@ -224,7 +152,7 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
 
     async with websockets.connect(
         render_ws_url,
-        ping_interval=None,  # app-level heartbeat only
+        ping_interval=None,
         close_timeout=5,
         max_size=2 * 1024 * 1024,
         extra_headers=headers or None,
@@ -240,9 +168,8 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
                 except Exception:
                     continue
 
-                mtype = msg.get("type")
-                if mtype != "task":
-                    if mtype == "ping":
+                if msg.get("type") != "task":
+                    if msg.get("type") == "ping":
                         await ws.send(json.dumps({"type": "pong", "ts": int(time.time())}))
                     continue
 
@@ -250,13 +177,10 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
                 corr = msg.get("correlation_id")
                 payload = msg.get("payload") or {}
                 log("task.received", label=label, cmd=cmd, corr=corr)
+
                 reply_text = "unsupported"
-
                 if cmd == "TEXT_COMMAND":
-                    # 새 버전: 서버가 넘겨준 raw text 해석
-                    text = payload.get("text", "")
-                    reply_text = await handle_text_command(bot, text)
-
+                    reply_text = await handle_text_command(bot, payload.get("text", ""))
 
                 if corr:
                     await ws.send(json.dumps({
@@ -265,11 +189,22 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
                         "text": reply_text,
                     }))
                     log("task.replied", label=label, corr=corr, size=len(reply_text or ""))
+
         finally:
             hb.cancel()
             with contextlib.suppress(Exception):
                 await hb
 
+# ─────────────────────────────────────────────────────────────────────
+async def heartbeat_task(ws, interval: int, label: str):
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await ws.send(json.dumps({"type": "ping", "ts": int(time.time())}))
+            if LOG_HEARTBEAT:
+                log("ws.ping", label=label)
+    except asyncio.CancelledError:
+        return
 
 async def run_bot_supervisor(bot: Dict[str, Any]) -> None:
     label = bot.get("name") or _host_and_id_from_url(bot.get("render_ws_url"))[1] or "bot"
@@ -278,19 +213,15 @@ async def run_bot_supervisor(bot: Dict[str, Any]) -> None:
         try:
             await run_client_once(bot)
             retry = RETRY_SEC
-        except (websockets.exceptions.ConnectionClosed, ConnectionError) as e:
-            log("ws.closed", label=label, reason=str(e), next_retry_sec=round(retry, 1))
         except Exception as e:
             log("ws.error", label=label, error=str(e), next_retry_sec=round(retry, 1))
         await asyncio.sleep(retry + random.uniform(0, 0.5 * retry))
         retry = min(MAX_RETRY_SEC, max(RETRY_SEC, retry * 1.6))
 
-
 async def main() -> None:
     bots = _load_bots_config()
     log("startup", bots=len(bots))
     await asyncio.gather(*(run_bot_supervisor(b) for b in bots))
-
 
 if __name__ == "__main__":
     try:
