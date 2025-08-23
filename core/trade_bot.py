@@ -87,7 +87,7 @@ class TradeBot:
             self.last_closes_update = now
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
-
+            self.momentum_threshold = self.ma_threshold / 2
 
             self.bybit_rest_controller.set_full_position_info(self.symbol)
             self.bybit_rest_controller.sync_orders_from_bybit()
@@ -108,10 +108,8 @@ class TradeBot:
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
         exit_ma_threshold = 0.0001  # 청산 기준
-        momentum_threshold = self.ma_threshold / 2
-
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross, self.closes_num
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num
         ))
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
@@ -171,7 +169,7 @@ class TradeBot:
                 else:
                     short_reasons = get_short_entry_reasons(
                         latest_price, self.now_ma100, self.prev,
-                        ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
+                        ma_threshold=self.ma_threshold, momentum_threshold=self.momentum_threshold
                     )
                     if short_reasons:
                         short_reason_msg = (
@@ -208,7 +206,7 @@ class TradeBot:
                 else:
                     long_reasons = get_long_entry_reasons(
                         latest_price, self.now_ma100, self.prev,
-                        ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
+                        ma_threshold=self.ma_threshold, momentum_threshold=self.momentum_threshold
                     )
 
                     if long_reasons:
@@ -393,8 +391,8 @@ class TradeBot:
             f" | 수익률: {profit_rate:.2f}%"
         )
         _, latest_price = self.price_history[-1]
-        logger.debug(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold, self.target_cross, self.closes_num
+        logger.info(self.bybit_rest_controller.make_status_log_msg(
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num
         ))
 
     def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:
