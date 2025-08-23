@@ -16,13 +16,9 @@ from dotenv import load_dotenv  # pip install python-dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────
-# ENV (Single-mode fallback)
-RENDER_WS_URL: Optional[str] = os.getenv("RENDER_WS_URL")
-LOCAL_STATUS_URL: Optional[str] = os.getenv("LOCAL_STATUS_URL")
-
-# Multi-bot config (preferred)
-LOCAL_BOTS_JSON: Optional[str] = os.getenv("LOCAL_BOTS_JSON")  # JSON array
-LOCAL_BOTS_FILE: Optional[str] = os.getenv("LOCAL_BOTS_FILE")  # path to json
+# ENV (MULTI-ONLY — single mode removed)
+LOCAL_BOTS_JSON: Optional[str] = os.getenv("LOCAL_BOTS_JSON")  # JSON array (quoted in .env)
+LOCAL_BOTS_FILE: Optional[str] = os.getenv("LOCAL_BOTS_FILE")  # path to a JSON file
 
 # Heartbeat & reconnect
 HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "15"))
@@ -33,7 +29,7 @@ MAX_RETRY_SEC = float(os.getenv("MAX_RETRY_SEC", "30"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_HEARTBEAT = os.getenv("LOG_HEARTBEAT", "0") == "1"
 
-# Default capabilities this local bridge supports
+# Default capabilities supported by this local bridge
 DEFAULT_CAPS = ["STATUS_QUERY"]
 
 # ─────────────────────────────────────────────────────────────────────
@@ -56,7 +52,7 @@ def _strip_quotes(v: Optional[str]) -> Optional[str]:
     s = v.strip()
     if (s.startswith("'''") and s.endswith("'''")) or (s.startswith('"""') and s.endswith('"""')):
         return s[3:-3].strip()
-    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+    if (s.startswith("'") and s.endsWith("'")) or (s.startswith('"') and s.endswith('"')):
         return s[1:-1].strip()
     return s
 
@@ -75,7 +71,7 @@ def _redact_token(url: Optional[str]) -> Optional[str]:
         return url
 
 
-def _host_and_id_from_url(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def _host_and_id_from_url(url: Optional[str]):
     if not url:
         return None, None
     p = urlparse(url)
@@ -88,49 +84,68 @@ def _host_and_id_from_url(url: Optional[str]) -> tuple[Optional[str], Optional[s
     return p.hostname, bot_id
 
 
+def _validate_bot_dict(b: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(b, dict):
+        return "bot entry must be an object"
+    if not b.get("render_ws_url"):
+        return "render_ws_url is required"
+    caps = b.get("caps") or DEFAULT_CAPS
+    if "STATUS_QUERY" in caps and not b.get("local_status_url"):
+        return "local_status_url is required when STATUS_QUERY is enabled"
+    return None
+
+
 def _load_bots_config() -> List[Dict[str, Any]]:
-    """Load list of bot configs.
+    """Load list of bot configs (MULTI ONLY).
     Each item shape:
       {
-        "render_ws_url": "wss://.../ws/<bot_id>?token=...",   # required
-        "local_status_url": "http://127.0.0.1:8000/status?plain=true",  # optional
-        "caps": ["STATUS_QUERY"],                              # optional
-        "auth_token": "...",                                  # optional; will be sent as Authorization: Bearer ...
-        "name": "optional label for logs"                      # optional
+        "name": "label for logs",                                 # optional
+        "render_ws_url": "wss://.../ws/<bot_id>?token=...",       # required
+        "local_status_url": "http://127.0.0.1:8000/status?plain=true",  # required if STATUS_QUERY
+        "caps": ["STATUS_QUERY"],                                  # optional
+        "auth_token": "..."                                       # optional; sent as Authorization: Bearer ...
       }
-    Falls back to single-mode from RENDER_WS_URL/LOCAL_STATUS_URL if JSON/file not provided.
     """
     # 1) File has highest priority
     if LOCAL_BOTS_FILE and os.path.exists(LOCAL_BOTS_FILE):
-        with open(LOCAL_BOTS_FILE, encoding="utf-8") as f:
-            arr = json.load(f)
-            return arr if isinstance(arr, list) else []
+        try:
+            with open(LOCAL_BOTS_FILE, encoding="utf-8") as f:
+                arr = json.load(f)
+            if not isinstance(arr, list):
+                raise RuntimeError("LOCAL_BOTS_FILE must contain a JSON array")
+            # validate
+            errs = [(_validate_bot_dict(b), i) for i, b in enumerate(arr)]
+            bad = [(e, i) for e, i in errs if e]
+            if bad:
+                raise RuntimeError("; ".join([f"item[{i}]: {e}" for e, i in bad]))
+            log("config.multi.file", path=LOCAL_BOTS_FILE, bots=len(arr))
+            return arr
+        except Exception as e:
+            raise RuntimeError(f"Failed to load LOCAL_BOTS_FILE: {e}")
 
     # 2) Env JSON next
     if LOCAL_BOTS_JSON:
         try:
             arr = json.loads(_strip_quotes(LOCAL_BOTS_JSON) or "[]")
-            if isinstance(arr, list):
-                return arr
+            if not isinstance(arr, list):
+                raise RuntimeError("LOCAL_BOTS_JSON must be a JSON array")
+            errs = [(_validate_bot_dict(b), i) for i, b in enumerate(arr)]
+            bad = [(e, i) for e, i in errs if e]
+            if bad:
+                raise RuntimeError("; ".join([f"item[{i}]: {e}" for e, i in bad]))
+            log("config.multi.env", bots=len(arr))
+            return arr
         except Exception as e:
-            logger.error(f"LOCAL_BOTS_JSON parse error: {e}")
+            raise RuntimeError(f"Failed to load LOCAL_BOTS_JSON: {e}")
 
-    # 3) Fallback to single-mode
-    if RENDER_WS_URL:
-        return [{
-            "render_ws_url": RENDER_WS_URL,
-            "local_status_url": LOCAL_STATUS_URL,
-            "caps": DEFAULT_CAPS,
-        }]
-
-    # 4) Nothing configured
-    return []
+    # 3) Nothing configured → hard fail (single mode removed)
+    raise RuntimeError("No bot config. Set LOCAL_BOTS_FILE or LOCAL_BOTS_JSON (JSON array).")
 
 
 # ─────────────────────────────────────────────────────────────────────
 async def http_get_status(status_url: Optional[str]) -> str:
     if not status_url:
-        return "LOCAL_STATUS_URL env not set"
+        return "LOCAL_STATUS_URL not set for this bot"
     try:
         timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -160,11 +175,6 @@ async def run_client_once(bot: Dict[str, Any]) -> None:
     status_url = bot.get("local_status_url")
     caps = bot.get("caps") or DEFAULT_CAPS
     auth_token = bot.get("auth_token")  # optional Authorization header
-
-    if not render_ws_url:
-        log("ws.no_url", label=bot.get("name"))
-        await asyncio.sleep(5)
-        return
 
     host, bot_id = _host_and_id_from_url(render_ws_url)
     label = bot.get("name") or bot_id or host or "bot"
@@ -239,9 +249,6 @@ async def run_bot_supervisor(bot: Dict[str, Any]) -> None:
 
 async def main() -> None:
     bots = _load_bots_config()
-    if not bots:
-        logger.error("No bot config found. Set LOCAL_BOTS_JSON/LOCAL_BOTS_FILE or RENDER_WS_URL.")
-        return
     log("startup", bots=len(bots))
     await asyncio.gather(*(run_bot_supervisor(b) for b in bots))
 
