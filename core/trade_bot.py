@@ -165,10 +165,10 @@ class TradeBot:
         if time.monotonic() >= self._just_traded_until:
             ## short 진입 조건
             recent_short_time = self.position_time.get("SHORT")
-            blocked = self._cooldown_blocked(recent_short_time)
-            if blocked:
-                pass # 30분 이내 재진입금지
-            else:
+            blocked, *_ = self._cooldown_blocked(recent_short_time) if recent_short_time else (False,)
+            allow_entry = not blocked
+
+            if allow_entry:
                 short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
                 short_position_value = short_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
@@ -199,13 +199,11 @@ class TradeBot:
                             self.balance
                         )
 
-
             ## long 진입 조건
             recent_long_time = self.position_time.get("LONG")
-            blocked = self._cooldown_blocked(recent_long_time)
-            if blocked:
-                pass # 30분 이내 재진입금지
-            else:
+            blocked, *_ = self._cooldown_blocked(recent_long_time) if recent_long_time else (False,)
+            allow_entry = not blocked
+            if allow_entry:
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
                 long_position_value = long_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
