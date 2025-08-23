@@ -98,7 +98,7 @@ class TradeBot:
             self.prev = self.closes[-3]
 
         # 2️⃣ 급등락 테스트
-        change = self.check_price_jump(min_sec=0.5, max_sec=2, jump_pct=self.ma_threshold)
+        change = self.check_price_jump(min_sec=0.5, max_sec=2)
         if change:
             if change == "UP":
                 logger.info(" 📈 급등 감지!")
