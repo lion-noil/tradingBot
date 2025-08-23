@@ -77,14 +77,25 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
         bot.status, latest_price, bot.now_ma100, bot.prev,
         bot.ma_threshold, bot.target_cross, bot.closes_num
     )
+    min_sec = 0.5
+    max_sec = 2
+    jump_state = bot.check_price_jump(min_sec, max_sec)
+    # 기본 메시지: 감시 구간
+    extra_line = (
+        f"\n⏱️ 감시 구간(±{bot.ma_threshold * 100:.3f}%)\n"
+        f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
+    )
+    if jump_state is True:
+        extra_line += "  • 상태      : 👀 감시 중\n"
+    else:
+        extra_line += "  • 상태      : 감시 아님\n"
 
     if plain:
         return Response(content=status_text, media_type="text/plain")
     return {
         "symbol": symbol,
         "latest_price": latest_price,
-        "message": status_text,
-        "position": bot.get_current_position_status(),
+        "message": status_text
     }
 
 @app.post("/long")

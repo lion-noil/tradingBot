@@ -51,20 +51,27 @@ class TradeBot:
             ts = self.price_history[-1][0] + 1e-6
         self.price_history.append((ts, float(price)))
 
-    def check_price_jump(self, min_sec=0.5, max_sec=2, jump_pct=0.002):
+    def check_price_jump(self, min_sec=0.5, max_sec=2):
+        jump_pct = self.ma_threshold
         if len(self.price_history) < 4:
             return None  # 데이터 부족
 
         now_ts, now_price = self.price_history[-1]
+        in_window = False  # 시간 구간 내 비교를 한 번이라도 했는지
+
+        # snapshot 사용(덱일 가능성 대비)
         for ts, past_price in list(self.price_history)[:-1]:
-            if min_sec <= now_ts - ts <= max_sec:  # 시간 조건 만족
+            dt = now_ts - ts
+            if min_sec <= dt <= max_sec:
+                in_window = True
+                if past_price == 0:
+                    continue
                 change_rate = (now_price - past_price) / past_price
                 if abs(change_rate) >= jump_pct:
-                    if change_rate > 0:
-                        return "UP"  # 급등
-                    else:
-                        return "DOWN"  # 급락
-        return None  # 변화 없음
+                    return "UP" if change_rate > 0 else "DOWN"
+
+        # 급등/급락은 없었지만 시간 구간은 충족하여 감시 중
+        return True if in_window else None
 
     async def run_once(self,):
 
@@ -101,7 +108,7 @@ class TradeBot:
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
         exit_ma_threshold = 0.0001  # 청산 기준
-        momentum_threshold = self.ma_threshold / 3
+        momentum_threshold = self.ma_threshold / 2
 
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
             self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.target_cross, self.closes_num
@@ -149,67 +156,77 @@ class TradeBot:
         if time.monotonic() >= self._just_traded_until:
             ## short 진입 조건
             recent_short_time = self.position_time.get("SHORT")
-            short_reasons = get_short_entry_reasons(
-                latest_price, self.now_ma100, self.prev, recent_short_time,
-                ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
-            )
-            if short_reasons:
-                short_reason_msg = (
-                        "📌 숏 진입 조건 충족:\n - " +
-                        "\n - ".join(short_reasons)
-                )
-
-                logger.info(short_reason_msg)
-                # 포지션 비중 제한 검사 (40% 이상이면 실행 막기)
+            blocked = self._cooldown_blocked(recent_short_time)
+            if blocked:
+                pass # 30분 이내 재진입금지
+            else:
                 short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
                 short_position_value = short_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
                 position_ratio = (short_position_value / total_balance) if total_balance else 0
 
                 if position_ratio >= leverage_limit:
-                    logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+                    pass
+                    # logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
-                    await self._execute_and_sync(
-                        self.bybit_rest_controller.open_market,
-                        self.status,
-                        self.symbol,
-                        "short",  # "long" or "short"
-                        latest_price,
-                        percent,
-                        self.balance
+                    short_reasons = get_short_entry_reasons(
+                        latest_price, self.now_ma100, self.prev,
+                        ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
                     )
+                    if short_reasons:
+                        short_reason_msg = (
+                                "📌 숏 진입 조건 충족:\n - " +
+                                "\n - ".join(short_reasons)
+                        )
+
+                        logger.info(short_reason_msg)
+                        await self._execute_and_sync(
+                            self.bybit_rest_controller.open_market,
+                            self.status,
+                            self.symbol,
+                            "short",  # "long" or "short"
+                            latest_price,
+                            percent,
+                            self.balance
+                        )
 
 
             ## long 진입 조건
             recent_long_time = self.position_time.get("LONG")
-            long_reasons = get_long_entry_reasons(
-                latest_price, self.now_ma100, self.prev, recent_long_time,
-                ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
-            )
-
-            if long_reasons:
-                long_reason_msg = (
-                        "📌 롱 진입 조건 충족:\n - " +
-                        "\n - ".join(long_reasons)
-                )
-                logger.info(long_reason_msg)
+            blocked = self._cooldown_blocked(recent_long_time)
+            if blocked:
+                pass # 30분 이내 재진입금지
+            else:
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
                 long_position_value = long_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
                 position_ratio = (long_position_value / total_balance) if total_balance else 0
 
                 if position_ratio >= leverage_limit:
-                    logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+                    pass
+                    # logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
-                    await self._execute_and_sync(
-                        self.bybit_rest_controller.open_market,
-                        self.status,
-                        self.symbol,
-                        "long",  # "long" or "short"
-                        latest_price,
-                        percent,
-                        self.balance
+                    long_reasons = get_long_entry_reasons(
+                        latest_price, self.now_ma100, self.prev,
+                        ma_threshold=self.ma_threshold, momentum_threshold=momentum_threshold
                     )
+
+                    if long_reasons:
+                        long_reason_msg = (
+                                "📌 롱 진입 조건 충족:\n - " +
+                                "\n - ".join(long_reasons)
+                        )
+                        logger.info(long_reason_msg)
+
+                        await self._execute_and_sync(
+                            self.bybit_rest_controller.open_market,
+                            self.status,
+                            self.symbol,
+                            "long",  # "long" or "short"
+                            latest_price,
+                            percent,
+                            self.balance
+                        )
 
 
             ## 청산조건
@@ -232,6 +249,13 @@ class TradeBot:
                             qty=pos_amt
                         )
 
+    def _cooldown_blocked(self, recent_ts, cooldown_secs=1800):
+        if not recent_ts:
+            return False, 0, 0
+        now_ts = int(time.time() * 1000)
+        seconds_since_entry = (now_ts - recent_ts) / 1000
+
+        return seconds_since_entry < cooldown_secs
 
     def _apply_status(self, status):
         """로컬 상태 일괄 갱신(중복 코드 제거)"""

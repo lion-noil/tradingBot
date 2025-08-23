@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import time
 from typing import Optional
 
-def get_long_entry_reasons(price, ma100, prev, recent_entry_time,
+def get_long_entry_reasons(price, ma100, prev,
                            ma_threshold=0.002, momentum_threshold=0.001):
     reasons = []
 
@@ -13,19 +13,12 @@ def get_long_entry_reasons(price, ma100, prev, recent_entry_time,
     if (prev - price) / prev > momentum_threshold:
         reasons.append(f"3분 전 대비 {momentum_threshold*100:.2f}% 이상 급락")
 
-    # 2. 시간 조건: 최근 진입 30분 이내면 진입 제한
-    if recent_entry_time:
-        now_ts = int(time.time() * 1000)
-        seconds_since_entry = (now_ts - recent_entry_time) / 1000
-        if seconds_since_entry < 1800:
-            reasons.append(f"최근 롱 진입 {int(seconds_since_entry)}초 전 → 추매 제한")
-            return []
 
     # 3. 기술적 조건이 2개 모두 충족된 경우만 진입
     if len(reasons) == 2:
         return reasons
     return []
-def get_short_entry_reasons(price, ma100, prev, recent_entry_time,
+def get_short_entry_reasons(price, ma100, prev,
                             ma_threshold=0.002, momentum_threshold=0.001):
     reasons = []
 
@@ -35,13 +28,6 @@ def get_short_entry_reasons(price, ma100, prev, recent_entry_time,
     if (price - prev) / prev > momentum_threshold:
         reasons.append(f"3분 전 대비 {momentum_threshold*100:.2f}% 이상 급등")
 
-    # 2. 시간 조건: 최근 진입 30분 이내면 진입 제한
-    if recent_entry_time:
-        now_ts = int(time.time() * 1000)
-        seconds_since_entry = (now_ts - recent_entry_time) / 1000
-        if seconds_since_entry < 1800:
-            reasons.append(f"최근 숏 진입 {int(seconds_since_entry)}초 전 → 추매 제한")
-            return []
 
     # 3. 기술적 조건이 2개 모두 충족된 경우만 진입
     if len(reasons) == 2:
