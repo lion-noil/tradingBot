@@ -122,7 +122,7 @@ class TradeBot:
 
         percent = 10  # 총자산의 진입비율
         leverage_limit = 20
-        exit_ma_threshold = 0.0001  # 청산 기준
+        exit_ma_threshold = 0.0005  # 청산 기준
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
             self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num
         ))

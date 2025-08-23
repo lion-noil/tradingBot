@@ -39,7 +39,7 @@ def get_exit_reasons(
     price: float,
     ma100: float,
     recent_entry_time: Optional[int] = None,
-    ma_threshold: float = 0.0002,   # 예: 0.0002 → 0.02% (원래 코드와 동일 기본값)
+    ma_threshold: float = 0.0005,   # 예: 0.0005 → 0.05% (원래 코드와 동일 기본값)
     time_limit_sec: int = 7200      # 기본 2시간
 ) -> list[str]:
     # 1. 기술적 조건 (입력 % 기준)
