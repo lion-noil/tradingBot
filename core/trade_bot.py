@@ -104,6 +104,7 @@ class TradeBot:
             self._apply_status(new_status)
             self.now_ma100 = self.ma100s[-1]
             self.prev = self.closes[-3]
+            self.exit_ma_threshold = 0.0005  # 청산 기준
 
         # 2️⃣ 급등락 테스트
         state, min_dt, max_dt = self.check_price_jump(min_sec=0.5, max_sec=2)
@@ -121,10 +122,10 @@ class TradeBot:
                 )
 
         percent = 10  # 총자산의 진입비율
-        leverage_limit = 20
-        exit_ma_threshold = 0.0005  # 청산 기준
+        leverage_limit = 30
+
         logger.debug(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num,self.exit_ma_threshold
         ))
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
@@ -246,7 +247,7 @@ class TradeBot:
                 recent_time = self.position_time.get(side)
                 if recent_time:
                     exit_reasons = get_exit_reasons(
-                        side, latest_price, self.now_ma100, recent_time, ma_threshold=exit_ma_threshold
+                        side, latest_price, self.now_ma100, recent_time, ma_threshold=self.exit_ma_threshold
                     )
 
                     if exit_reasons:
@@ -406,7 +407,7 @@ class TradeBot:
         )
         _, latest_price = self.price_history[-1]
         logger.info(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num
+            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num,self.exit_ma_threshold
         ))
 
     def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:

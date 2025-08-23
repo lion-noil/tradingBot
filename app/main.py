@@ -74,7 +74,7 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
     _, latest_price = bot.price_history[-1]
     status_text = bot.bybit_rest_controller.make_status_log_msg(
         bot.status, latest_price, bot.now_ma100, bot.prev,
-        bot.ma_threshold,bot.momentum_threshold, bot.target_cross, bot.closes_num
+        bot.ma_threshold,bot.momentum_threshold, bot.target_cross, bot.closes_num,bot.exit_ma_threshold
     )
     min_sec = 0.5
     max_sec = 2

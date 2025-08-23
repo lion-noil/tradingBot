@@ -762,7 +762,7 @@ class BybitRestController:
         return False
 
     def make_status_log_msg(self, status, price, ma100=None, prev=None,
-                            ma_threshold=None, momentum_threshold=None, target_cross=None, closes_num = None):
+                            ma_threshold=None, momentum_threshold=None, target_cross=None, closes_num = None,exit_ma_threshold=None):
 
         if ma100 is not None and prev is not None:
 
@@ -781,6 +781,7 @@ class BybitRestController:
                 f"  • 진입목표(롱/숏) : {ma_lower:,.2f} / {ma_upper:,.2f} "
                 f"(±{ma_threshold * 100:.3f}%)\n"
                 f"  • 급등락 목표(3분) : {momentum_threshold * 100:.3f}%\n"
+                f"  • 청산기준 : {exit_ma_threshold * 100:.3f}%\n"
                 f"  • 목표 크로스: {target_cross}회 / {closes_num} 분)\n"
             )
         else:
