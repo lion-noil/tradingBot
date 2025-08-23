@@ -776,7 +776,7 @@ class BybitRestController:
             log_msg = (
                 f"\n💹 시세 정보\n"
                 f"  • 현재가      : {price:,.1f} "
-                f"(MA대비 {ma_diff_pct:+.3f}%)\n"
+                f"(MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
                 f"  • MA100       : {ma100:,.1f}\n"
                 f"  • 진입목표(롱/숏) : {ma_lower:,.2f} / {ma_upper:,.2f} "
                 f"(±{ma_threshold * 100:.3f}%)\n"

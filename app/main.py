@@ -6,10 +6,9 @@ from dotenv import load_dotenv
 load_dotenv()
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-import os, requests
-import json, asyncio
+import os
+import asyncio
 from fastapi import FastAPI, Response, HTTPException,Request  # ← Response, HTTPException 추가
-import httpx                         # ← 비동기 HTTP 클라이언트
 from core.trade_bot import TradeBot
 from controllers.controller import BybitWebSocketController, BybitRestController
 from asyncio import Queue
