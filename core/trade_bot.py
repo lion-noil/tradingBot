@@ -170,7 +170,7 @@ class TradeBot:
         if time.monotonic() >= self._just_traded_until:
             ## short 진입 조건
             recent_short_time = self.position_time.get("SHORT")
-            blocked, *_ = self._cooldown_blocked(recent_short_time) if recent_short_time else (False,)
+            blocked = self._cooldown_blocked(recent_short_time) if recent_short_time else False
             allow_entry = not blocked
 
             if allow_entry:
@@ -207,7 +207,7 @@ class TradeBot:
 
             ## long 진입 조건
             recent_long_time = self.position_time.get("LONG")
-            blocked, *_ = self._cooldown_blocked(recent_long_time) if recent_long_time else (False,)
+            blocked = self._cooldown_blocked(recent_long_time) if recent_long_time else False
             allow_entry = not blocked
             if allow_entry:
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
