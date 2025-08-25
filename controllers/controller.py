@@ -795,8 +795,8 @@ class BybitRestController:
         available = balance.get("available", 0.0)
         available_pct = (available / total * 100) if total else 0
         log_msg += (
-            f"\n  💰 자산: 총 {total:.2f} USDT\n"
-            f"    사용 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)\n"
+            f"\n💰 자산: 총 {total:.2f} USDT\n"
+            f"    진입 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)\n"
         )
 
         if status_list:
@@ -823,19 +823,13 @@ class BybitRestController:
 
                 net_profit = gross_profit - fee_total
 
-                log_msg += f"  📈 포지션: {side} ({pos_amt})\n"
-                log_msg += f"    평균가: {entry_price:.3f} | 현재가: {price:.3f}\n"
-                log_msg += f"    수익률: {profit_rate:.3f}%\n"
-                log_msg += f"    수익금: {net_profit:+.3f} USDT (total fee 약 {fee_total:.3f} USDT)\n"
-
+                log_msg += f"  - 포지션: {side} ({pos_amt}, {entry_price:.1f}, {profit_rate:+.3f}%, {net_profit:+.1f})\n"
                 if position["entries"]:
                     for i, (timestamp, qty, entryPrice,t_str) in enumerate(position["entries"], start=1):
                         signed_qty = -qty if position["position"] == "SHORT" else qty
-                        log_msg += f"        └ 진입시간 #{i}: {t_str} ({signed_qty:.3f} BTC), 진입가 : {entryPrice:.2f} \n"
-                else:
-                    log_msg += f"        └ 진입시간: 없음\n"
+                        log_msg += f"     └#{i} {signed_qty:+.3f} : {t_str}, {entryPrice:.1f} \n"
         else:
-            log_msg += "  📉 포지션 없음\n"
+            log_msg += "  - 포지션 없음\n"
         return log_msg.rstrip()
 
     def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1):

@@ -28,7 +28,10 @@ class TradeBot:
         self._sync_lock = asyncio.Lock()
         self._just_traded_until = 0.0  # 직후 틱 자동진입/중복 실행 방지 쿨다운
 
-        self.price_history = deque(maxlen=4)
+        self.history_num = 10
+        self.polling_interval = 0.5
+
+        self.price_history = deque(maxlen=self.history_num)
 
         # 🔴 추가: 자동매매 ON/OFF 플래그 (기본 ON)
         self.auto_trade = True
@@ -55,9 +58,12 @@ class TradeBot:
             ts = self.price_history[-1][0] + 1e-6
         self.price_history.append((ts, float(price)))
 
-    def check_price_jump(self, min_sec=0.5, max_sec=2):
+    def check_price_jump(self,):
+        min_sec = self.polling_interval
+        max_sec = self.polling_interval * self.history_num
+
         jump_pct = self.ma_threshold
-        if len(self.price_history) < 4:
+        if len(self.price_history) < self.history_num:
             return None, None, None  # 데이터 부족
 
         now_ts, now_price = self.price_history[-1]
@@ -107,7 +113,7 @@ class TradeBot:
             self.exit_ma_threshold = 0.0005  # 청산 기준
 
         # 2️⃣ 급등락 테스트
-        state, min_dt, max_dt = self.check_price_jump(min_sec=0.5, max_sec=2)
+        state, min_dt, max_dt = self.check_price_jump()
 
         if state:
             if state == "UP":
@@ -330,6 +336,12 @@ class TradeBot:
                 now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
                 self._apply_status(now_status)
 
+                _, latest_price = self.price_history[-1]
+                logger.info(self.bybit_rest_controller.make_status_log_msg(
+                    self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold, self.momentum_threshold,
+                    self.target_cross, self.closes_num, self.exit_ma_threshold
+                ))
+
             elif orderStatus in ("CANCELLED", "REJECTED"):
                 logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
                 # 이미 취소/거절 상태 → 추가 취소 API 호출 불필요
@@ -404,10 +416,6 @@ class TradeBot:
             f" | 수익금(총): {profit_gross:.2f}, 총 수수료: {total_fee:.2f}\n"
             f" | 수익률: {profit_rate:.2f}%"
         )
-        _, latest_price = self.price_history[-1]
-        logger.info(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num,self.exit_ma_threshold
-        ))
 
     def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:
         if not prev_status:
