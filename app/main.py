@@ -71,31 +71,11 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
     if not bot.price_history:
         raise HTTPException(status_code=503, detail="Price history not ready")
 
-    _, latest_price = bot.price_history[-1]
-    status_text = bot.bybit_rest_controller.make_status_log_msg(
-        bot.status, latest_price, bot.now_ma100, bot.prev,
-        bot.ma_threshold,bot.momentum_threshold, bot.target_cross, bot.closes_num,bot.exit_ma_threshold
-    )
-    min_sec = bot.polling_interval
-    max_sec = bot.polling_interval * (bot.history_num+1)
-    jump_state, min_dt, max_dt = bot.check_price_jump()
-
-    extra_line = (
-        f"⏱️ 감시 구간(±{bot.ma_threshold * 100:.3f}%)\n"
-        f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
-    )
-    if jump_state is True:
-        extra_line += f"  • 상태      : 👀 감시 중\n"
-    if min_dt is not None and max_dt is not None:
-        extra_line += f"  • 데이터간격 : 최소 {min_dt:.3f}s / 최대 {max_dt:.3f}s\n\n"
-
-
-    status_text = f"{extra_line}{status_text}"
+    status_text = bot.make_status_log_msg()
     if plain:
         return Response(content=status_text, media_type="text/plain")
     return {
         "symbol": symbol,
-        "latest_price": latest_price,
         "message": status_text
     }
 """

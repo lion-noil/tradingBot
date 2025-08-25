@@ -23,6 +23,7 @@ class TradeBot:
         self.last_closes_update = 0
         self.target_cross = 10
         self.ma_threshold = None
+        self.leverage = 50
 
         # 동시 진입/중복 업데이트 방지
         self._sync_lock = asyncio.Lock()
@@ -130,9 +131,7 @@ class TradeBot:
         percent = 10  # 총자산의 진입비율
         leverage_limit = 30
 
-        logger.debug(self.bybit_rest_controller.make_status_log_msg(
-            self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold,self.momentum_threshold, self.target_cross, self.closes_num,self.exit_ma_threshold
-        ))
+        logger.debug(self.make_status_log_msg())
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
             command_data = await self.manual_queue.get()
@@ -335,12 +334,7 @@ class TradeBot:
                 self.bybit_rest_controller.set_wallet_balance()
                 now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
                 self._apply_status(now_status)
-
-                _, latest_price = self.price_history[-1]
-                logger.info(self.bybit_rest_controller.make_status_log_msg(
-                    self.status, latest_price, self.now_ma100, self.prev, self.ma_threshold, self.momentum_threshold,
-                    self.target_cross, self.closes_num, self.exit_ma_threshold
-                ))
+                logger.info(self._format_asset_section())
 
             elif orderStatus in ("CANCELLED", "REJECTED"):
                 logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
@@ -360,6 +354,109 @@ class TradeBot:
             # 같은 루프에서 자동 조건이 바로 또 트리거되지 않도록 짧은 쿨다운
             self._just_traded_until = time.monotonic() + 0.8
             return result
+
+    def make_status_log_msg(self):
+        parts = []
+        parts.append(self._format_watch_section())
+        parts.append(self._format_market_section())
+        parts.append(self._format_asset_section())
+        return "".join(parts).rstrip()
+
+    # ⏱️ 감시 구간
+    def _format_watch_section(self):
+        min_sec = self.polling_interval
+        max_sec = self.polling_interval * self.history_num
+        jump_state, min_dt, max_dt = self.check_price_jump()
+
+        log_msg = (
+            f"\n⏱️ 감시 구간(±{self.ma_threshold * 100:.3f}%)\n"
+            f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
+        )
+        if jump_state is True:
+            log_msg += "  • 상태      : 👀 감시 중\n"
+        if min_dt is not None and max_dt is not None:
+            log_msg += f"  • 데이터간격 : 최소 {min_dt:.3f}s / 최대 {max_dt:.3f}s\n"
+        return log_msg
+
+    # 💹 시세 정보
+    def _format_market_section(self):
+        price = self.price_history[-1][1] if getattr(self, "price_history", None) else None
+        ma100 = getattr(self, "now_ma100", None)
+        prev = getattr(self, "prev", None)  # 3분 전 가격
+
+        if price is None or ma100 is None or prev is None:
+            return ""
+
+        ma_upper = ma100 * (1 + self.ma_threshold)
+        ma_lower = ma100 * (1 - self.ma_threshold)
+
+        ma_diff_pct = ((price - ma100) / ma100) * 100  # MA100 대비 %
+        chg_3m_pct = ((price - prev) / prev * 100) if (prev and prev > 0) else None  # 3분전 대비 %
+        chg_3m_str = f"{chg_3m_pct:+.3f}%" if chg_3m_pct is not None else "N/A"
+
+        return (
+            f"\n💹 시세 정보\n"
+            f"  • 현재가      : {price:,.1f} "
+            f"(MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
+            f"  • MA100       : {ma100:,.1f}\n"
+            f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} "
+            f"(👉[±{self.ma_threshold * 100:.3f}%]👈)\n"
+            f"  • 급등락목표 : {self.momentum_threshold * 100:.3f}%( 3분전대비 👉[{chg_3m_str}]👈)\n"
+            f"  • 청산기준 : {self.exit_ma_threshold * 100:.3f}%\n"
+            f"  • 목표 크로스: {self.target_cross}회 / {self.closes_num} 분)\n"
+        )
+
+    # 💰 자산 정보
+    def _format_asset_section(self):
+        status = getattr(self, "status", {}) or {}
+        status_list = status.get("positions", [])
+        balance = status.get("balance", {})
+
+        total = balance.get("total", 0.0)
+        available = balance.get("available", 0.0)
+        available_pct = (available / total * 100) if total else 0
+
+        # 현재가
+        price = self.price_history[-1][1] if getattr(self, "price_history", None) else None
+
+        log_msg = (
+            f"\n💰 자산정보(총 {total:.2f} USDT)\n"
+            f"    진입 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)\n"
+        )
+
+        if status_list and price is not None:
+            for position in status_list:
+                pos_amt = float(position["position_amt"])
+                entry_price = float(position["entryPrice"])
+                side = position["position"]
+
+                # 현재가 기준 수익률 / 수익금
+                if pos_amt != 0:
+                    if side == "LONG":
+                        profit_rate = ((price - entry_price) / entry_price) * 100
+                        gross_profit = (price - entry_price) * pos_amt
+                    else:  # SHORT
+                        profit_rate = ((entry_price - price) / entry_price) * 100
+                        gross_profit = (entry_price - price) * abs(pos_amt)
+                else:
+                    profit_rate = 0.0
+                    gross_profit = 0.0
+
+                # 수수료 (진입 + 청산 2회)
+                position_value = abs(pos_amt) * entry_price
+                fee_total = position_value * self.TAKER_FEE_RATE * 2
+                net_profit = gross_profit - fee_total
+
+                log_msg += f"  - 포지션: {side} ({pos_amt}, {entry_price:.1f}, {profit_rate:+.3f}%, {net_profit:+.1f})\n"
+
+                if position.get("entries"):
+                    for i, (timestamp, qty, entryPrice, t_str) in enumerate(position["entries"], start=1):
+                        signed_qty = -qty if side == "SHORT" else qty
+                        log_msg += f"     └#{i} {signed_qty:+.3f} : {t_str}, {entryPrice:.1f} \n"
+        else:
+            log_msg += "  - 포지션 없음\n"
+
+        return log_msg
 
     def _classify_intent(self, filled: dict) -> str:
         side = (filled.get("side") or "").upper()  # BUY/SELL
