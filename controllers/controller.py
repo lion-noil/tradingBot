@@ -771,7 +771,8 @@ class BybitRestController:
 
 
             ma_diff_pct = ((price - ma100) / ma100) * 100  # 현재가가 MA100 대비 몇 % 차이인지
-
+            chg_3m_pct = ((price - prev) / prev * 100) if (prev and prev > 0) else None  # ✅ 3분전 대비 %
+            chg_3m_str = f"{chg_3m_pct:+.3f}%" if chg_3m_pct is not None else "N/A"  # ✅ 출력 문자열
 
             log_msg = (
                 f"\n💹 시세 정보\n"
@@ -780,7 +781,7 @@ class BybitRestController:
                 f"  • MA100       : {ma100:,.1f}\n"
                 f"  • 진입목표(롱/숏) : {ma_lower:,.2f} / {ma_upper:,.2f} "
                 f"(±{ma_threshold * 100:.3f}%)\n"
-                f"  • 급등락 목표(3분) : {momentum_threshold * 100:.3f}%\n"
+                f"  • 급등락 목표(3분) : {momentum_threshold * 100:.3f}% (3분전대비 👉[{chg_3m_str}]👈)\n"
                 f"  • 청산기준 : {exit_ma_threshold * 100:.3f}%\n"
                 f"  • 목표 크로스: {target_cross}회 / {closes_num} 분)\n"
             )
@@ -794,7 +795,7 @@ class BybitRestController:
         available = balance.get("available", 0.0)
         available_pct = (available / total * 100) if total else 0
         log_msg += (
-            f"  💰 자산: 총 {total:.2f} USDT\n"
+            f"\n  💰 자산: 총 {total:.2f} USDT\n"
             f"    사용 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)\n"
         )
 
@@ -825,7 +826,7 @@ class BybitRestController:
                 log_msg += f"  📈 포지션: {side} ({pos_amt})\n"
                 log_msg += f"    평균가: {entry_price:.3f} | 현재가: {price:.3f}\n"
                 log_msg += f"    수익률: {profit_rate:.3f}%\n"
-                log_msg += f"    수익금: {net_profit:+.3f} USDT (fee {fee_total:.3f} USDT)\n"
+                log_msg += f"    수익금: {net_profit:+.3f} USDT (total fee 약 {fee_total:.3f} USDT)\n"
 
                 if position["entries"]:
                     for i, (timestamp, qty, entryPrice,t_str) in enumerate(position["entries"], start=1):

@@ -365,7 +365,6 @@ class TradeBot:
         order_tail = (filled.get("orderId") or "")[-6:] or "UNKNOWN"
         avg_price = float(filled.get("avgPrice") or 0.0)  # 이번 체결가 (청산가)
         exec_qty = float(filled.get("cumExecQty") or filled.get("qty") or 0.0)
-        fee = float(filled.get("cumExecFee") or 0.0)  # USDT, 보통 음수
 
 
         # 진입(OPEN): 기본 로그
@@ -402,7 +401,7 @@ class TradeBot:
             f" | 청산가: {avg_price:.2f}\n"
             f" | 체결수량: {exec_qty}\n"
             f" | 수익금(수수료 제외): {profit_net:.2f}\n"
-            f" | 수익금(총): {profit_gross:.2f}, 수수료: {total_fee:.2f}\n"
+            f" | 수익금(총): {profit_gross:.2f}, 총 수수료: {total_fee:.2f}\n"
             f" | 수익률: {profit_rate:.2f}%"
         )
         _, latest_price = self.price_history[-1]

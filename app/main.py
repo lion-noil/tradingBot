@@ -81,16 +81,16 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
     jump_state, min_dt, max_dt = bot.check_price_jump(min_sec, max_sec)
 
     extra_line = (
-        f"\n⏱️ 감시 구간(±{bot.ma_threshold * 100:.3f}%)\n"
+        f"⏱️ 감시 구간(±{bot.ma_threshold * 100:.3f}%)\n"
         f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
     )
     if jump_state is True:
-        extra_line += f"  • 상태      : 👀 감시 중\n"
+        extra_line += f"  • 상태      : 👀 감시 중\n\n"
     if min_dt is not None and max_dt is not None:
-        extra_line += f"  • 데이터간격 : 최소 {min_dt:.3f}s / 최대 {max_dt:.3f}s\n"
+        extra_line += f"  • 데이터간격 : 최소 {min_dt:.3f}s / 최대 {max_dt:.3f}s\n\n"
 
 
-    status_text = f"{status_text}{extra_line}"
+    status_text = f"{extra_line}{status_text}"
     if plain:
         return Response(content=status_text, media_type="text/plain")
     return {
