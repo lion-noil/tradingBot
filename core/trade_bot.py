@@ -402,7 +402,7 @@ class TradeBot:
             f" | 청산가: {avg_price:.2f}\n"
             f" | 체결수량: {exec_qty}\n"
             f" | 수익금(수수료 제외): {profit_net:.2f}\n"
-            f" | 수익금(총): {profit_gross:.2f}, 수수료: {fee:.2f}\n"
+            f" | 수익금(총): {profit_gross:.2f}, 수수료: {total_fee:.2f}\n"
             f" | 수익률: {profit_rate:.2f}%"
         )
         _, latest_price = self.price_history[-1]
