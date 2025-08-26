@@ -56,7 +56,7 @@ class BybitWebSocketController:
             logger.debug(f"❌ Public WebSocket 오류: {error}")
 
         def on_close(ws, *args):
-            logger.warning("🔌 WebSocket closed. Reconnecting in 5 seconds...")
+            logger.debug("🔌 WebSocket closed. Reconnecting in 5 seconds...")
             time.sleep(5)
             self._start_public_websocket()  # or private
 
@@ -165,12 +165,24 @@ class BybitRestController:
         self.api_secret = os.getenv("BYBIT_TEST_API_SECRET")
         self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
         self.recv_window = "5000"
+        self._time_offset_ms = 0  # ✅ 오프셋 초기화
         self.positions_file = f"{symbol}_positions.json"
         self.orders_file = f"{symbol}_orders.json"
         self.wallet_file = f"{symbol}_wallet.json"
         self.leverage = 50
+        self.sync_time()  # ✅ 먼저 서버시간 동기화
         self.set_leverage(leverage = self.leverage)
         self.FEE_RATE = 0.00055  # 0.055%
+
+    def sync_time(self):
+        r = requests.get(f"{self.base_url}/v5/market/time", timeout=5)  # ✅ self.base_url
+        server_ms = int(r.json()["time"])
+        local_ms = int(time.time() * 1000)
+        self._time_offset_ms = server_ms - local_ms
+
+    def _now_ms(self):
+        # 미래 금지 마진으로 10ms 빼기
+        return str(int(time.time() * 1000 + self._time_offset_ms - 10))
 
     def _generate_signature(self, timestamp, method, params="", body=""):
         query_string = params if method == "GET" else body
@@ -178,7 +190,7 @@ class BybitRestController:
         return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
 
     def _get_headers(self, method, endpoint, params="", body=""):
-        timestamp = str(int(time.time() * 1000))
+        timestamp = self._now_ms()  # ✅ 오프셋 반영 & 미래 방지
         sign = self._generate_signature(timestamp, method,params=params, body=body)
         return {
             "X-BAPI-API-KEY": self.api_key,
@@ -722,10 +734,6 @@ class BybitRestController:
         return ma100s
 
     def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
-        """
-        Bybit에서 지정한 심볼의 레버리지를 설정합니다 (단일모드용, buy/sell 동일).
-        이미 설정된 값과 동일할 경우 경고만 출력하고 True 반환.
-        """
         try:
             endpoint = "/v5/position/set-leverage"
             url = self.base_url + endpoint

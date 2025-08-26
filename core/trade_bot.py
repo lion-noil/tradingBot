@@ -174,7 +174,7 @@ class TradeBot:
         # 4. 자동매매 조건 평가
         if time.monotonic() >= self._just_traded_until:
             ## short 진입 조건
-            recent_short_time = self.position_time.get("SHORT")
+            recent_short_time = self.last_position_time.get("SHORT")
             blocked = self._cooldown_blocked(recent_short_time) if recent_short_time else False
             allow_entry = not blocked
 
@@ -211,7 +211,7 @@ class TradeBot:
                         )
 
             ## long 진입 조건
-            recent_long_time = self.position_time.get("LONG")
+            recent_long_time = self.last_position_time.get("LONG")
             blocked = self._cooldown_blocked(recent_long_time) if recent_long_time else False
             allow_entry = not blocked
             if allow_entry:
@@ -249,7 +249,7 @@ class TradeBot:
 
             ## 청산조건
             for side in ["LONG", "SHORT"]:
-                recent_time = self.position_time.get(side)
+                recent_time = self.last_position_time.get(side)
                 if recent_time:
                     exit_reasons = get_exit_reasons(
                         side, latest_price, self.now_ma100, recent_time, ma_threshold=self.exit_ma_threshold
@@ -281,10 +281,10 @@ class TradeBot:
         self.status_list = status.get("positions", [])
         self.balance = status.get("balance", {})
         self.pos_dict = {p["position"]: p for p in self.status_list}
-        self.position_time = {
-            "LONG": (self.pos_dict.get("LONG", {}).get("entries") or [[None]])[-1][0]
+        self.last_position_time = {
+            "LONG": (self.pos_dict.get("LONG", {}).get("entries") or [[None]])[0][0]
             if self.pos_dict.get("LONG") and self.pos_dict["LONG"]["entries"] else None,
-            "SHORT": (self.pos_dict.get("SHORT", {}).get("entries") or [[None]])[-1][0]
+            "SHORT": (self.pos_dict.get("SHORT", {}).get("entries") or [[None]])[0][0]
             if self.pos_dict.get("SHORT") and self.pos_dict["SHORT"]["entries"] else None,
         }
 
