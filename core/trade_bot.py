@@ -34,10 +34,6 @@ class TradeBot:
 
         self.price_history = deque(maxlen=self.history_num)
 
-        # 🔴 추가: 자동매매 ON/OFF 플래그 (기본 ON)
-        self.auto_trade = True
-
-
     def record_price(self):
         ts = time.time()
         price = getattr(self.bybit_websocket_controller, "price", None)
@@ -102,7 +98,7 @@ class TradeBot:
             self.last_closes_update = now
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
                                                                  target_cross=self.target_cross)
-            self.momentum_threshold = self.ma_threshold / 2
+            self.momentum_threshold = self.ma_threshold / 3
 
             self.bybit_rest_controller.set_full_position_info(self.symbol)
             self.bybit_rest_controller.sync_orders_from_bybit()
