@@ -33,7 +33,6 @@ bybit_rest_controller = None
 async def bot_loop():
     global bot
 
-    # 🟢 웜업 단계: 최신가, ma100, ma_threshold 준비될 때까지 대기
     while True:
         bot.record_price()
         if (
@@ -83,7 +82,6 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
 async def manual_buy(request: ManualOrderRequest):
     await manual_queue.put({"command": "long", "percent": request.percent})
     return {"status": f"buy triggered with {request.percent}%"}
-
 @app.post("/short")
 async def manual_sell(request: ManualOrderRequest):
     await manual_queue.put({"command": "short", "percent": request.percent})

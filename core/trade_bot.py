@@ -108,6 +108,7 @@ class TradeBot:
             self.now_ma100 = self.ma100s[-1]
             self.prev = self.closes[-3]
             self.exit_ma_threshold = 0.0005  # 청산 기준
+            self.bybit_rest_controller.sync_time()
 
         # 2️⃣ 급등락 테스트
         state, min_dt, max_dt = self.check_price_jump()

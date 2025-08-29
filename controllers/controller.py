@@ -170,7 +170,6 @@ class BybitRestController:
         self.orders_file = f"{symbol}_orders.json"
         self.wallet_file = f"{symbol}_wallet.json"
         self.leverage = 50
-        self.sync_time()  # ✅ 먼저 서버시간 동기화
         self.set_leverage(leverage = self.leverage)
         self.FEE_RATE = 0.00055  # 0.055%
 
