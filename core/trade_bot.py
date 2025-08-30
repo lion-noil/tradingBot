@@ -1,14 +1,11 @@
 
-from utils.logger import setup_logger
 from strategies.basic_strategy import get_long_entry_reasons, get_short_entry_reasons, get_exit_reasons
 from collections import deque
 import time
-import json
 import math
-logger = setup_logger()
-import asyncio, random
+import asyncio
 class TradeBot:
-    def __init__(self, bybit_websocket_controller, bybit_rest_controller, manual_queue, symbol="BTCUSDT"):
+    def __init__(self, bybit_websocket_controller, bybit_rest_controller, manual_queue, error_logger=None, trading_logger=None, symbol="BTCUSDT"):
 
         self.bybit_websocket_controller = bybit_websocket_controller
         self.bybit_rest_controller = bybit_rest_controller
@@ -34,20 +31,22 @@ class TradeBot:
 
         self.price_history = deque(maxlen=self.history_num)
 
+        self.error_logger = error_logger
+        self.trading_logger = trading_logger
     def record_price(self):
         ts = time.time()
         price = getattr(self.bybit_websocket_controller, "price", None)
 
         # 1) 값 유효성 검사
         if not isinstance(price, (int, float)):
-            logger.debug("skip record_price: non-numeric price=%r", price)
+            self.error_logger.debug("skip record_price: non-numeric price=%r", price)
             return
         if not (price > 0):  # 0 또는 음수 방지
-            logger.debug("skip record_price: non-positive price=%r", price)
+            self.error_logger.debug("skip record_price: non-positive price=%r", price)
             return
         # float NaN/Inf 방지
         if math.isnan(price) or math.isinf(price):
-            logger.debug("skip record_price: NaN/Inf price=%r", price)
+            self.error_logger.debug("skip record_price: NaN/Inf price=%r", price)
             return
 
         # 2) 타임스탬프 단조 증가(간헐적 시계 역전/동일 ts 방지)
@@ -115,12 +114,12 @@ class TradeBot:
 
         if state:
             if state == "UP":
-                logger.info(
+                self.error_logger.info(
                     f" 📈 급등 감지! "
                     f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
                 )
             elif state == "DOWN":
-                logger.info(
+                self.error_logger.info(
                     f" 📉 급락 감지! "
                     f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
                 )
@@ -128,7 +127,8 @@ class TradeBot:
         percent = 10  # 총자산의 진입비율
         leverage_limit = 30
 
-        logger.debug(self.make_status_log_msg())
+        self.error_logger.debug(self.make_status_log_msg())
+
         # 3. 수동 명령 처리
         if not self.manual_queue.empty():
             command_data = await self.manual_queue.get()
@@ -138,6 +138,7 @@ class TradeBot:
                 percent = command_data.get("percent", 10)  # 기본값 10%
                 close_side = command_data.get("side")
             else:
+                close_side = None
                 command = command_data
                 percent = 10
 
@@ -164,9 +165,9 @@ class TradeBot:
                             qty=pos_amt
                         )
                     else:
-                        logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
+                        self.error_logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
                 else:
-                    logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
+                    self.error_logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
 
         # 4. 자동매매 조건 평가
         if time.monotonic() >= self._just_traded_until:
@@ -183,7 +184,7 @@ class TradeBot:
 
                 if position_ratio >= leverage_limit:
                     pass
-                    # logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+                    # self.error_logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     short_reasons = get_short_entry_reasons(
                         latest_price, self.now_ma100, self.prev,
@@ -195,7 +196,7 @@ class TradeBot:
                                 "\n - ".join(short_reasons)
                         )
 
-                        logger.info(short_reason_msg)
+                        self.trading_logger.info(short_reason_msg)
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
@@ -219,7 +220,7 @@ class TradeBot:
 
                 if position_ratio >= leverage_limit:
                     pass
-                    # logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+                    # self.error_logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     long_reasons = get_long_entry_reasons(
                         latest_price, self.now_ma100, self.prev,
@@ -231,7 +232,7 @@ class TradeBot:
                                 "📌 롱 진입 조건 충족:\n - " +
                                 "\n - ".join(long_reasons)
                         )
-                        logger.info(long_reason_msg)
+                        self.trading_logger.info(long_reason_msg)
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
@@ -254,7 +255,7 @@ class TradeBot:
 
                     if exit_reasons:
                         pos_amt = abs(float(self.pos_dict[side]["position_amt"]))
-                        logger.info(f"📤 자동 청산 사유({side}):"
+                        self.trading_logger.info(f"📤 자동 청산 사유({side}):"
                                     f" {' / '.join(exit_reasons)}")
                         await self._execute_and_sync(
                             self.bybit_rest_controller.close_market,
@@ -331,21 +332,21 @@ class TradeBot:
                 self.bybit_rest_controller.set_wallet_balance()
                 now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
                 self._apply_status(now_status)
-                logger.info(self._format_asset_section())
+                self.error_logger.info(self._format_asset_section())
 
             elif orderStatus in ("CANCELLED", "REJECTED"):
-                logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
+                self.error_logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
                 # 이미 취소/거절 상태 → 추가 취소 API 호출 불필요
             elif orderStatus == "TIMEOUT":
-                logger.warning(f"⚠️ 주문 {order_id[-6:]} 체결 대기 타임아웃 → 취소 시도")
+                self.error_logger.warning(f"⚠️ 주문 {order_id[-6:]} 체결 대기 타임아웃 → 취소 시도")
                 try:
                     cancel_res = self.bybit_rest_controller.cancel_order(self.symbol, order_id)
-                    logger.warning(f"🗑️ 단일 주문 취소 결과: {cancel_res}")
+                    self.error_logger.warning(f"🗑️ 단일 주문 취소 결과: {cancel_res}")
                 except Exception as e:
-                    logger.error(f"단일 주문 취소 실패: {e}")
+                    self.error_logger.error(f"단일 주문 취소 실패: {e}")
             else:
                 # 예상치 못한 상태(New/PartiallyFilled 등) → 정책에 따라 취소할지, 더 기다릴지
-                logger.warning(f"ℹ️ 주문 {order_id[-6:]} 상태: {orderStatus or 'UNKNOWN'} → 정책에 따라 처리")
+                self.error_logger.warning(f"ℹ️ 주문 {order_id[-6:]} 상태: {orderStatus or 'UNKNOWN'} → 정책에 따라 처리")
 
 
             # 같은 루프에서 자동 조건이 바로 또 트리거되지 않도록 짧은 쿨다운
@@ -475,7 +476,7 @@ class TradeBot:
 
         # 진입(OPEN): 기본 로그
         if not intent.endswith("CLOSE"):
-            logger.info(
+            self.trading_logger.info(
                 f"✅ {side} 주문 체결 완료\n"
                 f" | 주문ID(뒷6자리): {order_tail}\n"
                 f" | 평균진입가: {avg_price:.2f}\n"
@@ -500,7 +501,7 @@ class TradeBot:
         profit_net = profit_gross - total_fee
         profit_rate = (profit_gross / entry_price) * 100 if entry_price else 0.0
 
-        logger.info(
+        self.trading_logger.info(
             f"✅ {side} 포지션 청산 완료\n"
             f" | 주문ID: {order_tail}\n"
             f" | 평균진입가: {entry_price:.2f}\n"

@@ -22,7 +22,8 @@ class ManualCloseRequest(BaseModel):
     side: Literal["LONG", "SHORT"]
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-logger = setup_logger()
+error_logger = setup_logger("error")
+trading_logger = setup_logger("trading")
 
 app = FastAPI()
 manual_queue = Queue()
@@ -39,9 +40,9 @@ async def bot_loop():
                 bot.price_history
                 and len(bot.price_history) == bot.price_history.maxlen
         ):
-            logger.debug("✅ 데이터 준비 완료, 메인 루프 시작")
+            error_logger.debug("✅ 데이터 준비 완료, 메인 루프 시작")
             break
-        logger.debug("⏳ 데이터 준비 중...")
+        error_logger.debug("⏳ 데이터 준비 중...")
         await asyncio.sleep(0.5)
 
     while bot.running:
@@ -50,17 +51,17 @@ async def bot_loop():
             await asyncio.sleep(0.5)
 
         except Exception as e:
-            logger.error(f"❌ bot_loop 오류: {e}")
+            error_logger.error(f"❌ bot_loop 오류: {e}")
             await asyncio.sleep(10)
 
 
 @app.on_event("startup")
 async def startup_event():
     global bot, bybit_websocket_controller, bybit_rest_controller
-    logger.debug("🚀 FastAPI 기반 봇 서버 시작")
-    bybit_websocket_controller = BybitWebSocketController()
-    bybit_rest_controller = BybitRestController()
-    bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue)
+    error_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
+    bybit_websocket_controller = BybitWebSocketController(logger = error_logger)
+    bybit_rest_controller = BybitRestController(logger = error_logger)
+    bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue,error_logger=error_logger,trading_logger=trading_logger)
     asyncio.create_task(bot_loop())
 
 @app.get("/info")

@@ -15,7 +15,7 @@ class TelegramLogHandler(logging.Handler):
         except Exception as e:
             print(f"TelegramLogHandler Error: {e}")
 
-def setup_logger():
+def setup_logger(logger_name = None):
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
 
@@ -27,7 +27,7 @@ def setup_logger():
     console_handler.setLevel(logging.DEBUG)
 
     # 파일 핸들러: INFO 이상만 기록
-    file_handler = logging.FileHandler(f"{log_dir}/trading.log", encoding="utf-8")
+    file_handler = logging.FileHandler(f"{log_dir}/"+logger_name+".log", encoding="utf-8")
     file_handler.setLevel(logging.INFO)  # DEBUG는 기록 안 함
 
     formatter = logging.Formatter(
