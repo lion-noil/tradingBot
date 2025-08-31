@@ -13,6 +13,13 @@ import json
 KST = timezone(timedelta(hours=9))
 from urllib.parse import urlencode
 
+
+def _safe_int(x):
+    try:
+        return int(x)
+    except Exception:
+        return int(float(x))
+
 class BybitWebSocketController:
     def __init__(self, symbol="BTCUSDT",logger=None):
         self.symbol = symbol
@@ -719,6 +726,85 @@ class BybitRestController:
             closes.extend(all_closes)
 
             self.logger.debug(f"📊 캔들 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
+        except Exception as e:
+            self.logger.warning(f"❌ 캔들 요청 실패: {e}")
+
+
+
+    def update_candles(self, candles, count=None):
+        """
+        candles: 리스트(바깥에서 넘겨주는 mutable).
+                 각 원소는 {start, open, high, low, close} 딕셔너리.
+        count:   최종적으로 가져올 캔들 개수
+        """
+        try:
+            url = f"{self.base_url}/v5/market/kline"
+
+            target = count if (isinstance(count, int) and count > 0) else 1000
+            all_candles = []
+            latest_end = None  # ms
+
+            while len(all_candles) < target:
+                # 루프마다 필요한 만큼만 요청(최대 1000)
+                req_limit = min(1000, target - len(all_candles))
+
+                params = {
+                    "category": "linear",
+                    "symbol": self.symbol,
+                    "interval": "1",
+                    "limit": req_limit,
+                }
+                if latest_end is not None:
+                    params["end"] = latest_end  # 이 시각(포함) 이전까지만
+
+                res = requests.get(url, params=params, timeout=10)
+                res.raise_for_status()
+                raw_list = res.json().get("result", {}).get("list", [])
+
+                if not raw_list:
+                    break
+
+                # Bybit는 최신순으로 오므로 역순으로 뒤집어 페이지 내 시간을 오름차순으로 맞춤
+                raw_list = raw_list[::-1]
+
+                # 0=startTime(ms), 1=open, 2=high, 3=low, 4=close
+                chunk = [
+                    {
+                        "start": _safe_int(c[0]),
+                        "open": float(c[1]),
+                        "high": float(c[2]),
+                        "low": float(c[3]),
+                        "close": float(c[4]),
+                    }
+                    for c in raw_list
+                ]
+
+                # 더 오래된 묶음이 앞에 오도록 누적(전체는 오래된→최신 순서 유지)
+                all_candles = chunk + all_candles
+
+                # 다음 페이지는 이번 묶음의 가장 오래된 캔들 시작 직전까지로 이동
+                latest_end = _safe_int(raw_list[0][0]) - 1
+
+                # 마지막 페이지(요청 수보다 적게 온 경우)면 종료
+                if len(raw_list) < req_limit:
+                    break
+
+            # 최종 개수로 슬라이싱
+            if count:
+                all_candles = all_candles[-count:]
+
+            candles.clear()
+            candles.extend(all_candles)
+
+            last = candles[-1] if candles else None
+            if last:
+                self.logger.debug(
+                    f"📊 캔들 갱신 완료: {len(candles)}개, "
+                    f"최근 OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']})"
+                )
+            else:
+                self.logger.debug("📊 캔들 갱신: 결과 없음")
+
         except Exception as e:
             self.logger.warning(f"❌ 캔들 요청 실패: {e}")
 

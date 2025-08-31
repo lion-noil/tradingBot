@@ -12,8 +12,10 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.running = True
+        self.candles_num = 7200
         self.closes_num = 7200
-        self.closes = deque(maxlen=self.closes_num)
+        self.candles = deque(maxlen=self.candles_num)
+        self.closes = [c.close for c in self.candles]
         self.TAKER_FEE_RATE = 0.00055
 
         self.ma100s = None
@@ -92,7 +94,8 @@ class TradeBot:
         _, latest_price = self.price_history[-1]
 
         if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
-            self.bybit_rest_controller.update_closes(self.closes,count=self.closes_num)
+            self.bybit_rest_controller.update_candles(self.candles, count=self.candles_num)
+            self.closes = [c["close"] for c in self.candles]
             self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
             self.last_closes_update = now
             self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,

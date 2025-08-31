@@ -15,7 +15,7 @@ from asyncio import Queue
 from utils.logger import setup_logger
 from pydantic import BaseModel
 from typing import Literal
-
+from services.daily_report import init_daily_report_scheduler, run_daily_report_from_cache
 class ManualOrderRequest(BaseModel):
     percent: float = 10  # 기본값: 10%
 class ManualCloseRequest(BaseModel):
@@ -57,19 +57,18 @@ async def bot_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global bot, bybit_websocket_controller, bybit_rest_controller
+    global bot, bybit_websocket_controller, bybit_rest_controller, scheduler
     error_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
     bybit_websocket_controller = BybitWebSocketController(logger = error_logger)
     bybit_rest_controller = BybitRestController(logger = error_logger)
     bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue,error_logger=error_logger,trading_logger=trading_logger)
     asyncio.create_task(bot_loop())
+    scheduler = init_daily_report_scheduler(lambda: bot, logger=error_logger)
 
 @app.get("/info")
 async def status(symbol: str = "BTCUSDT", plain: bool = True):
     if bot is None:
         raise HTTPException(status_code=503, detail="Bot not initialized yet")
-    if not bot.price_history:
-        raise HTTPException(status_code=503, detail="Price history not ready")
 
     status_text = bot.make_status_log_msg()
     if plain:
@@ -92,6 +91,16 @@ async def manual_close(request: ManualCloseRequest):
     await manual_queue.put({"command": "close", "side": request.side})
     return {"status": f"close triggered for {request.side}"}
 """
+
+# app/main.py - 수동 트리거용 엔드포인트(원하면)
+@app.post("/report/daily")
+async def trigger_daily_report(symbol: str = "BTCUSDT"):
+    try:
+        result = run_daily_report_from_cache(lambda: bot, symbol=symbol, logger=error_logger)
+        return {"status": "ok", "rows": result.get("count")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
 
     import uvicorn
