@@ -169,9 +169,8 @@ class BybitRestController:
         self.logger = logger
         self.base_url = "https://api-demo.bybit.com"
         self.api_key = os.getenv("BYBIT_TEST_API_KEY")
-        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET")
         self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
-        self.recv_window = "5000"
+        self.recv_window = "15000"
         self._time_offset_ms = 0  # ✅ 오프셋 초기화
         self.positions_file = f"{symbol}_positions.json"
         self.orders_file = f"{symbol}_orders.json"
@@ -180,11 +179,84 @@ class BybitRestController:
         self.set_leverage(leverage = self.leverage)
         self.FEE_RATE = 0.00055  # 0.055%
 
+    def _build_query(self, params_pairs: list[tuple[str, str]] | None) -> str:
+        # dict 말고 '순서 있는 리스트'로 받아서, 이 순서대로 정확히 인코딩 → 서명/전송 모두 동일 문자열 사용
+        if not params_pairs:
+            return ""
+        return urlencode(params_pairs, doseq=False)
+
+    def _request_with_resync(self, method: str, endpoint: str,
+                             params_pairs: list[tuple[str, str]] | None = None,
+                             body_dict: dict | None = None,
+                             timeout: float = 5.0):
+        """
+        1) 쿼리/바디 문자열 생성
+        2) 헤더(타임스탬프/서명) 생성
+        3) 요청 전송
+        4) timestamp 관련 에러면 sync_time 후 1회 재시도
+        """
+        base = self.base_url + endpoint
+        query_string = self._build_query(params_pairs)
+        url = f"{base}?{query_string}" if query_string else base
+
+        body_str = ""
+        headers = None
+
+        def _make_headers():
+            nonlocal body_str
+            if body_dict is not None:
+                # Bybit 권장: JSON을 key 정렬한 문자열로 서명
+                body_str = json.dumps(body_dict, separators=(",", ":"), sort_keys=True)
+            else:
+                body_str = ""
+            return self._get_headers(method, endpoint, params=query_string, body=body_str)
+
+        def _send():
+            hdrs = _make_headers()
+            if method == "GET":
+                return requests.get(url, headers=hdrs, timeout=timeout)
+            else:
+                hdrs = {**hdrs, "Content-Type": "application/json"}
+                return requests.post(url, headers=hdrs, data=body_str, timeout=timeout)
+
+        # 1차 시도
+        resp = _send()
+        j = None
+        try:
+            j = resp.json()
+        except Exception:
+            # JSON이 아니면 그대로 리턴
+            return resp
+
+        # 타임스탬프/윈도우 오류 감지
+        ret_code = j.get("retCode")
+        ret_msg = (j.get("retMsg") or "").lower()
+        needs_resync = (
+                ret_code == 10002 or
+                "timestamp" in ret_msg or
+                "recv_window" in ret_msg or
+                "check your server timestamp" in ret_msg
+        )
+
+        if needs_resync:
+            # 즉시 재동기화 후 재시도(재서명 포함)
+            self.sync_time()
+            resp = _send()
+
+        return resp
+
     def sync_time(self):
-        r = requests.get(f"{self.base_url}/v5/market/time", timeout=5)  # ✅ self.base_url
-        server_ms = int(r.json()["time"])
-        local_ms = int(time.time() * 1000)
-        self._time_offset_ms = server_ms - local_ms
+        # NTP 스타일 왕복지연 보정
+        t0 = time.time()
+        r = requests.get(f"{self.base_url}/v5/market/time", timeout=5)
+        t1 = time.time()
+
+        # Bybit v5 응답은 보통 {"time": "173...."} (ms, 문자열)
+        server_ms = int((r.json() or {}).get("time"))
+        rtt_ms = (t1 - t0) * 1000.0
+        # 편도 지연을 뺀 '로컬 기준' 시각을 만들고 그에 대한 오프셋 저장
+        local_est_ms = int(t1 * 1000 - rtt_ms / 2)
+        self._time_offset_ms = server_ms - local_est_ms
 
     def _now_ms(self):
         # 미래 금지 마진으로 10ms 빼기
@@ -268,13 +340,12 @@ class BybitRestController:
 
     def get_positions(self, symbol=None, category="linear"):
         symbol = symbol or self.symbol
-        method = "GET"
         endpoint = "/v5/position/list"
-        params = f"category={category}&symbol={symbol}"
-        url = f"{self.base_url}{endpoint}?{params}"
-        headers = self._get_headers(method, endpoint, params=params, body="")
-        response = requests.get(url, headers=headers)
-        return response.json()
+        params_pairs = [("category", category), ("symbol", symbol)]
+
+        resp = self._request_with_resync("GET", endpoint, params_pairs=params_pairs, body_dict=None, timeout=5)
+        data = resp.json()
+        return data
 
 
     def load_local_positions(self):
@@ -595,16 +666,13 @@ class BybitRestController:
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
         params_pairs = [("accountType", account_type), ("coin", coin)]
-        query_str = urlencode(params_pairs, doseq=True)
-        url = f"{self.base_url}{endpoint}?{query_str}"
-        headers = self._get_headers(method, endpoint, params=query_str, body="")
 
         try:
-            r = requests.get(url, headers=headers, timeout=5)
-            data = r.json()
+            resp = self._request_with_resync(method, endpoint, params_pairs=params_pairs, body_dict=None, timeout=5)
+            data = resp.json()
         except Exception as e:
             self.logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
-            return self.load_local_wallet_balance()  # 실패 시 로컬 fallback
+            return self.load_local_wallet_balance()
 
         if isinstance(data, dict) and data.get("retCode") != 0:
             self.logger.error(f"[ERROR] 잔고 조회 실패: {data.get('retMsg')}")
@@ -903,35 +971,24 @@ class BybitRestController:
 
     def submit_market_order(self, symbol, order_side, qty, position_idx, reduce_only=False):
         endpoint = "/v5/order/create"
-        url = self.base_url + endpoint
-        method = "POST"
-
-        payload = {
+        body = {
             "category": "linear",
             "symbol": symbol,
-            "side": order_side,  # "Buy" / "Sell"
+            "side": order_side,
             "orderType": "Market",
             "qty": str(qty),
-            "positionIdx": position_idx,  # 1: Long pos, 2: Short pos
+            "positionIdx": position_idx,
             "reduceOnly": bool(reduce_only),
             "timeInForce": "IOC",
         }
-        # Bybit는 JSON 키 정렬한 문자열로 서명 권장
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        headers = self._get_headers(method, endpoint, body=body)
-        headers["Content-Type"] = "application/json"
-
-        try:
-            r = requests.post(url, headers=headers, data=body, timeout=5)
-            if r.status_code != 200:
-                self.logger.error(f"❌ HTTP 오류: {r.status_code} {r.text}")
-                return None
-            data = r.json()
-            if data.get("retCode") == 0:
-                return data.get("result", {})
-            self.logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
-        except Exception as e:
-            self.logger.error(f"❌ 주문 예외: {e}")
+        resp = self._request_with_resync("POST", endpoint, params_pairs=None, body_dict=body, timeout=5)
+        if resp.status_code != 200:
+            self.logger.error(f"❌ HTTP 오류: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        if data.get("retCode") == 0:
+            return data.get("result", {})
+        self.logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
         return None
 
     def open_market(self, symbol, side, price, percent, balance):

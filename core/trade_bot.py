@@ -270,10 +270,9 @@ class TradeBot:
 
     def _cooldown_blocked(self, recent_ts, cooldown_secs=1800):
         if not recent_ts:
-            return False, 0, 0
+            return False  # FIX: 불리언만 반환
         now_ts = int(time.time() * 1000)
         seconds_since_entry = (now_ts - recent_ts) / 1000
-
         return seconds_since_entry < cooldown_secs
 
     def _apply_status(self, status):
