@@ -462,12 +462,14 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
     closes = [r[4] for r in rows_window]
     xs = list(range(len(rows_window)))
 
-    # ⬇⬇⬇ 하단 설명 영역 확보(아래쪽 18% margin) ⬇⬇⬇
-    fig = plt.figure(figsize=(16, 6), dpi=150)
-    # tight_layout 전에 rect 지정하여 하단 공간 비워두기
-    plt.subplots_adjust(bottom=0.22)
+    # ── 상/하 2분할: 위(차트), 아래(설명)
+    fig, (ax, ax_footer) = plt.subplots(
+        2, 1, figsize=(16, 7), dpi=150,
+        gridspec_kw={"height_ratios": [5, 1]}
+    )
+    plt.subplots_adjust(hspace=0.06)  # 축 간 간격만 살짝
 
-    ax = plt.gca()
+    # ===== 상단: 차트 =====
     ax.set_title(title)
     ax.grid(True, linestyle="--", alpha=0.3)
 
@@ -501,15 +503,15 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
             ax.plot(seg_x, seg_y, color="orange", linewidth=1.8, label="MA100")
         ax.legend(loc="upper left")
 
-    # 극값 주석(생략 가능)
+    # 축/라벨 (패딩 넉넉히)
     ymin, ymax = min(lows), max(highs)
-    pad = (ymax - ymin) * 0.02 if ymax > ymin else 1
+    pad = (ymax - ymin) * 0.04 if ymax > ymin else 1
     ax.set_xlim(-1, len(rows_window))
     ax.set_ylim(ymin - pad, ymax + pad)
     step = max(1, len(rows_window)//12)
     ax.set_xticks(xs[::step], [times[i].strftime("%H:%M") for i in range(0, len(rows_window), step)])
 
-    # 자정 점선
+    # 자정 점선(축 범위 세팅 뒤에)
     if vlines_ms:
         ts_list = [r[0] for r in rows_window]
         for ms in vlines_ms:
@@ -519,15 +521,7 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
                 ax.text(idx, ymin, "00:00", fontsize=8, color="gray",
                         ha="center", va="bottom", rotation=0, alpha=0.8)
 
-    # 축/라벨 (패딩 살짝 증가)
-    ymin, ymax = min(lows), max(highs)
-    pad = (ymax - ymin) * 0.04 if ymax > ymin else 1  # 0.02 → 0.04
-    ax.set_xlim(-1, len(rows_window))
-    ax.set_ylim(ymin - pad, ymax + pad)
-    step = max(1, len(rows_window)//12)
-    ax.set_xticks(xs[::step], [times[i].strftime("%H:%M") for i in range(0, len(rows_window), step)])
-
-    # --- MA100 대비 최대 괴리(↑max) / 최소 괴리(↓min) ---
+    # MA 대비 ↑max / ↓min
     i_up = i_dn = -1
     up_best = dn_best = -1.0
     for i, ma in enumerate(ma_window_vals):
@@ -560,42 +554,24 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
     if i_up >= 0: _annotate_extreme(i_up, up_best, highs[i_up], "#2962ff", "↑ max")
     if i_dn >= 0: _annotate_extreme(i_dn, dn_best, lows[i_dn],  "#d32f2f", "↓ min")
 
-
-    # --- 신호(번호만 차트에) + 하단 설명 ---
+    # 신호(차트엔 번호만)
     footer_lines = []
     if signals:
         numbered = _enumerate_signals(signals)
-        _annotate_signals(ax, rows_window, numbered, tz, ma_series=ma_window_vals)  # ← ma_series 추가
-
-        # 설명 텍스트 구성
+        _annotate_signals(ax, rows_window, numbered, tz, ma_series=ma_window_vals)
         for s in numbered:
             footer_lines.append(_signal_footer_line(s))
 
-        # 너무 길면 2컬럼으로 개략 표시
-        # (한 줄이 길면 폰트 크기/컬럼 나누기 조절)
-        if footer_lines:
-            max_rows = 14
-            cols = 1 if len(footer_lines) <= max_rows else 2
-            col_rows = (len(footer_lines) + cols - 1) // cols
-            columns = []
-            for ci in range(cols):
-                chunk = footer_lines[ci*col_rows:(ci+1)*col_rows]
-                columns.append("\n".join(chunk))
-            footer_text = "   │   ".join(columns)
+    # ===== 하단: 설명 =====
+    _draw_footer(ax_footer, footer_lines, max_rows_per_col=14)
 
-            # 그림 하단에 텍스트 박스
-            fig.text(
-                0.01, 0.02, footer_text,
-                ha="left", va="bottom", fontsize=9,
-                bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#888", alpha=0.9)
-            )
-
+    # 저장
     buf = io.BytesIO()
-    plt.tight_layout()  # 위에서 bottom 여백 확보했으므로 덮어쓰지 않음
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
+
 
 
 
