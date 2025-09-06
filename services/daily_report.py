@@ -509,7 +509,31 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
     ax.set_xlim(-1, len(rows_window))
     ax.set_ylim(ymin - pad, ymax + pad)
     step = max(1, len(rows_window)//12)
-    ax.set_xticks(xs[::step], [times[i].strftime("%H:%M") for i in range(0, len(rows_window), step)])
+    # ── x축 눈금: 항상 '정각(:00) 시작' + 30분 간격 ─────────────────────
+    first_dt = times[0]
+    last_dt = times[-1]
+
+    # 첫 눈금은 무조건 해당 구간의 '다음 정각(:00)'
+    first_tick = first_dt.replace(minute=0, second=0, microsecond=0)
+    if first_tick <= first_dt:  # 시작이 이미 정각 이후면 다음 정각으로
+        if (first_dt.minute != 0) or (first_dt.second != 0) or (first_dt.microsecond != 0):
+            first_tick += timedelta(hours=1)
+
+    # 30분 간격으로 tick 시각 생성 (:00 → :30 → :00 → …)
+    tick_times = []
+    t = first_tick
+    while t <= last_dt:
+        tick_times.append(t)
+        t += timedelta(minutes=60)
+
+    # 생성된 tick 시각들을 실제 캔들 인덱스에 매핑(가장 가까운 바)
+    def _nearest_idx(dt):
+        return min(range(len(times)), key=lambda i: abs(times[i] - dt))
+
+    tick_idx = [_nearest_idx(tdt) for tdt in tick_times]
+    tick_lbl = [tdt.strftime("%H:%M") for tdt in tick_times]
+
+    ax.set_xticks(tick_idx, tick_lbl)
 
     # 자정 점선(축 범위 세팅 뒤에)
     if vlines_ms:
@@ -551,8 +575,8 @@ def _render_candles_png(rows_window, ma_window_vals, title="",
             zorder=9, clip_on=False
         )
 
-    if i_up >= 0: _annotate_extreme(i_up, up_best, highs[i_up], "#2962ff", "↑ max")
-    if i_dn >= 0: _annotate_extreme(i_dn, dn_best, lows[i_dn],  "#d32f2f", "↓ min")
+    if i_up >= 0: _annotate_extreme(i_up, up_best, highs[i_up], "#2962ff", "max")
+    if i_dn >= 0: _annotate_extreme(i_dn, dn_best, lows[i_dn],  "#d32f2f", "min")
 
     # 신호(차트엔 번호만)
     footer_lines = []
