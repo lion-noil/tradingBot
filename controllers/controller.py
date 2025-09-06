@@ -21,9 +21,9 @@ def _safe_int(x):
         return int(float(x))
 
 class BybitWebSocketController:
-    def __init__(self, symbol="BTCUSDT",logger=None):
+    def __init__(self, symbol="BTCUSDT",system_logger=None):
         self.symbol = symbol
-        self.logger = logger
+        self.system_logger = system_logger
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
         self.private_ws_url = "wss://stream-demo.bybit.com/v5/private"
         # self.private_ws_url = "wss://stream.bybit.com/v5/private"  # 실전용
@@ -38,7 +38,7 @@ class BybitWebSocketController:
 
     def _start_public_websocket(self):
         def on_open(ws):
-            self.logger.debug("✅ Public WebSocket 연결됨")
+            self.system_logger.debug("✅ Public WebSocket 연결됨")
             subscribe = {
                 "op": "subscribe",
                 "args": [f"tickers.{self.symbol}"]
@@ -56,13 +56,13 @@ class BybitWebSocketController:
                 elif "ask1Price" in data:
                     self.price = float(data["ask1Price"])
             except Exception as e:
-                self.logger.debug(f"❌ Public 메시지 처리 오류: {e}")
+                self.system_logger.debug(f"❌ Public 메시지 처리 오류: {e}")
 
         def on_error(ws, error):
-            self.logger.debug(f"❌ Public WebSocket 오류: {error}")
+            self.system_logger.debug(f"❌ Public WebSocket 오류: {error}")
 
         def on_close(ws, *args):
-            self.logger.debug("🔌 WebSocket closed. Reconnecting in 5 seconds...")
+            self.system_logger.debug("🔌 WebSocket closed. Reconnecting in 5 seconds...")
             time.sleep(5)
             self._start_public_websocket()  # or private
 
@@ -77,7 +77,7 @@ class BybitWebSocketController:
                 )
                 ws_app.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
-                self.logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
+                self.system_logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
                 time.sleep(5)
                 self._start_public_websocket()
 
@@ -91,7 +91,7 @@ class BybitWebSocketController:
     def _start_private_websocket(self):
         def on_open(ws):
             try:
-                self.logger.debug("🔐 Private WebSocket 연결됨")
+                self.system_logger.debug("🔐 Private WebSocket 연결됨")
                 expires = str(int((time.time() + 10) * 1000))  # ✅ ms 단위로 변경
 
                 signature_payload = f"GET/realtime{expires}"
@@ -107,24 +107,24 @@ class BybitWebSocketController:
                 }
                 ws.send(json.dumps(auth_payload))
             except Exception as e:
-                self.logger.exception(f"❌ 인증 요청 실패: {e}")
+                self.system_logger.exception(f"❌ 인증 요청 실패: {e}")
 
         def on_message(ws, message):
             try:
                 parsed = json.loads(message)
                 if parsed.get("op") == "auth":
                     if parsed.get("success"):
-                        self.logger.debug("✅ 인증 성공, 포지션 구독 시작")
+                        self.system_logger.debug("✅ 인증 성공, 포지션 구독 시작")
                         time.sleep(0.5)  # 🔧 구독 전 0.5초 대기
                         ws.send(json.dumps({
                             "op": "subscribe",
                             "args": ["position.linear", "execution", "order", "wallet"]
                         }))
                     else:
-                        self.logger.error(f"❌ 인증 실패: {parsed}")
+                        self.system_logger.error(f"❌ 인증 실패: {parsed}")
 
                 elif parsed.get("op") == "subscribe":
-                    self.logger.debug(f"✅ 구독 성공 응답: {parsed}")
+                    self.system_logger.debug(f"✅ 구독 성공 응답: {parsed}")
 
 
                 elif "topic" in parsed and parsed["topic"].startswith("position"):
@@ -133,14 +133,14 @@ class BybitWebSocketController:
                     if data:
                         self.position = data[0]
             except Exception as e:
-                self.logger.debug(f"❌ Private 메시지 처리 오류: {e}")
+                self.system_logger.debug(f"❌ Private 메시지 처리 오류: {e}")
 
         def on_error(ws, error):
-            self.logger.error(f"❌ WebSocket 오류 발생: {error}")
+            self.system_logger.error(f"❌ WebSocket 오류 발생: {error}")
             ws.close()
 
         def on_close(ws, *args):
-            self.logger.warning("🔌 Private WebSocket 종료됨. 5초 후 재연결 시도...")
+            self.system_logger.debug("🔌 Private WebSocket 종료됨. 5초 후 재연결 시도...")
             time.sleep(5)
             self._start_private_websocket()
 
@@ -155,7 +155,7 @@ class BybitWebSocketController:
                 )
                 ws_app.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
-                self.logger.exception(f"🔥 Private WebSocket 스레드 예외: {e}")
+                self.system_logger.exception(f"🔥 Private WebSocket 스레드 예외: {e}")
                 time.sleep(5)
                 self._start_private_websocket()
 
@@ -164,9 +164,9 @@ class BybitWebSocketController:
         thread.start()
 
 class BybitRestController:
-    def __init__(self, symbol="BTCUSDT", logger=None):
+    def __init__(self, symbol="BTCUSDT", system_logger=None):
         self.symbol = symbol
-        self.logger = logger
+        self.system_logger = system_logger
         self.base_url = "https://api-demo.bybit.com"
         self.api_key = os.getenv("BYBIT_TEST_API_KEY")
         self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
@@ -356,7 +356,7 @@ class BybitRestController:
                 content = f.read().strip()
                 return json.loads(content) if content else []
         except Exception as e:
-            self.logger.error(f"[ERROR] 로컬 포지션 파일 읽기 오류: {e}")
+            self.system_logger.error(f"[ERROR] 로컬 포지션 파일 읽기 오류: {e}")
             return []
 
     def save_local_positions(self, data):
@@ -364,7 +364,7 @@ class BybitRestController:
             with open(self.positions_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            self.logger.error(f"[ERROR] 포지션 저장 실패: {e}")
+            self.system_logger.error(f"[ERROR] 포지션 저장 실패: {e}")
 
     def set_full_position_info(self, symbol="BTCUSDT"):
         # Bybit에서 포지션 조회
@@ -390,7 +390,7 @@ class BybitRestController:
         cleaned_new = [clean_position(p) for p in new_positions]
 
         if json.dumps(cleaned_local, sort_keys=True) != json.dumps(cleaned_new, sort_keys=True):
-            self.logger.debug("📌 포지션 변경 감지됨 → 로컬 파일 업데이트")
+            self.system_logger.debug("📌 포지션 변경 감지됨 → 로컬 파일 업데이트")
             self.save_local_positions(cleaned_new)
 
 
@@ -416,36 +416,36 @@ class BybitRestController:
                 resp = requests.get(url, headers=headers, timeout=5)
                 # HTTP 레벨 오류
                 if resp.status_code != 200:
-                    self.logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
+                    self.system_logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
                     return None
                 try:
                     data = resp.json()
                 except Exception:
-                    self.logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
+                    self.system_logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
                     return None
                 # Bybit API 레벨 오류
                 ret_code = data.get("retCode")
                 if ret_code != 0:
-                    self.logger.error(f"❌ Bybit 오류 retCode={ret_code}, retMsg={data.get('retMsg')}")
+                    self.system_logger.error(f"❌ Bybit 오류 retCode={ret_code}, retMsg={data.get('retMsg')}")
                     return None
                 result = data.get("result") or {}
                 lst = result.get("list")
                 if not isinstance(lst, list):
-                    self.logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
+                    self.system_logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
                     return None
                 return lst
             except requests.exceptions.Timeout:
-                self.logger.error("⏱️ 요청 타임아웃")
+                self.system_logger.error("⏱️ 요청 타임아웃")
                 return None
             except requests.exceptions.RequestException as e:
-                self.logger.error(f"🌐 네트워크 예외: {e}")
+                self.system_logger.error(f"🌐 네트워크 예외: {e}")
                 return None
 
         # 1차 요청
         executions = _fetch_once()
         # (옵션) 실패 시 1회 재시도
         if executions is None:
-            self.logger.debug("↻ 재시도: 서명/타임스탬프 갱신")
+            self.system_logger.debug("↻ 재시도: 서명/타임스탬프 갱신")
             executions = _fetch_once()
             if executions is None:
                 # 완전 실패면 기존 로컬 그대로 반환
@@ -498,18 +498,18 @@ class BybitRestController:
 
             if appended > 0:
                 self.save_orders(local_orders)
-                self.logger.debug(f"📥 신규 체결 {appended}건 저장됨")
+                self.system_logger.debug(f"📥 신규 체결 {appended}건 저장됨")
             return local_orders
 
         except Exception as e:
-            self.logger.error(f"[ERROR] 주문 동기화 실패: {e}")
+            self.system_logger.error(f"[ERROR] 주문 동기화 실패: {e}")
             return self.load_orders()
 
     def get_trade_w_order_id(self, symbol="BTCUSDT",order_id=None):
 
         ####
         if not order_id:
-            self.logger.error("❌ order_id가 필요합니다.")
+            self.system_logger.error("❌ order_id가 필요합니다.")
             return self.load_orders()
 
         method = "GET"
@@ -528,27 +528,27 @@ class BybitRestController:
             try:
                 resp = requests.get(url, headers=headers, timeout=5)
                 if resp.status_code != 200:
-                    self.logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
+                    self.system_logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
                     return None
                 try:
                     data = resp.json()
                 except Exception:
-                    self.logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
+                    self.system_logger.error(f"❌ JSON 파싱 실패: {resp.text[:200]}")
                     return None
                 if data.get("retCode") != 0:
-                    self.logger.error(f"❌ Bybit 오류 retCode={data.get('retCode')}, retMsg={data.get('retMsg')}")
+                    self.system_logger.error(f"❌ Bybit 오류 retCode={data.get('retCode')}, retMsg={data.get('retMsg')}")
                     return None
                 result = data.get("result") or {}
                 lst = result.get("list")
                 if not isinstance(lst, list):
-                    self.logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
+                    self.system_logger.error(f"❌ result.list가 리스트가 아님: {type(lst)}")
                     return None
                 return lst
             except requests.exceptions.Timeout:
-                self.logger.error("⏱️ 요청 타임아웃")
+                self.system_logger.error("⏱️ 요청 타임아웃")
                 return None
             except requests.exceptions.RequestException as e:
-                self.logger.error(f"🌐 네트워크 예외: {e}")
+                self.system_logger.error(f"🌐 네트워크 예외: {e}")
                 return None
 
         t1 = time.time()
@@ -572,7 +572,7 @@ class BybitRestController:
             if found:
                 break
             if time.time() - t1 > exec_timeout_sec:
-                self.logger.error(f"⏰ executions 반영 대기 타임아웃({exec_timeout_sec}s). 부분 체결/전파 지연 가능.")
+                self.system_logger.error(f"⏰ executions 반영 대기 타임아웃({exec_timeout_sec}s). 부분 체결/전파 지연 가능.")
 
             time.sleep(poll_interval_sec)
         e = executions[0]
@@ -671,11 +671,11 @@ class BybitRestController:
             resp = self._request_with_resync(method, endpoint, params_pairs=params_pairs, body_dict=None, timeout=5)
             data = resp.json()
         except Exception as e:
-            self.logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
+            self.system_logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
             return self.load_local_wallet_balance()
 
         if isinstance(data, dict) and data.get("retCode") != 0:
-            self.logger.error(f"[ERROR] 잔고 조회 실패: {data.get('retMsg')}")
+            self.system_logger.error(f"[ERROR] 잔고 조회 실패: {data.get('retMsg')}")
             return self.load_local_wallet_balance()
 
         account_data = data["result"]["list"][0]
@@ -699,7 +699,7 @@ class BybitRestController:
                 content = f.read().strip()
                 return json.loads(content) if content else {}
         except Exception as e:
-            self.logger.error(f"[ERROR] 로컬 지갑 파일 읽기 오류: {e}")
+            self.system_logger.error(f"[ERROR] 로컬 지갑 파일 읽기 오류: {e}")
             return {}
 
     def save_local_wallet_balance(self, data):
@@ -707,7 +707,7 @@ class BybitRestController:
             with open(self.wallet_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            self.logger.error(f"[ERROR] 지갑 저장 실패: {e}")
+            self.system_logger.error(f"[ERROR] 지갑 저장 실패: {e}")
 
     def load_orders(self):
         if not os.path.exists(self.orders_file):
@@ -717,7 +717,7 @@ class BybitRestController:
                 content = f.read().strip()
                 return json.loads(content) if content else []
         except Exception as e:
-            self.logger.error(f"거래기록 로드 실패: {e}")
+            self.system_logger.error(f"거래기록 로드 실패: {e}")
             return []
 
     def save_orders(self, trades):
@@ -725,7 +725,7 @@ class BybitRestController:
             with open(self.orders_file, "w", encoding="utf-8") as f:
                 json.dump(trades, f, indent=2)
         except Exception as e:
-            self.logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
+            self.system_logger.error(f"[ERROR] 거래기록 저장 실패: {e}")
 
     def append_order(self, trade: dict):
         """
@@ -738,13 +738,13 @@ class BybitRestController:
                     try:
                         local_orders = json.load(f)
                     except json.JSONDecodeError:
-                        self.logger.warning("⚠️ orders_file JSON 파싱 실패, 새로 시작")
+                        self.system_logger.warning("⚠️ orders_file JSON 파싱 실패, 새로 시작")
                         local_orders = []
 
             # 중복 확인 (execId 또는 id 기준)
             existing_ids = {str(o.get("id")) for o in local_orders}
             if str(trade.get("id")) in existing_ids:
-                self.logger.debug(f"⏩ 이미 존재하는 trade id={trade.get('id')}, 스킵")
+                self.system_logger.debug(f"⏩ 이미 존재하는 trade id={trade.get('id')}, 스킵")
                 return local_orders
 
             local_orders.append(trade)
@@ -752,10 +752,10 @@ class BybitRestController:
             with open(self.orders_file, "w", encoding="utf-8") as f:
                 json.dump(local_orders, f, indent=2, ensure_ascii=False)
 
-            self.logger.debug(f"📥 신규 trade {trade.get('id')} 저장됨")
+            self.system_logger.debug(f"📥 신규 trade {trade.get('id')} 저장됨")
 
         except Exception as e:
-            self.logger.error(f"[ERROR] 거래기록 append 실패: {e}")
+            self.system_logger.error(f"[ERROR] 거래기록 append 실패: {e}")
             return self.load_orders()
     def update_closes(self, closes, count=None):
         try:
@@ -793,9 +793,9 @@ class BybitRestController:
             closes.clear()
             closes.extend(all_closes)
 
-            self.logger.debug(f"📊 캔들 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
+            self.system_logger.debug(f"📊 캔들 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
         except Exception as e:
-            self.logger.warning(f"❌ 캔들 요청 실패: {e}")
+            self.system_logger.warning(f"❌ 캔들 요청 실패: {e}")
 
 
 
@@ -866,15 +866,15 @@ class BybitRestController:
 
             last = candles[-1] if candles else None
             if last:
-                self.logger.debug(
+                self.system_logger.debug(
                     f"📊 캔들 갱신 완료: {len(candles)}개, "
                     f"최근 OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']})"
                 )
             else:
-                self.logger.debug("📊 캔들 갱신: 결과 없음")
+                self.system_logger.debug("📊 캔들 갱신: 결과 없음")
 
         except Exception as e:
-            self.logger.warning(f"❌ 캔들 요청 실패: {e}")
+            self.system_logger.warning(f"❌ 캔들 요청 실패: {e}")
 
     def ma100_list(self, closes):
         closes_list = list(closes)
@@ -908,17 +908,17 @@ class BybitRestController:
                 data = response.json()
                 ret_code = data.get("retCode")
                 if ret_code == 0:
-                    self.logger.debug(f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}")
+                    self.system_logger.debug(f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}")
                     return True
                 elif ret_code == 110043:
-                    self.logger.debug(f"⚠️ 이미 설정된 레버리지입니다: {leverage}x | 심볼: {symbol}")
+                    self.system_logger.debug(f"⚠️ 이미 설정된 레버리지입니다: {leverage}x | 심볼: {symbol}")
                     return True  # 이건 실패 아님
                 else:
-                    self.logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {ret_code})")
+                    self.system_logger.error(f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {ret_code})")
             else:
-                self.logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
+                self.system_logger.error(f"❌ HTTP 오류: {response.status_code} {response.text}")
         except Exception as e:
-            self.logger.error(f"❌ 레버리지 설정 중 예외 발생: {e}")
+            self.system_logger.error(f"❌ 레버리지 설정 중 예외 발생: {e}")
 
         return False
     def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1):
@@ -946,7 +946,7 @@ class BybitRestController:
             try:
                 data = r.json()
             except Exception:
-                self.logger.debug(f"응답 JSON 파싱 실패: {r.text[:200]}")
+                self.system_logger.debug(f"응답 JSON 파싱 실패: {r.text[:200]}")
                 data = {}
 
             orders = data.get("result", {}).get("list", [])
@@ -961,7 +961,7 @@ class BybitRestController:
                     return o
 
                 # 그 외(New/PartiallyFilled 등)는 계속 대기
-            self.logger.debug(
+            self.system_logger.debug(
                 f"⌛ 주문 체결 대기중... ({i + 1}/{max_retries}) | 심볼: {symbol} | 주문ID: {order_id[-6:]}"
             )
             time.sleep(sleep_sec)
@@ -983,23 +983,23 @@ class BybitRestController:
         }
         resp = self._request_with_resync("POST", endpoint, params_pairs=None, body_dict=body, timeout=5)
         if resp.status_code != 200:
-            self.logger.error(f"❌ HTTP 오류: {resp.status_code} {resp.text}")
+            self.system_logger.error(f"❌ HTTP 오류: {resp.status_code} {resp.text}")
             return None
         data = resp.json()
         if data.get("retCode") == 0:
             return data.get("result", {})
-        self.logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
+        self.system_logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
         return None
 
     def open_market(self, symbol, side, price, percent, balance):
         if price is None or balance is None:
-            self.logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
+            self.system_logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
             return None
 
         total_balance = balance.get("total", 0)
         qty = round(total_balance * self.leverage / price * percent / 100, 3)
         if qty < 0.001:
-            self.logger.warning("❗ 주문 수량이 너무 작습니다. 주문 중단.")
+            self.system_logger.warning("❗ 주문 수량이 너무 작습니다. 주문 중단.")
             return None
 
         if side.lower() == "long":
@@ -1007,16 +1007,16 @@ class BybitRestController:
         elif side.lower() == "short":
             order_side, position_idx = "Sell", 2
         else:
-            self.logger.error(f"❌ 알 수 없는 side 값: {side}")
+            self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
             return None
 
-        self.logger.debug(f"📥 {side.upper()} 진입 시도 | 수량: {qty} @ {price:.2f}")
+        self.system_logger.debug(f"📥 {side.upper()} 진입 시도 | 수량: {qty} @ {price:.2f}")
         return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
 
     def close_market(self, symbol, side, qty):
         qty = float(qty)
         if qty < 0.001:
-            self.logger.warning("❗ 청산 수량이 너무 작습니다. 중단.")
+            self.system_logger.warning("❗ 청산 수량이 너무 작습니다. 중단.")
             return None
 
         if side.upper() == "LONG":
@@ -1024,10 +1024,10 @@ class BybitRestController:
         elif side.upper() == "SHORT":
             order_side, position_idx = "Buy", 2
         else:
-            self.logger.error(f"❌ 알 수 없는 side 값: {side}")
+            self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
             return None
 
-        self.logger.debug(f"📤 {side.upper()} 포지션 청산 시도 | 수량: {qty}")
+        self.system_logger.debug(f"📤 {side.upper()} 포지션 청산 시도 | 수량: {qty}")
         return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
 
     def cancel_order(self, symbol, order_id):

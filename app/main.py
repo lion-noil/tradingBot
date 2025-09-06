@@ -7,6 +7,7 @@ load_dotenv()
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 import os
+import logging
 import asyncio
 from fastapi import FastAPI, Response, HTTPException,Request  # ← Response, HTTPException 추가
 from core.trade_bot import TradeBot
@@ -22,8 +23,32 @@ class ManualCloseRequest(BaseModel):
     side: Literal["LONG", "SHORT"]
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-error_logger = setup_logger("error")
-trading_logger = setup_logger("trading")
+
+# system: 사람용 로그 + 텔레그램(원하면 레벨 높게), signals.jsonl 없음
+system_logger = setup_logger(
+    "system",
+    logger_level=logging.DEBUG,
+    console_level=logging.DEBUG,
+    file_level=logging.INFO,
+    enable_telegram=True,
+    telegram_level=logging.INFO,
+    exclude_sig_in_file=False,     # ✅ SIG도 파일에 포함(혹시 찍히더라도)
+    telegram_mode="both",          # ✅ 사람용도, 만약 SIG가 있다면 그것도 함께
+)
+
+# 트레이딩 로거: 사람용은 파일, SIG는 텔레그램(+ signals.jsonl)
+trading_logger = setup_logger(
+    "trading",
+    logger_level=logging.DEBUG,
+    console_level=logging.DEBUG,
+    file_level=logging.INFO,
+    enable_telegram=True,
+    telegram_level=logging.INFO,
+    write_signals_file=True,       # ✅ signals.jsonl 생성
+    signals_filename="signals.jsonl",
+    exclude_sig_in_file=False,      # ✅ 사람용 파일에서 SIG 제외
+    telegram_mode="both",
+)
 
 app = FastAPI()
 manual_queue = Queue()
@@ -40,9 +65,9 @@ async def bot_loop():
                 bot.price_history
                 and len(bot.price_history) == bot.price_history.maxlen
         ):
-            error_logger.debug("✅ 데이터 준비 완료, 메인 루프 시작")
+            system_logger.debug("✅ 데이터 준비 완료, 메인 루프 시작")
             break
-        error_logger.debug("⏳ 데이터 준비 중...")
+        system_logger.debug("⏳ 데이터 준비 중...")
         await asyncio.sleep(0.5)
 
     while bot.running:
@@ -51,19 +76,19 @@ async def bot_loop():
             await asyncio.sleep(0.5)
 
         except Exception as e:
-            error_logger.error(f"❌ bot_loop 오류: {e}")
+            system_logger.error(f"❌ bot_loop 오류: {e}")
             await asyncio.sleep(10)
 
 
 @app.on_event("startup")
 async def startup_event():
     global bot, bybit_websocket_controller, bybit_rest_controller, scheduler
-    error_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
-    bybit_websocket_controller = BybitWebSocketController(logger = error_logger)
-    bybit_rest_controller = BybitRestController(logger = error_logger)
-    bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue,error_logger=error_logger,trading_logger=trading_logger)
+    system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
+    bybit_websocket_controller = BybitWebSocketController(system_logger = system_logger)
+    bybit_rest_controller = BybitRestController(system_logger = system_logger)
+    bot = TradeBot(bybit_websocket_controller, bybit_rest_controller, manual_queue,system_logger=system_logger,trading_logger=trading_logger)
     asyncio.create_task(bot_loop())
-    scheduler = init_daily_report_scheduler(lambda: bot, logger=error_logger)
+    scheduler = init_daily_report_scheduler(lambda: bot, system_logger=system_logger)
 
 @app.get("/info")
 async def status(symbol: str = "BTCUSDT", plain: bool = True):
@@ -96,7 +121,7 @@ async def manual_close(request: ManualCloseRequest):
 @app.post("/report/daily")
 async def trigger_daily_report(symbol: str = "BTCUSDT"):
     try:
-        result = run_daily_report_from_cache(lambda: bot, symbol=symbol, logger=error_logger)
+        result = run_daily_report_from_cache(lambda: bot, symbol=symbol, system_logger=system_logger)
         return {"status": "ok", "rows": result.get("count")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
