@@ -15,8 +15,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from matplotlib import font_manager, rcParams
 
-from matplotlib import gridspec
-
 def _draw_footer(ax_footer, footer_lines: list[str], *, max_rows_per_col=14):
     """
     ax_footer: 아래쪽 빈 축(axes). 눈금/프레임 없음.
@@ -662,7 +660,7 @@ def run_daily_report_from_cache(get_bot, symbol="BTCUSDT", system_logger=None,
 
     _send_telegram_photo(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, png, caption=title)
     if system_logger:
-        system_logger.info("✅ 일일 리포트 전송 완료(캐시+MA100+신호 마킹)")
+        system_logger.debug("✅ 일일 리포트 전송 완료(캐시+MA100+신호 마킹)")
     return {"ok": True, "count": len(rows_win), "signals": len(signals)}
 
 
@@ -670,9 +668,12 @@ def run_daily_report_from_cache(get_bot, symbol="BTCUSDT", system_logger=None,
 def init_daily_report_scheduler(get_bot, system_logger=None, hour=6, minute=50, tz=_TZ, symbol="BTCUSDT"):
 
     global _scheduler
-    _scheduler = AsyncIOScheduler(timezone=tz)
-    trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
-    _scheduler.add_job(lambda: run_daily_report_from_cache(get_bot, symbol=symbol, logger=system_logger),
+    tzinfo = ZoneInfo(tz) if isinstance(tz, str) else tz
+
+
+    _scheduler = AsyncIOScheduler(timezone=tzinfo)
+    trigger = CronTrigger(hour=hour, minute=minute, timezone=tzinfo)
+    _scheduler.add_job(lambda: run_daily_report_from_cache(get_bot, symbol=symbol, system_logger=system_logger),
                        trigger, id="daily_report", replace_existing=True)
     _scheduler.start()
     if system_logger:
