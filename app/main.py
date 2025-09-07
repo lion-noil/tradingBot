@@ -118,7 +118,7 @@ async def manual_close(request: ManualCloseRequest):
 """
 
 # app/main.py - 수동 트리거용 엔드포인트(원하면)
-@app.post("/report/daily")
+@app.get("/dailyreport")
 async def trigger_daily_report(symbol: str = "BTCUSDT"):
     try:
         result = run_daily_report_from_cache(lambda: bot, symbol=symbol, system_logger=system_logger)
