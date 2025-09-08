@@ -262,8 +262,9 @@ class TradeBot:
             ## 청산조건
             for side in ["LONG", "SHORT"]:
                 recent_time = self.last_position_time.get(side)
-                pos_amt = float(self.pos_dict[side]["position_amt"])
+
                 if recent_time:
+                    pos_amt = float(self.pos_dict[side]["position_amt"])
                     sig = get_exit_signal(
                         side, latest_price, self.now_ma100,
                         recent_entry_time=recent_time,
