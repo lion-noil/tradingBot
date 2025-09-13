@@ -176,6 +176,7 @@ class BybitRestController:
         self.orders_file = f"{symbol}_orders.json"
         self.wallet_file = f"{symbol}_wallet.json"
         self.leverage = 50
+        self.sync_time()
         self.set_leverage(leverage = self.leverage)
         self.FEE_RATE = 0.00055  # 0.055%
 
@@ -757,47 +758,6 @@ class BybitRestController:
         except Exception as e:
             self.system_logger.error(f"[ERROR] 거래기록 append 실패: {e}")
             return self.load_orders()
-    def update_closes(self, closes, count=None):
-        try:
-            url = f"{self.base_url}/v5/market/kline"
-            params = {
-                "category": "linear",
-                "symbol": self.symbol,
-                "interval": "1",
-                "limit": 1000
-            }
-
-            all_closes = []
-            latest_end = None
-
-            while len(all_closes) < count:
-                if latest_end:
-                    params["end"] = latest_end
-
-                res = requests.get(url, params=params, timeout=10)
-                res.raise_for_status()
-                data = res.json().get("result", {}).get("list", [])
-
-                if not data:
-                    break
-
-                data = data[::-1]
-                closes_chunk = [float(c[4]) for c in data]
-                all_closes = closes_chunk + all_closes
-                latest_end = int(data[0][0]) - 1
-
-                if len(data) < 1000:
-                    break
-
-            all_closes = all_closes[-count:]
-            closes.clear()
-            closes.extend(all_closes)
-
-            self.system_logger.debug(f"📊 캔들 갱신 완료: {len(closes)}개, 최근 종가: {closes[-1]}")
-        except Exception as e:
-            self.system_logger.warning(f"❌ 캔들 요청 실패: {e}")
-
-
 
     def update_candles(self, candles, count=None):
         """
@@ -827,7 +787,28 @@ class BybitRestController:
 
                 res = requests.get(url, params=params, timeout=10)
                 res.raise_for_status()
-                raw_list = res.json().get("result", {}).get("list", [])
+
+                data = res.json()
+                if not isinstance(data, dict):
+                    raise RuntimeError(f"unexpected JSON root: {type(data).__name__}")
+
+                ret_code = data.get("retCode", 0)
+                if ret_code != 0:
+                    ret_msg = data.get("retMsg")
+                    raise RuntimeError(f"bybit error retCode={ret_code}, retMsg={ret_msg}")
+
+                result = data.get("result", {})
+                if isinstance(result, dict):
+                    raw_list = result.get("list") or []
+                elif isinstance(result, list):
+                    # 간헐적으로 result 자체가 list로 오는 케이스
+                    raw_list = result
+                else:
+                    raise RuntimeError(f"unexpected 'result' type: {type(result).__name__}")
+
+                if not isinstance(raw_list, list):
+                    raise RuntimeError(f"'list' is {type(raw_list).__name__}, not list")
+                # -------------------------------------
 
                 if not raw_list:
                     break
@@ -836,29 +817,38 @@ class BybitRestController:
                 raw_list = raw_list[::-1]
 
                 # 0=startTime(ms), 1=open, 2=high, 3=low, 4=close
-                chunk = [
-                    {
-                        "start": _safe_int(c[0]),
-                        "open": float(c[1]),
-                        "high": float(c[2]),
-                        "low": float(c[3]),
-                        "close": float(c[4]),
-                    }
-                    for c in raw_list
-                ]
+                chunk = []
+                for c in raw_list:
+                    try:
+                        # 각 항목이 리스트/튜플이고 길이가 충분한지 방어
+                        if not isinstance(c, (list, tuple)) or len(c) < 5:
+                            continue
+                        item = {
+                            "start": _safe_int(c[0]),
+                            "open": float(c[1]),
+                            "high": float(c[2]),
+                            "low": float(c[3]),
+                            "close": float(c[4]),
+                        }
+                        chunk.append(item)
+                    except Exception:
+                        # 개별 변환 실패는 스킵
+                        continue
 
                 # 더 오래된 묶음이 앞에 오도록 누적(전체는 오래된→최신 순서 유지)
-                all_candles = chunk + all_candles
-
-                # 다음 페이지는 이번 묶음의 가장 오래된 캔들 시작 직전까지로 이동
-                latest_end = _safe_int(raw_list[0][0]) - 1
+                if chunk:
+                    all_candles = chunk + all_candles
+                    # 다음 페이지는 이번 묶음의 가장 오래된 캔들 시작 직전까지로 이동
+                    latest_end = _safe_int(raw_list[0][0]) - 1
+                else:
+                    break
 
                 # 마지막 페이지(요청 수보다 적게 온 경우)면 종료
                 if len(raw_list) < req_limit:
                     break
 
             # 최종 개수로 슬라이싱
-            if count:
+            if isinstance(count, int) and count > 0:
                 all_candles = all_candles[-count:]
 
             candles.clear()
