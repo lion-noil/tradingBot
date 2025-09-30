@@ -179,10 +179,10 @@ class TradeBot:
         if time.monotonic() >= self._just_traded_until:
             ## short 진입 조건
             recent_short_time = self.last_position_time.get("SHORT")
-            blocked = self._cooldown_blocked(recent_short_time) if recent_short_time else False
-            allow_entry = not blocked
+            short_blocked = False  # _cooldown_blocked 대신 신호 함수에서 쿨다운 처리
+            allow_short_entry = not short_blocked
 
-            if allow_entry:
+            if allow_short_entry:
                 short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
                 short_position_value = short_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
@@ -193,10 +193,15 @@ class TradeBot:
                     # self.system_logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     sig = get_short_entry_signal(
-                        latest_price, self.now_ma100, self.prev,
+                        price=latest_price,
+                        ma100=self.now_ma100,
+                        prev=self.prev,
                         ma_threshold=self.ma_threshold,
-                        momentum_threshold=self.momentum_threshold
+                        momentum_threshold=self.momentum_threshold,
+                        recent_entry_time=recent_short_time,  # ✅ 최근 진입시간 전달
+                        reentry_cooldown_sec=60*60  # ✅ 1시간 쿨다운
                     )
+
                     if sig:
                         self.trading_logger.info("SIG " + json.dumps({
                             "kind": sig.kind,
@@ -208,7 +213,7 @@ class TradeBot:
                             "ma_delta_pct": sig.ma_delta_pct,
                             "momentum_pct": sig.momentum_pct,
                             "thresholds": sig.thresholds,
-                            "reasons": sig.reasons,  # ✅ 추가
+                            "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
 
@@ -220,9 +225,10 @@ class TradeBot:
 
             ## long 진입 조건
             recent_long_time = self.last_position_time.get("LONG")
-            blocked = self._cooldown_blocked(recent_long_time) if recent_long_time else False
-            allow_entry = not blocked
-            if allow_entry:
+            long_blocked = False  # _cooldown_blocked 대신 신호 함수에서 쿨다운 처리
+            allow_long_entry = not long_blocked
+
+            if allow_long_entry:
                 long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
                 long_position_value = long_amt * latest_price
                 total_balance = self.balance.get("total", 0) or 0
@@ -233,9 +239,13 @@ class TradeBot:
                     # self.system_logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
                 else:
                     sig = get_long_entry_signal(
-                        latest_price, self.now_ma100, self.prev,
+                        price=latest_price,
+                        ma100=self.now_ma100,
+                        prev=self.prev,
                         ma_threshold=self.ma_threshold,
-                        momentum_threshold=self.momentum_threshold
+                        momentum_threshold=self.momentum_threshold,
+                        recent_entry_time=recent_long_time,
+                        reentry_cooldown_sec=60*60
                     )
                     if sig:
                         self.trading_logger.info("SIG " + json.dumps({
@@ -248,7 +258,7 @@ class TradeBot:
                             "ma_delta_pct": sig.ma_delta_pct,
                             "momentum_pct": sig.momentum_pct,
                             "thresholds": sig.thresholds,
-                            "reasons": sig.reasons,  # ✅ 추가
+                            "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
 
@@ -262,35 +272,36 @@ class TradeBot:
             ## 청산조건
             for side in ["LONG", "SHORT"]:
                 recent_time = self.last_position_time.get(side)
+                if not recent_time:
+                    continue
+                pos_amt = float(self.pos_dict[side]["position_amt"])
+                sig = get_exit_signal(
+                    side, latest_price, self.now_ma100,
+                    recent_entry_time=recent_time,
+                    ma_threshold = self.ma_threshold,
+                    exit_ma_threshold=self.exit_ma_threshold,
+                    time_limit_sec=24 * 3600,
+                    near_touch_window_sec=30 * 60
+                )
+                if sig:
+                    self.trading_logger.info("SIG " + json.dumps({
+                        "kind": sig.kind,
+                        "side": sig.side,
+                        "symbol": self.symbol,
+                        "ts": datetime.now(_TZ).isoformat(),
+                        "price": sig.price,
+                        "ma100": sig.ma100,
+                        "ma_delta_pct": sig.ma_delta_pct,
+                        "thresholds": sig.thresholds,
+                        "reasons": sig.reasons,  # ✅ 추가 (예: 'MA100 재접근', '보유시간 초과' 등)
+                        "extra": sig.extra or {}  # reason_code / time_held_sec 포함
+                    }, ensure_ascii=False))
 
-                if recent_time:
-                    pos_amt = float(self.pos_dict[side]["position_amt"])
-                    sig = get_exit_signal(
-                        side, latest_price, self.now_ma100,
-                        recent_entry_time=recent_time,
-                        ma_threshold=self.exit_ma_threshold,
-                        time_limit_sec=7200
+                    await self._execute_and_sync(
+                        self.bybit_rest_controller.close_market,
+                        self.status, self.symbol,
+                        side=side, qty=pos_amt
                     )
-                    if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
-                            "kind": sig.kind,
-                            "side": sig.side,
-                            "symbol": self.symbol,
-                            "ts": datetime.now(_TZ).isoformat(),
-                            "price": sig.price,
-                            "ma100": sig.ma100,
-                            "ma_delta_pct": sig.ma_delta_pct,
-                            "thresholds": sig.thresholds,
-                            "reasons": sig.reasons,  # ✅ 추가 (예: 'MA100 재접근', '보유시간 초과' 등)
-                            "extra": sig.extra or {}  # reason_code / time_held_sec 포함
-                        }, ensure_ascii=False))
-
-                        if pos_amt > 0:
-                            await self._execute_and_sync(
-                                self.bybit_rest_controller.close_market,
-                                self.status, self.symbol,
-                                side=side, qty=pos_amt
-                            )
 
     def _cooldown_blocked(self, recent_ts, cooldown_secs=1800):
         if not recent_ts:
