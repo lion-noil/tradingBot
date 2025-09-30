@@ -16,8 +16,8 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.symbol = symbol
         self.running = True
-        self.candles_num = 7200
-        self.closes_num = 7200
+        self.candles_num = 10080
+        self.closes_num = 10080
         self.candles = deque(maxlen=self.candles_num)
         self.closes = [c.close for c in self.candles]
         self.TAKER_FEE_RATE = 0.00055
