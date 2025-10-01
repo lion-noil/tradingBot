@@ -131,16 +131,16 @@ def get_exit_signal(
 
         # 3) MA100 재터치(또는 터치) 조건
         if position == "LONG":
-            # 가격이 MA100까지 (1 - trigger_pct) 이상 올라오면 청산
-            if price >= ma100 * (1 - trigger_pct):
+            # 가격이 MA100까지 (1 + trigger_pct) 이상 올라오면 청산
+            if price >= ma100 * (1 + trigger_pct):
                 pct = trigger_pct * 100
-                reasons = [f"🔻 MA100 대비 -{pct:.4f}% {window_label} 도달 (롱 청산)"]
+                reasons = [f"🔻 MA100 대비 +{pct:.4f}% {window_label} 도달 (롱 청산)"]
                 reason_code = f"MA_{touch_code_suffix}_LONG"
         elif position == "SHORT":
-            # 가격이 MA100까지 (1 + trigger_pct) 이하로 내려오면 청산
-            if price <= ma100 * (1 + trigger_pct):
+            # 가격이 MA100까지 (1 - trigger_pct) 이하로 내려오면 청산
+            if price <= ma100 * (1 - trigger_pct):
                 pct = trigger_pct * 100
-                reasons = [f"🔺 MA100 대비 +{pct:.4f}% {window_label} 도달 (숏 청산)"]
+                reasons = [f"🔺 MA100 대비 -{pct:.4f}% {window_label} 도달 (숏 청산)"]
                 reason_code = f"MA_{touch_code_suffix}_SHORT"
         else:
             # 예상치 못한 포지션 문자열 보호
@@ -167,32 +167,3 @@ def get_exit_signal(
         }
     )
 
-
-    if position == "LONG" and price > ma100 * (1 - exit_ma_threshold):
-        reasons = [f"🔻 MA100 대비 -{exit_ma_threshold*100:.4f}% 근처 도달 (롱 청산 조건)"]
-        reason_code = "MA_RETOUCH_LONG"
-    elif position == "SHORT" and price < ma100 * (1 + exit_ma_threshold):
-        reasons = [f"🔺 MA100 대비 +{exit_ma_threshold*100:.4f}% 근처 도달 (숏 청산 조건)"]
-        reason_code = "MA_RETOUCH_SHORT"
-    else:
-        if recent_entry_time:
-            held_sec = (now_ms - recent_entry_time) / 1000
-            if held_sec >= time_limit_sec:
-                hours = time_limit_sec / 3600
-                reasons = [f"⏰ 진입 후 {int(held_sec)}초 경과 ({hours:.1f}시간 초과)"]
-                reason_code = "TIME_LIMIT"
-
-    if not reasons:
-        return None
-
-    ma_delta = (price - ma100) / max(ma100, 1e-12)
-    return Signal(
-        ok=True, kind="EXIT", side=position, reasons=reasons,
-        price=price, ma100=ma100, ma_delta_pct=ma_delta,
-        momentum_pct=None,
-        thresholds={"ma": ma_threshold},
-        extra={
-            "reason_code": reason_code,
-            "time_held_sec": int((now_ms - recent_entry_time)/1000) if recent_entry_time else None
-        }
-    )
