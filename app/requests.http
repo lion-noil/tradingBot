@@ -37,4 +37,4 @@ Content-Type: application/json
 GET http://localhost:8000/info
 
 ### report 확인
-POST http://localhost:8000/report/daily
+GET http://localhost:8000/dailyreport

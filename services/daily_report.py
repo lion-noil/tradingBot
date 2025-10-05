@@ -394,10 +394,7 @@ def _annotate_signals(ax, rows_window, signals: list[dict], tz: ZoneInfo,
             if isinstance(mv, (int, float)) and mv > 0:
                 ma_val = mv
 
-        if kind == "EXIT" and ma_val is not None:
-            y_anchor = ma_val
-        else:
-            y_anchor = lows[x] if side == "LONG" else highs[x]
+        y_anchor = lows[x] if side == "LONG" else highs[x]
 
         clusters[x].append((x, y_anchor, sig))
 

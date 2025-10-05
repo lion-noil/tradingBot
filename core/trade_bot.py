@@ -177,97 +177,6 @@ class TradeBot:
 
         # 4. 자동매매 조건 평가
         if time.monotonic() >= self._just_traded_until:
-            ## short 진입 조건
-            recent_short_time = self.last_position_time.get("SHORT")
-            short_blocked = False  # _cooldown_blocked 대신 신호 함수에서 쿨다운 처리
-            allow_short_entry = not short_blocked
-
-            if allow_short_entry:
-                short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
-                short_position_value = short_amt * latest_price
-                total_balance = self.balance.get("total", 0) or 0
-                position_ratio = (short_position_value / total_balance) if total_balance else 0
-
-                if position_ratio >= leverage_limit:
-                    pass
-                    # self.system_logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
-                else:
-                    sig = get_short_entry_signal(
-                        price=latest_price,
-                        ma100=self.now_ma100,
-                        prev=self.prev,
-                        ma_threshold=self.ma_threshold,
-                        momentum_threshold=self.momentum_threshold,
-                        recent_entry_time=recent_short_time,  # ✅ 최근 진입시간 전달
-                        reentry_cooldown_sec=60*60  # ✅ 1시간 쿨다운
-                    )
-
-                    if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
-                            "kind": sig.kind,
-                            "side": sig.side,
-                            "symbol": self.symbol,
-                            "ts": datetime.now(_TZ).isoformat(),
-                            "price": sig.price,
-                            "ma100": sig.ma100,
-                            "ma_delta_pct": sig.ma_delta_pct,
-                            "momentum_pct": sig.momentum_pct,
-                            "thresholds": sig.thresholds,
-                            "reasons": sig.reasons,
-                            "extra": sig.extra or {}
-                        }, ensure_ascii=False))
-
-                        await self._execute_and_sync(
-                            self.bybit_rest_controller.open_market,
-                            self.status, self.symbol, "short",
-                            latest_price, percent, self.balance
-                        )
-
-            ## long 진입 조건
-            recent_long_time = self.last_position_time.get("LONG")
-            long_blocked = False  # _cooldown_blocked 대신 신호 함수에서 쿨다운 처리
-            allow_long_entry = not long_blocked
-
-            if allow_long_entry:
-                long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
-                long_position_value = long_amt * latest_price
-                total_balance = self.balance.get("total", 0) or 0
-                position_ratio = (long_position_value / total_balance) if total_balance else 0
-
-                if position_ratio >= leverage_limit:
-                    pass
-                    # self.system_logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
-                else:
-                    sig = get_long_entry_signal(
-                        price=latest_price,
-                        ma100=self.now_ma100,
-                        prev=self.prev,
-                        ma_threshold=self.ma_threshold,
-                        momentum_threshold=self.momentum_threshold,
-                        recent_entry_time=recent_long_time,
-                        reentry_cooldown_sec=60*60
-                    )
-                    if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
-                            "kind": sig.kind,
-                            "side": sig.side,
-                            "symbol": self.symbol,
-                            "ts": datetime.now(_TZ).isoformat(),
-                            "price": sig.price,
-                            "ma100": sig.ma100,
-                            "ma_delta_pct": sig.ma_delta_pct,
-                            "momentum_pct": sig.momentum_pct,
-                            "thresholds": sig.thresholds,
-                            "reasons": sig.reasons,
-                            "extra": sig.extra or {}
-                        }, ensure_ascii=False))
-
-                        await self._execute_and_sync(
-                            self.bybit_rest_controller.open_market,
-                            self.status, self.symbol, "long",
-                            latest_price, percent, self.balance
-                        )
-
 
             ## 청산조건
             for side in ["LONG", "SHORT"]:
@@ -303,12 +212,88 @@ class TradeBot:
                         side=side, qty=pos_amt
                     )
 
-    def _cooldown_blocked(self, recent_ts, cooldown_secs=1800):
-        if not recent_ts:
-            return False  # FIX: 불리언만 반환
-        now_ts = int(time.time() * 1000)
-        seconds_since_entry = (now_ts - recent_ts) / 1000
-        return seconds_since_entry < cooldown_secs
+            ## short 진입 조건
+            recent_short_time = self.last_position_time.get("SHORT")
+            short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
+            short_position_value = short_amt * latest_price
+            total_balance = self.balance.get("total", 0) or 0
+            position_ratio = (short_position_value / total_balance) if total_balance else 0
+
+            if position_ratio >= leverage_limit:
+                pass
+                # self.system_logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+            else:
+                sig = get_short_entry_signal(
+                    price=latest_price,
+                    ma100=self.now_ma100,
+                    prev=self.prev,
+                    ma_threshold=self.ma_threshold,
+                    momentum_threshold=self.momentum_threshold,
+                    recent_entry_time=recent_short_time,  # ✅ 최근 진입시간 전달
+                    reentry_cooldown_sec=60*60  # ✅ 1시간 쿨다운
+                )
+
+                if sig:
+                    self.trading_logger.info("SIG " + json.dumps({
+                        "kind": sig.kind,
+                        "side": sig.side,
+                        "symbol": self.symbol,
+                        "ts": datetime.now(_TZ).isoformat(),
+                        "price": sig.price,
+                        "ma100": sig.ma100,
+                        "ma_delta_pct": sig.ma_delta_pct,
+                        "momentum_pct": sig.momentum_pct,
+                        "thresholds": sig.thresholds,
+                        "reasons": sig.reasons,
+                        "extra": sig.extra or {}
+                    }, ensure_ascii=False))
+
+                    await self._execute_and_sync(
+                        self.bybit_rest_controller.open_market,
+                        self.status, self.symbol, "short",
+                        latest_price, percent, self.balance
+                    )
+
+            ## long 진입 조건
+            recent_long_time = self.last_position_time.get("LONG")
+            long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
+            long_position_value = long_amt * latest_price
+            total_balance = self.balance.get("total", 0) or 0
+            position_ratio = (long_position_value / total_balance) if total_balance else 0
+
+            if position_ratio >= leverage_limit:
+                pass
+                # self.system_logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
+            else:
+                sig = get_long_entry_signal(
+                    price=latest_price,
+                    ma100=self.now_ma100,
+                    prev=self.prev,
+                    ma_threshold=self.ma_threshold,
+                    momentum_threshold=self.momentum_threshold,
+                    recent_entry_time=recent_long_time,
+                    reentry_cooldown_sec=60*60
+                )
+                if sig:
+                    self.trading_logger.info("SIG " + json.dumps({
+                        "kind": sig.kind,
+                        "side": sig.side,
+                        "symbol": self.symbol,
+                        "ts": datetime.now(_TZ).isoformat(),
+                        "price": sig.price,
+                        "ma100": sig.ma100,
+                        "ma_delta_pct": sig.ma_delta_pct,
+                        "momentum_pct": sig.momentum_pct,
+                        "thresholds": sig.thresholds,
+                        "reasons": sig.reasons,
+                        "extra": sig.extra or {}
+                    }, ensure_ascii=False))
+
+                    await self._execute_and_sync(
+                        self.bybit_rest_controller.open_market,
+                        self.status, self.symbol, "long",
+                        latest_price, percent, self.balance
+                    )
 
     def _apply_status(self, status):
         """로컬 상태 일괄 갱신(중복 코드 제거)"""
@@ -322,30 +307,6 @@ class TradeBot:
             "SHORT": (self.pos_dict.get("SHORT", {}).get("entries") or [[None]])[0][0]
             if self.pos_dict.get("SHORT") and self.pos_dict["SHORT"]["entries"] else None,
         }
-
-    def _extract_fp(self, status):
-        """포지션/밸런스 변화 감지용 '지문' 생성"""
-        pos_list = status.get("positions", [])
-        pos_dict = {p.get("position"): p for p in pos_list}
-
-        long_p = pos_dict.get("LONG", {})
-        short_p = pos_dict.get("SHORT", {})
-
-        def entry_time(p):
-            entries = p.get("entries") or []
-            return entries[0][0] if entries and entries[0] else None
-
-        return (
-            float(long_p.get("position_amt") or 0.0),
-            float(short_p.get("position_amt") or 0.0),
-            long_p.get("entryPrice"),
-            short_p.get("entryPrice"),
-            entry_time(long_p),
-            entry_time(short_p),
-            status.get("balance", {}).get("total"),
-            long_p.get("updatedTime") or long_p.get("updated_at"),
-            short_p.get("updatedTime") or short_p.get("updated_at"),
-        )
 
     async def _execute_and_sync(self, fn, prev_status, *args, **kwargs):
         async with self._sync_lock:
