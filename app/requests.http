@@ -33,8 +33,13 @@ Content-Type: application/json
 }
 
 
-### 상태 확인
-GET http://localhost:8000/info
+### 상태 확인 (BTCUSDT)
+GET http://localhost:8000/info?symbol=BTCUSDT
 
-### report 확인
-GET http://localhost:8000/dailyreport
+### 상태 확인 (ETHUSDT)
+GET http://localhost:8000/info?symbol=ETHUSDT
+
+### report 확인(BTCUSDT)
+GET http://localhost:8000/dailyreport?symbol=BTCUSDT
+### report 확인(ETHUSDT)
+GET http://localhost:8000/dailyreport?symbol=ETHUSDT

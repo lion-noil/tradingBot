@@ -572,14 +572,16 @@ def run_daily_report_from_cache(get_bot, symbol="BTCUSDT", system_logger=None,
     bot = get_bot()
     if bot is None:
         raise RuntimeError("bot 인스턴스가 없습니다.")
-    candles_deque = getattr(bot, "candles", None) or getattr(bot, "candels", None)
-    if candles_deque is None:
+        # ✅ candles 컨테이너에서 심볼별 deque 선택 (단일/멀티 모두 대응)
+    candles_container = getattr(bot, "candles", None) or getattr(bot, "candels", None)
+    if candles_container is None:
         raise RuntimeError("bot.candles(또는 bot.candels)가 없습니다.")
+    candles_deque = candles_container.get(symbol)
+    if candles_deque is None:
+        raise RuntimeError(f"'{symbol}' 위한 캔들 캐시가 없습니다.")
 
     (_, _), start_ms, end_ms, midnight_ms, period_label = _prev_window_ms_by_cutoff(6, 50, _TZ)
-
     signals_abs = _resolve_signals_path(signals_path)
-
     MA_WIN = 100
     LOOKBACK_MIN = MA_WIN - 1  # 99분
 
