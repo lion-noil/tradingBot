@@ -1,371 +1,369 @@
 
 from strategies.basic_strategy import get_short_entry_signal,get_long_entry_signal,get_exit_signal
-from collections import deque
 import time
 import math
 import asyncio
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from collections import deque
+
 _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
-    def __init__(self, bybit_websocket_controller, bybit_rest_controller, manual_queue, system_logger=None, trading_logger=None, symbol="BTCUSDT"):
-
+    def __init__(
+            self, bybit_websocket_controller, bybit_rest_controller, manual_queue,
+            system_logger=None, trading_logger=None, symbols=("BTCUSDT",)
+    ):
         self.bybit_websocket_controller = bybit_websocket_controller
         self.bybit_rest_controller = bybit_rest_controller
         self.manual_queue = manual_queue
-        self.symbol = symbol
+        self.system_logger = system_logger
+        self.trading_logger = trading_logger
+
+        self.symbols = list(symbols)
+        subscribe = getattr(self.bybit_websocket_controller, "subscribe_symbols", None)
+        if callable(subscribe):
+            try:
+                subscribe(*self.symbols)
+            except Exception:
+                pass
+
+        # ===== 공통 파라미터(변하지 않는 값) =====
         self.running = True
         self.candles_num = 10080
         self.closes_num = 10080
-        self.candles = deque(maxlen=self.candles_num)
-        self.closes = [c.close for c in self.candles]
         self.TAKER_FEE_RATE = 0.00055
-
-        self.ma100s = None
-        self.last_closes_update = 0
         self.target_cross = 10
-        self.ma_threshold = None
         self.leverage = 50
-
-        # 동시 진입/중복 업데이트 방지
-        self._sync_lock = asyncio.Lock()
-        self._just_traded_until = 0.0  # 직후 틱 자동진입/중복 실행 방지 쿨다운
-
         self.history_num = 10
         self.polling_interval = 0.5
+        self._sync_lock = asyncio.Lock()
+        self._just_traded_until = 0.0
 
-        self.price_history = deque(maxlen=self.history_num)
+        # ===== 심볼별 상태 dict =====
+        self.price_history = {s: deque(maxlen=self.history_num) for s in self.symbols}
+        self.candles = {s: deque(maxlen=self.candles_num) for s in self.symbols}
+        self.closes = {s: [] for s in self.symbols}
+        self.ma100s = {s: None for s in self.symbols}
+        self.now_ma100 = {s: None for s in self.symbols}
+        self.ma_threshold = {s: None for s in self.symbols}
+        self.momentum_threshold = {s: None for s in self.symbols}
+        self.exit_ma_threshold = {s: 0.0005 for s in self.symbols}  # 청산 기준(고정)
+        self.last_closes_update = {s: 0.0 for s in self.symbols}
 
-        self.system_logger = system_logger
-        self.trading_logger = trading_logger
-    def record_price(self):
+        self.status = {s: {} for s in self.symbols}
+        self.pos_dict = {s: {} for s in self.symbols}
+        self.balance = {s: {} for s in self.symbols}
+        self.last_position_time = {s: {"LONG": None, "SHORT": None} for s in self.symbols}
+        self.prev = {s: None for s in self.symbols}  # 3분 전 가격
+
+    def record_price(self, symbol):
         ts = time.time()
-        price = getattr(self.bybit_websocket_controller, "price", None)
+        price = None
+        get_price_fn = getattr(self.bybit_websocket_controller, "get_price", None)
 
-        # 1) 값 유효성 검사
-        if not isinstance(price, (int, float)):
-            self.system_logger.debug("skip record_price: non-numeric price=%r", price)
-            return
-        if not (price > 0):  # 0 또는 음수 방지
-            self.system_logger.debug("skip record_price: non-positive price=%r", price)
-            return
-        # float NaN/Inf 방지
-        if math.isnan(price) or math.isinf(price):
-            self.system_logger.debug("skip record_price: NaN/Inf price=%r", price)
+        price = get_price_fn(symbol)
+            # 유효성 체크
+        if not isinstance(price, (int, float)) or not (price > 0) or math.isnan(price) or math.isinf(price):
             return
 
-        # 2) 타임스탬프 단조 증가(간헐적 시계 역전/동일 ts 방지)
-        if self.price_history and ts <= self.price_history[-1][0]:
-            ts = self.price_history[-1][0] + 1e-6
-        self.price_history.append((ts, float(price)))
+            # 타임스탬프 단조 증가
+        ph = self.price_history[symbol]
+        if ph and ts <= ph[-1][0]:
+            ts = ph[-1][0] + 1e-6
+        ph.append((ts, float(price)))
 
-    def check_price_jump(self,):
+    # ---------- 급등락 체크(심볼별) ----------
+    def check_price_jump(self, symbol):
         min_sec = self.polling_interval
         max_sec = self.polling_interval * self.history_num
+        jump_pct = self.ma_threshold.get(symbol)
 
-        jump_pct = self.ma_threshold
-        if len(self.price_history) < self.history_num:
-            return None, None, None  # 데이터 부족
+        ph = self.price_history[symbol]
+        if len(ph) < self.history_num or jump_pct is None:
+            return None, None, None
 
-        now_ts, now_price = self.price_history[-1]
+        now_ts, now_price = ph[-1]
         in_window = False
         dts = []
 
-        for ts, past_price in list(self.price_history)[:-1]:
+        for ts, past_price in list(ph)[:-1]:
             dt = now_ts - ts
             if min_sec <= dt <= max_sec:
                 in_window = True
                 dts.append(dt)
-                if past_price == 0:
-                    continue
-                change_rate = (now_price - past_price) / past_price
-                if abs(change_rate) >= jump_pct:
-                    return ("UP" if change_rate > 0 else "DOWN",
-                            min(dts), max(dts))
-
+                if past_price != 0:
+                    change_rate = (now_price - past_price) / past_price
+                    if abs(change_rate) >= jump_pct:
+                        return ("UP" if change_rate > 0 else "DOWN", min(dts), max(dts))
         if in_window:
             return True, min(dts), max(dts)
         else:
             return None, None, None
 
-    async def run_once(self,):
-
-        now = time.time()
-        # 1️⃣ 현재 가격 기록
-        self.record_price()
-        _, latest_price = self.price_history[-1]
-
-        if now - self.last_closes_update >= 60:  # 1분 이상 경과 시
-            self.bybit_rest_controller.update_candles(self.candles, count=self.candles_num)
-            self.closes = [c["close"] for c in self.candles]
-            self.ma100s = self.bybit_rest_controller.ma100_list(self.closes)
-            self.last_closes_update = now
-            self.ma_threshold = self.bybit_rest_controller.find_optimal_threshold(self.closes, self.ma100s, min_thr=0.005, max_thr=0.03,
-                                                                 target_cross=self.target_cross)
-            self.momentum_threshold = self.ma_threshold / 3
-
-            self.bybit_rest_controller.set_full_position_info(self.symbol)
-            self.bybit_rest_controller.sync_orders_from_bybit()
-            self.bybit_rest_controller.set_wallet_balance()
-            new_status = self.bybit_rest_controller.get_current_position_status()
-            self._apply_status(new_status)
-            self.now_ma100 = self.ma100s[-1]
-            self.prev = self.closes[-3]
-            self.exit_ma_threshold = 0.0005  # 청산 기준
-            self.bybit_rest_controller.sync_time()
-
-        # 2️⃣ 급등락 테스트
-        state, min_dt, max_dt = self.check_price_jump()
-
-        if state:
-            if state == "UP":
-                self.system_logger.info(
-                    f" 📈 급등 감지! "
-                    f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
-                )
-            elif state == "DOWN":
-                self.system_logger.info(
-                    f" 📉 급락 감지! "
-                    f"(데이터간격: {min_dt:.3f} ~ {max_dt:.3f}초)"
-                )
-
-        percent = 10  # 총자산의 진입비율
-        leverage_limit = 30
-
-        self.system_logger.debug(self.make_status_log_msg())
-
-        # 3. 수동 명령 처리
-        if not self.manual_queue.empty():
-            command_data = await self.manual_queue.get()
-
-            if isinstance(command_data, dict):
-                command = command_data.get("command")
-                percent = command_data.get("percent", 10)  # 기본값 10%
-                close_side = command_data.get("side")
-            else:
-                close_side = None
-                command = command_data
-                percent = 10
-
-            if command in ("long", "short"):
-                await self._execute_and_sync(
-                    self.bybit_rest_controller.open_market,
-                    self.status,
-                    self.symbol,
-                    command,  # "long" or "short"
-                    latest_price,
-                    percent,
-                    self.balance
-                )
-
-            elif command == "close":
-                if close_side and close_side in self.pos_dict:
-                    pos_amt = float(self.pos_dict[close_side]["position_amt"])
-                    if pos_amt != 0:
-                        await self._execute_and_sync(
-                            self.bybit_rest_controller.close_market,
-                            self.status,
-                            self.symbol,
-                            side=close_side,  # "LONG" or "SHORT"
-                            qty=pos_amt
-                        )
-                    else:
-                        self.system_logger.info(f"❗ 청산할 {close_side} 포지션 없음 (수량 0)")
-                else:
-                    self.system_logger.info(f"❗ 포지션 정보 없음 or 잘못된 side: {close_side}")
-
-        # 4. 자동매매 조건 평가
-        if time.monotonic() >= self._just_traded_until:
-
-            ## 청산조건
-            for side in ["LONG", "SHORT"]:
-                recent_time = self.last_position_time.get(side)
-                if not recent_time:
-                    continue
-                pos_amt = float(self.pos_dict[side]["position_amt"])
-                sig = get_exit_signal(
-                    side, latest_price, self.now_ma100,
-                    recent_entry_time=recent_time,
-                    ma_threshold = self.ma_threshold,
-                    exit_ma_threshold=self.exit_ma_threshold,
-                    time_limit_sec=24 * 3600,
-                    near_touch_window_sec=30 * 60
-                )
-                if sig:
-                    self.trading_logger.info("SIG " + json.dumps({
-                        "kind": sig.kind,
-                        "side": sig.side,
-                        "symbol": self.symbol,
-                        "ts": datetime.now(_TZ).isoformat(),
-                        "price": sig.price,
-                        "ma100": sig.ma100,
-                        "ma_delta_pct": sig.ma_delta_pct,
-                        "thresholds": sig.thresholds,
-                        "reasons": sig.reasons,  # ✅ 추가 (예: 'MA100 재접근', '보유시간 초과' 등)
-                        "extra": sig.extra or {}  # reason_code / time_held_sec 포함
-                    }, ensure_ascii=False))
-
-                    await self._execute_and_sync(
-                        self.bybit_rest_controller.close_market,
-                        self.status, self.symbol,
-                        side=side, qty=pos_amt
-                    )
-
-            ## short 진입 조건
-            recent_short_time = self.last_position_time.get("SHORT")
-            short_amt = abs(float(self.pos_dict.get("SHORT", {}).get("position_amt", 0)))
-            short_position_value = short_amt * latest_price
-            total_balance = self.balance.get("total", 0) or 0
-            position_ratio = (short_position_value / total_balance) if total_balance else 0
-
-            if position_ratio >= leverage_limit:
-                pass
-                # self.system_logger.info(f"⛔ 숏 포지션 비중 {position_ratio  :.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
-            else:
-                sig = get_short_entry_signal(
-                    price=latest_price,
-                    ma100=self.now_ma100,
-                    prev=self.prev,
-                    ma_threshold=self.ma_threshold,
-                    momentum_threshold=self.momentum_threshold,
-                    recent_entry_time=recent_short_time,  # ✅ 최근 진입시간 전달
-                    reentry_cooldown_sec=60*60  # ✅ 1시간 쿨다운
-                )
-
-                if sig:
-                    self.trading_logger.info("SIG " + json.dumps({
-                        "kind": sig.kind,
-                        "side": sig.side,
-                        "symbol": self.symbol,
-                        "ts": datetime.now(_TZ).isoformat(),
-                        "price": sig.price,
-                        "ma100": sig.ma100,
-                        "ma_delta_pct": sig.ma_delta_pct,
-                        "momentum_pct": sig.momentum_pct,
-                        "thresholds": sig.thresholds,
-                        "reasons": sig.reasons,
-                        "extra": sig.extra or {}
-                    }, ensure_ascii=False))
-
-                    await self._execute_and_sync(
-                        self.bybit_rest_controller.open_market,
-                        self.status, self.symbol, "short",
-                        latest_price, percent, self.balance
-                    )
-
-            ## long 진입 조건
-            recent_long_time = self.last_position_time.get("LONG")
-            long_amt = abs(float(self.pos_dict.get("LONG", {}).get("position_amt", 0)))
-            long_position_value = long_amt * latest_price
-            total_balance = self.balance.get("total", 0) or 0
-            position_ratio = (long_position_value / total_balance) if total_balance else 0
-
-            if position_ratio >= leverage_limit:
-                pass
-                # self.system_logger.info(f"⛔ 롱 포지션 비중 {position_ratio:.0%} → 총 자산의 {leverage_limit * 100:.0f}% 초과, 추매 차단")
-            else:
-                sig = get_long_entry_signal(
-                    price=latest_price,
-                    ma100=self.now_ma100,
-                    prev=self.prev,
-                    ma_threshold=self.ma_threshold,
-                    momentum_threshold=self.momentum_threshold,
-                    recent_entry_time=recent_long_time,
-                    reentry_cooldown_sec=60*60
-                )
-                if sig:
-                    self.trading_logger.info("SIG " + json.dumps({
-                        "kind": sig.kind,
-                        "side": sig.side,
-                        "symbol": self.symbol,
-                        "ts": datetime.now(_TZ).isoformat(),
-                        "price": sig.price,
-                        "ma100": sig.ma100,
-                        "ma_delta_pct": sig.ma_delta_pct,
-                        "momentum_pct": sig.momentum_pct,
-                        "thresholds": sig.thresholds,
-                        "reasons": sig.reasons,
-                        "extra": sig.extra or {}
-                    }, ensure_ascii=False))
-
-                    await self._execute_and_sync(
-                        self.bybit_rest_controller.open_market,
-                        self.status, self.symbol, "long",
-                        latest_price, percent, self.balance
-                    )
-
-    def _apply_status(self, status):
-        """로컬 상태 일괄 갱신(중복 코드 제거)"""
-        self.status = status
-        self.status_list = status.get("positions", [])
-        self.balance = status.get("balance", {})
-        self.pos_dict = {p["position"]: p for p in self.status_list}
-        self.last_position_time = {
-            "LONG": (self.pos_dict.get("LONG", {}).get("entries") or [[None]])[0][0]
-            if self.pos_dict.get("LONG") and self.pos_dict["LONG"]["entries"] else None,
-            "SHORT": (self.pos_dict.get("SHORT", {}).get("entries") or [[None]])[0][0]
-            if self.pos_dict.get("SHORT") and self.pos_dict["SHORT"]["entries"] else None,
+    def _apply_status(self, symbol, status):
+        self.status[symbol] = status
+        status_list = status.get("positions", [])
+        self.balance[symbol] = status.get("balance", {})
+        self.pos_dict[symbol] = {p["position"]: p for p in status_list}
+        self.last_position_time[symbol] = {
+            "LONG": (self.pos_dict[symbol].get("LONG", {}).get("entries") or [[None]])[0][0]
+            if self.pos_dict[symbol].get("LONG") and self.pos_dict[symbol]["LONG"]["entries"] else None,
+            "SHORT": (self.pos_dict[symbol].get("SHORT", {}).get("entries") or [[None]])[0][0]
+            if self.pos_dict[symbol].get("SHORT") and self.pos_dict[symbol]["SHORT"]["entries"] else None,
         }
 
-    async def _execute_and_sync(self, fn, prev_status, *args, **kwargs):
+    async def _execute_and_sync(self, fn, prev_status, symbol, *args, **kwargs):
         async with self._sync_lock:
             # 1) 주문 실행
-            result = fn(*args, **kwargs)  # place_market_order / close_position 등
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as e:
+                self.system_logger.error(f"❌ 주문 실행 예외: {e}")
+                return None
+
+            if not result or not isinstance(result, dict):
+                self.system_logger.warning("⚠️ 주문 결과가 비었습니다(또는 dict 아님).")
+                return result
+
             order_id = result.get("orderId")
+            if not order_id:
+                self.system_logger.warning("⚠️ orderId 없음 → 체결 대기 스킵")
+                return result
 
             # 2) 체결 확인
-            filled = None
-            if order_id:
-                filled = self.bybit_rest_controller.wait_order_fill(self.symbol, order_id)
-
+            filled = self.bybit_rest_controller.wait_order_fill(symbol, order_id)
             orderStatus = (filled or {}).get("orderStatus", "").upper()
 
             if orderStatus == "FILLED":
                 self._log_fill(filled, prev_status=prev_status)
 
-                self.bybit_rest_controller.set_full_position_info(self.symbol)
-                trade = self.bybit_rest_controller.get_trade_w_order_id(self.symbol,order_id)
-                self.bybit_rest_controller.append_order(trade)
+                self.bybit_rest_controller.set_full_position_info(symbol)
+                trade = self.bybit_rest_controller.get_trade_w_order_id(symbol, order_id)
+                if trade:
+                    self.bybit_rest_controller.append_order(symbol, trade)
                 self.bybit_rest_controller.set_wallet_balance()
-                now_status = self.bybit_rest_controller.get_current_position_status(symbol=self.symbol)
-                self._apply_status(now_status)
-                self.system_logger.info(self._format_asset_section())
+                now_status = self.bybit_rest_controller.get_current_position_status(symbol=symbol)
+                self._apply_status(symbol, now_status)
+                self.system_logger.info(self._format_asset_section(symbol))
 
             elif orderStatus in ("CANCELLED", "REJECTED"):
                 self.system_logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
-                # 이미 취소/거절 상태 → 추가 취소 API 호출 불필요
             elif orderStatus == "TIMEOUT":
                 self.system_logger.warning(f"⚠️ 주문 {order_id[-6:]} 체결 대기 타임아웃 → 취소 시도")
                 try:
-                    cancel_res = self.bybit_rest_controller.cancel_order(self.symbol, order_id)
+                    cancel_res = self.bybit_rest_controller.cancel_order(symbol, order_id)
                     self.system_logger.warning(f"🗑️ 단일 주문 취소 결과: {cancel_res}")
                 except Exception as e:
                     self.system_logger.error(f"단일 주문 취소 실패: {e}")
             else:
-                # 예상치 못한 상태(New/PartiallyFilled 등) → 정책에 따라 취소할지, 더 기다릴지
                 self.system_logger.warning(f"ℹ️ 주문 {order_id[-6:]} 상태: {orderStatus or 'UNKNOWN'} → 정책에 따라 처리")
-
 
             # 같은 루프에서 자동 조건이 바로 또 트리거되지 않도록 짧은 쿨다운
             self._just_traded_until = time.monotonic() + 0.8
             return result
 
-    def make_status_log_msg(self):
+    async def run_once(self,):
+
+        now = time.time()
+
+        # 3) 수동 명령 먼저 소화(여러 심볼 지원)
+        if not self.manual_queue.empty():
+            cmd = await self.manual_queue.get()
+            # dict면 {command, percent, side, symbol} 가능
+            if isinstance(cmd, dict):
+                command = cmd.get("command")
+                percent = cmd.get("percent", 10)
+                close_side = cmd.get("side")
+                symbol = cmd.get("symbol") or (self.symbols[0] if self.symbols else None)
+            else:
+                command = cmd
+                percent = 10
+                close_side = None
+                symbol = self.symbols[0]
+            # 심볼이 유효하지 않으면 무시
+            if symbol not in self.symbols:
+                self.system_logger.info(f"❗ 알 수 없는 심볼: {symbol}")
+            else:
+                # 최신가 필요
+                self.record_price(symbol)
+                if not self.price_history[symbol]:
+                    return
+                _, latest_price = self.price_history[symbol][-1]
+
+                if command in ("long", "short"):
+                    await self._execute_and_sync(
+                        self.bybit_rest_controller.open_market,
+                        self.status[symbol], symbol,
+                        symbol,  # REST 시그니처 맞춰 전달
+                        command, latest_price, percent, self.balance[symbol]
+                    )
+                elif command == "close":
+                    if close_side and close_side in self.pos_dict[symbol]:
+                        pos_amt = float(self.pos_dict[symbol][close_side]["position_amt"])
+                        if pos_amt != 0:
+                            await self._execute_and_sync(
+                                self.bybit_rest_controller.close_market,
+                                self.status[symbol], symbol,
+                                symbol, side=close_side, qty=pos_amt
+                            )
+                        else:
+                            self.system_logger.info(f"❗ ({symbol}) 청산 {close_side} 없음 (수량 0)")
+                    else:
+                        self.system_logger.info(f"❗ ({symbol}) 포지션 정보 없음/잘못된 side: {close_side}")
+
+        # 4) 모든 심볼 순회
+        for symbol in self.symbols:
+            # (a) 현재가 기록
+            self.record_price(symbol)
+            if not self.price_history[symbol]:
+                continue
+            _, latest_price = self.price_history[symbol][-1]
+
+            # (b) 1분마다 캔들/지표 갱신
+            if now - self.last_closes_update[symbol] >= 60:
+                self.bybit_rest_controller.update_candles(self.candles[symbol], symbol=symbol,
+                                                          count=self.candles_num)
+                self.closes[symbol] = [c["close"] for c in self.candles[symbol]]
+                self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
+                self.last_closes_update[symbol] = now
+
+                thr = self.bybit_rest_controller.find_optimal_threshold(
+                    self.closes[symbol], self.ma100s[symbol],
+                    min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
+                )
+                self.ma_threshold[symbol] = thr
+                self.momentum_threshold[symbol] = thr / 3 if thr else None
+
+                self.bybit_rest_controller.set_full_position_info(symbol)
+                self.bybit_rest_controller.sync_orders_from_bybit(symbol)
+                self.bybit_rest_controller.set_wallet_balance()
+                new_status = self.bybit_rest_controller.get_current_position_status(symbol=symbol)
+                self._apply_status(symbol, new_status)
+
+                self.now_ma100[symbol] = self.ma100s[symbol][-1] if self.ma100s[symbol] else None
+                # 3분 전 가격: 단순히 3틱 전으로 유지하던 로직 → 네 상황에 맞게 조정
+                if len(self.closes[symbol]) >= 3:
+                    self.prev[symbol] = self.closes[symbol][-3]
+                self.bybit_rest_controller.sync_time()
+
+            # (c) 급등락 테스트
+            state, min_dt, max_dt = self.check_price_jump(symbol)
+            if state == "UP":
+                self.system_logger.info(f"({symbol}) 📈 급등 감지! (Δ {min_dt:.3f}~{max_dt:.3f}s)")
+            elif state == "DOWN":
+                self.system_logger.info(f"({symbol}) 📉 급락 감지! (Δ {min_dt:.3f}~{max_dt:.3f}s)")
+
+            # (d) 상태 로그
+            self.system_logger.debug(self.make_status_log_msg(symbol))
+
+            # (e) 자동매매(쿨다운 공통, 심볼마다 개별 적용하려면 dict로 쿨다운 분리도 가능)
+            if time.monotonic() >= self._just_traded_until:
+                # --- 청산 ---
+                for side in ["LONG", "SHORT"]:
+                    recent_time = self.last_position_time[symbol].get(side)
+                    if not recent_time:
+                        continue
+                    pos_amt = float(self.pos_dict[symbol].get(side, {}).get("position_amt", 0))
+                    sig = get_exit_signal(
+                        side, latest_price, self.now_ma100[symbol],
+                        recent_entry_time=recent_time,
+                        ma_threshold=self.ma_threshold[symbol],
+                        exit_ma_threshold=self.exit_ma_threshold[symbol],
+                        time_limit_sec=24 * 3600,
+                        near_touch_window_sec=30 * 60
+                    )
+                    if sig:
+                        self.trading_logger.info("SIG " + json.dumps({
+                            "kind": sig.kind, "side": sig.side, "symbol": symbol,
+                            "ts": datetime.now(_TZ).isoformat(),
+                            "price": sig.price, "ma100": sig.ma100,
+                            "ma_delta_pct": sig.ma_delta_pct,
+                            "thresholds": sig.thresholds, "reasons": sig.reasons,
+                            "extra": sig.extra or {}
+                        }, ensure_ascii=False))
+                        await self._execute_and_sync(
+                            self.bybit_rest_controller.close_market,
+                            self.status[symbol], symbol,
+                            symbol, side=side, qty=pos_amt
+                        )
+
+                # --- Short 진입 ---
+                percent = 10
+                leverage_limit = 30
+                recent_short_time = self.last_position_time[symbol].get("SHORT")
+                short_amt = abs(float(self.pos_dict[symbol].get("SHORT", {}).get("position_amt", 0)))
+                short_position_value = short_amt * latest_price
+                total_balance = self.balance[symbol].get("total", 0) or 0
+                position_ratio = (short_position_value / total_balance) if total_balance else 0
+                if position_ratio < leverage_limit:
+                    sig = get_short_entry_signal(
+                        price=latest_price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
+                        ma_threshold=self.ma_threshold[symbol],
+                        momentum_threshold=self.momentum_threshold[symbol],
+                        recent_entry_time=recent_short_time, reentry_cooldown_sec=60 * 60
+                    )
+                    if sig:
+                        self.trading_logger.info("SIG " + json.dumps({
+                            "kind": sig.kind, "side": sig.side, "symbol": symbol,
+                            "ts": datetime.now(_TZ).isoformat(),
+                            "price": sig.price, "ma100": sig.ma100,
+                            "ma_delta_pct": sig.ma_delta_pct,
+                            "momentum_pct": sig.momentum_pct,
+                            "thresholds": sig.thresholds, "reasons": sig.reasons,
+                            "extra": sig.extra or {}
+                        }, ensure_ascii=False))
+                        await self._execute_and_sync(
+                            self.bybit_rest_controller.open_market,
+                            self.status[symbol], symbol,
+                            symbol, "short", latest_price, percent, self.balance[symbol]
+                        )
+
+                # --- Long 진입 ---
+                recent_long_time = self.last_position_time[symbol].get("LONG")
+                long_amt = abs(float(self.pos_dict[symbol].get("LONG", {}).get("position_amt", 0)))
+                long_position_value = long_amt * latest_price
+                total_balance = self.balance[symbol].get("total", 0) or 0
+                position_ratio = (long_position_value / total_balance) if total_balance else 0
+                if position_ratio < leverage_limit:
+                    sig = get_long_entry_signal(
+                        price=latest_price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
+                        ma_threshold=self.ma_threshold[symbol],
+                        momentum_threshold=self.momentum_threshold[symbol],
+                        recent_entry_time=recent_long_time, reentry_cooldown_sec=60 * 60
+                    )
+                    if sig:
+                        self.trading_logger.info("SIG " + json.dumps({
+                            "kind": sig.kind, "side": sig.side, "symbol": symbol,
+                            "ts": datetime.now(_TZ).isoformat(),
+                            "price": sig.price, "ma100": sig.ma100,
+                            "ma_delta_pct": sig.ma_delta_pct,
+                            "momentum_pct": sig.momentum_pct,
+                            "thresholds": sig.thresholds, "reasons": sig.reasons,
+                            "extra": sig.extra or {}
+                        }, ensure_ascii=False))
+                        await self._execute_and_sync(
+                            self.bybit_rest_controller.open_market,
+                            self.status[symbol], symbol,
+                            symbol, "long", latest_price, percent, self.balance[symbol]
+                        )
+
+
+    def make_status_log_msg(self, symbol):
         parts = []
-        parts.append(self._format_watch_section())
-        parts.append(self._format_market_section())
-        parts.append(self._format_asset_section())
+        parts.append(self._format_watch_section(symbol))
+        parts.append(self._format_market_section(symbol))
+        parts.append(self._format_asset_section(symbol))
         return "".join(parts).rstrip()
 
     # ⏱️ 감시 구간
-    def _format_watch_section(self):
+    def _format_watch_section(self, symbol):
         min_sec = self.polling_interval
         max_sec = self.polling_interval * self.history_num
-        jump_state, min_dt, max_dt = self.check_price_jump()
-
+        jump_state, min_dt, max_dt = self.check_price_jump(symbol)
+        thr = (self.ma_threshold.get(symbol) or 0) * 100
         log_msg = (
-            f"\n⏱️ 감시 구간(±{self.ma_threshold * 100:.3f}%)\n"
+            f"\n[{symbol}] ⏱️ 감시 구간(±{thr:.3f}%)\n"
             f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
         )
         if jump_state is True:
@@ -374,49 +372,48 @@ class TradeBot:
             log_msg += f"  • 데이터간격 : 최소 {min_dt:.3f}s / 최대 {max_dt:.3f}s\n"
         return log_msg
 
-    # 💹 시세 정보
-    def _format_market_section(self):
-        price = self.price_history[-1][1] if getattr(self, "price_history", None) else None
-        ma100 = getattr(self, "now_ma100", None)
-        prev = getattr(self, "prev", None)  # 3분 전 가격
 
-        if price is None or ma100 is None or prev is None:
+    # 💹 시세 정보
+    def _format_market_section(self, symbol):
+        ph = self.price_history[symbol]
+        price = ph[-1][1] if ph else None
+        ma100 = self.now_ma100.get(symbol)
+        prev = self.prev.get(symbol)
+        thr = self.ma_threshold.get(symbol)
+        mom_thr = self.momentum_threshold.get(symbol)
+
+        if price is None or ma100 is None or prev is None or thr is None:
             return ""
 
-        ma_upper = ma100 * (1 + self.ma_threshold)
-        ma_lower = ma100 * (1 - self.ma_threshold)
-
-        ma_diff_pct = ((price - ma100) / ma100) * 100  # MA100 대비 %
-        chg_3m_pct = ((price - prev) / prev * 100) if (prev and prev > 0) else None  # 3분전 대비 %
+        ma_upper = ma100 * (1 + thr)
+        ma_lower = ma100 * (1 - thr)
+        ma_diff_pct = ((price - ma100) / ma100) * 100
+        chg_3m_pct = ((price - prev) / prev * 100) if (prev and prev > 0) else None
         chg_3m_str = f"{chg_3m_pct:+.3f}%" if chg_3m_pct is not None else "N/A"
 
         return (
-            f"\n💹 시세 정보\n"
-            f"  • 현재가      : {price:,.1f} "
-            f"(MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
+            f"\n[{symbol}] 💹 시세 정보\n"
+            f"  • 현재가      : {price:,.1f} (MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
             f"  • MA100       : {ma100:,.1f}\n"
-            f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} "
-            f"(👉[±{self.ma_threshold * 100:.3f}%]👈)\n"
-            f"  • 급등락목표 : {self.momentum_threshold * 100:.3f}%( 3분전대비 👉[{chg_3m_str}]👈)\n"
-            f"  • 청산기준 : {self.exit_ma_threshold * 100:.3f}%\n"
+            f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} (👉[±{thr*100:.3f}%]👈)\n"
+            f"  • 급등락목표 : {mom_thr*100:.3f}% ( 3분전대비 👉[{chg_3m_str}]👈)\n"
+            f"  • 청산기준 : {self.exit_ma_threshold[symbol]*100:.3f}%\n"
             f"  • 목표 크로스: {self.target_cross}회 / {self.closes_num} 분)\n"
         )
 
     # 💰 자산 정보
-    def _format_asset_section(self):
-        status = getattr(self, "status", {}) or {}
+    def _format_asset_section(self, symbol):
+        status = self.status.get(symbol, {}) or {}
         status_list = status.get("positions", [])
-        balance = status.get("balance", {})
-
+        balance = self.balance.get(symbol, {})
         total = balance.get("total", 0.0)
         available = balance.get("available", 0.0)
         available_pct = (available / total * 100) if total else 0
-
-        # 현재가
-        price = self.price_history[-1][1] if getattr(self, "price_history", None) else None
+        ph = self.price_history[symbol]
+        price = ph[-1][1] if ph else None
 
         log_msg = (
-            f"\n💰 자산정보(총 {total:.2f} USDT)\n"
+            f"\n[{symbol}] 💰 자산정보(총 {total:.2f} USDT)\n"
             f"    진입 가능: {available:.2f} USDT ({available_pct:.1f}%) (레버리지: {self.leverage}x)"
         )
 
@@ -426,19 +423,16 @@ class TradeBot:
                 entry_price = float(position["entryPrice"])
                 side = position["position"]
 
-                # 현재가 기준 수익률 / 수익금
                 if pos_amt != 0:
                     if side == "LONG":
                         profit_rate = ((price - entry_price) / entry_price) * 100
                         gross_profit = (price - entry_price) * pos_amt
-                    else:  # SHORT
+                    else:
                         profit_rate = ((entry_price - price) / entry_price) * 100
                         gross_profit = (entry_price - price) * abs(pos_amt)
                 else:
-                    profit_rate = 0.0
-                    gross_profit = 0.0
+                    profit_rate, gross_profit = 0.0, 0.0
 
-                # 수수료 (진입 + 청산 2회)
                 position_value = abs(pos_amt) * entry_price
                 fee_total = position_value * self.TAKER_FEE_RATE * 2
                 net_profit = gross_profit - fee_total
@@ -451,7 +445,6 @@ class TradeBot:
                         log_msg += f"     └#{i} {signed_qty:+.3f} : {t_str}, {entryPrice:.1f} \n"
         else:
             log_msg += "  - 포지션 없음\n"
-
         return log_msg
 
     def _classify_intent(self, filled: dict) -> str:
