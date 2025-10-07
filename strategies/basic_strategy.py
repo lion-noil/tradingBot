@@ -134,13 +134,13 @@ def get_exit_signal(
             # 가격이 MA100까지 (1 + trigger_pct) 이상 올라오면 청산
             if price >= ma100 * (1 + trigger_pct):
                 pct = trigger_pct * 100
-                reasons = [f"🔻 MA100 대비 +{pct:.4f}% {window_label} 도달 (롱 청산)"]
+                reasons = [f"MA100 대비 +{pct:.4f}% {window_label} 도달"]
                 reason_code = f"MA_{touch_code_suffix}_LONG"
         elif position == "SHORT":
             # 가격이 MA100까지 (1 - trigger_pct) 이하로 내려오면 청산
             if price <= ma100 * (1 - trigger_pct):
                 pct = trigger_pct * 100
-                reasons = [f"🔺 MA100 대비 -{pct:.4f}% {window_label} 도달 (숏 청산)"]
+                reasons = [f"MA100 대비 -{pct:.4f}% {window_label} 도달"]
                 reason_code = f"MA_{touch_code_suffix}_SHORT"
         else:
             # 예상치 못한 포지션 문자열 보호

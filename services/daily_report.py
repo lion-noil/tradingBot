@@ -52,7 +52,6 @@ def _draw_footer(ax_footer, footer_lines: list[str], *, max_rows_per_col=14):
             bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#888", alpha=0.9)
         )
 
-
 def set_korean_font(
     preferred_families=(
         "Noto Sans CJK KR",   # Linux/Mac에 잘 깔림
@@ -105,34 +104,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 _TZ = "Asia/Seoul"
 
 _scheduler = None  # 모듈 레벨에 보관(가비지 콜렉션 방지)
-
-def _side_kr(side: str) -> str:
-    return "롱" if side == "LONG" else "숏"
-def _reason_kr(sig: dict) -> str:
-    rc = (sig.get("extra") or {}).get("reason_code")
-    if rc == "MA_RETOUCH_LONG":  return "MA100 재접근(롱)"
-    if rc == "MA_RETOUCH_SHORT": return "MA100 재접근(숏)"
-    if rc == "TIME_LIMIT":       return "보유시간 초과"
-    return (sig.get("reasons") or ["청산"])[0]
-
-def _format_signal_label(sig: dict) -> str:
-    kind = sig.get("kind")     # ENTRY/EXIT
-    side = sig.get("side")     # LONG/SHORT
-    price = sig.get("price")
-    d = sig.get("ma_delta_pct")
-    mom = sig.get("momentum_pct")
-
-    d_str = f"{d * 100:+.2f}%" if isinstance(d, (int, float)) else "N/A"
-    mom_str = f"{mom * 100:+.2f}%" if isinstance(mom, (int, float)) else "N/A"
-
-    if kind == "ENTRY":
-        line1 = f"{_side_kr(side)} 진입 • {price:,.2f}"
-        line2 = f"Δ {d_str} • 모멘텀 {mom_str}" if mom is not None else f"Δ {d_str}"
-        return f"{line1}\n{line2}"
-    else:
-        line1 = f"{_side_kr(side)} 청산 • {price:,.2f}"
-        line2 = f"이유: {_reason_kr(sig)}"
-        return f"{line1}\n{line2}"
 
 def _marker_style(sig: dict):
     # 모양/색상 통일: EN=삼각형, EX=다이아
@@ -340,6 +311,7 @@ def _load_signals(jsonl_path: str, symbol: str, start_ms: int, end_ms: int):
                     continue
 
                 out.append({
+                    "ts" : ts,
                     "ts_ms": ts_ms,
                     "kind": obj.get("kind"),
                     "side": obj.get("side"),
@@ -380,20 +352,10 @@ def _annotate_signals(ax, rows_window, signals: list[dict], tz: ZoneInfo,
     clusters = defaultdict(list)
 
     for sig in signals:
-        ms = sig.get("_ms") or sig.get("ts_ms")
+        ms = sig.get("ts_ms")
         x  = nearest_idx(ms)
 
         side = sig.get("side")
-        kind = sig.get("kind")
-
-        # 기본 앵커: 진입은 side 방향 extremum,
-        #           청산은 MA 가 유효하면 MA, 아니면 extremum
-        ma_val = None
-        if ma_series and 0 <= x < len(ma_series):
-            mv = ma_series[x]
-            if isinstance(mv, (int, float)) and mv > 0:
-                ma_val = mv
-
         y_anchor = lows[x] if side == "LONG" else highs[x]
 
         clusters[x].append((x, y_anchor, sig))
@@ -680,7 +642,7 @@ def init_daily_report_scheduler(get_bot, system_logger=None, hour=6, minute=50, 
 # --- 번호 붙이기 / 라벨 포맷 ---
 def _enumerate_signals(signals: list[dict]) -> list[dict]:
     """시간순으로 1..N 번호를 매겨 반환(_idx 추가)."""
-    sigs = sorted(signals, key=lambda s: s.get("_ms") or s.get("ts_ms") or 0)
+    sigs = sorted(signals, key=lambda s: s.get("ts_ms") or 0)
     for i, s in enumerate(sigs, start=1):
         s["_idx"] = i
     return sigs
@@ -691,22 +653,15 @@ def _signal_footer_line(sig: dict) -> str:
     kind = sig.get("kind")     # ENTRY / EXIT
     side = sig.get("side")     # LONG / SHORT
     px   = sig.get("price")
-    d    = sig.get("ma_delta_pct")
-    mom  = sig.get("momentum_pct")
-    ts   = sig.get("ts") or sig.get("_ms")
-
-    side_kr = "롱" if side == "LONG" else "숏"
+    ts   = sig.get("ts")
+    reason = sig.get("reasons")[0]
     if kind == "ENTRY":
         # 예: ① 07:57:48  숏 진입 111,369.90  (Δ +0.70%, 모멘텀 +0.23%)
-        d_txt  = f"Δ {d*100:+.2f}%" if d is not None else "Δ N/A"
-        m_txt  = f", 모멘텀 {mom*100:+.2f}%" if mom is not None else ""
         t_txt  = (datetime.fromisoformat(ts).strftime("%H:%M:%S")
                   if isinstance(ts, str) else "")
-        return f"{n:>2}) {t_txt}  {side_kr} 진입 {px:,.2f}  ({d_txt}{m_txt})"
+        return f"{n:>2}) {t_txt}  {side} 진입 {px:,.2f}  ({reason})"
     else:
-        # EXIT: 이유 한글화
-        reason = _reason_kr(sig)
         t_txt  = (datetime.fromisoformat(ts).strftime("%H:%M:%S")
                   if isinstance(ts, str) else "")
-        return f"{n:>2}) {t_txt}  {side_kr} 청산 {px:,.2f}  (이유: {reason})"
+        return f"{n:>2}) {t_txt}  {side} 청산 {px:,.2f}  (이유: {reason})"
 
