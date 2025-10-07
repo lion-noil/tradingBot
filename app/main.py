@@ -121,7 +121,7 @@ async def startup_event():
     )
 
     asyncio.create_task(bot_loop())
-    scheduler = init_daily_report_scheduler(lambda: bot, system_logger=system_logger)
+    scheduler = init_daily_report_scheduler(lambda: bot, symbols=symbols, system_logger=system_logger)
 
 @app.get("/info")
 async def status(symbol: str = "BTCUSDT", plain: bool = True):

@@ -626,19 +626,54 @@ def run_daily_report_from_cache(get_bot, symbol="BTCUSDT", system_logger=None,
 
 
 
-def init_daily_report_scheduler(get_bot, system_logger=None, hour=6, minute=50, tz=_TZ, symbol="BTCUSDT"):
-
+def init_daily_report_scheduler(
+    get_bot,
+    system_logger=None,
+    hour=6,
+    minute=50,
+    tz=_TZ,
+    symbols=None,
+    stagger_seconds=10,   # 심볼별로 초단위 지연 (부하/중복 방지)
+):
+    """
+    여러 심볼에 대해 각각 Cron 잡을 등록.
+    - symbols가 None이면 bot에서 자동 추출(get_bot().symbols 또는 .symbol)
+    - 각 심볼마다 job_id: 'daily_report_<SYMBOL>'
+    - 같은 시각에 몰리지 않도록 초를 심볼 인덱스로 분산
+    """
     global _scheduler
     tzinfo = ZoneInfo(tz) if isinstance(tz, str) else tz
 
+    # ① 심볼 목록 확보
+    if symbols is None:
+        try:
+            bot = get_bot()
+            symbols = list(getattr(bot, "symbols", None) or [])
+            if not symbols:
+                one = getattr(bot, "symbol", None) or "BTCUSDT"
+                symbols = [one]
+        except Exception:
+            symbols = ["BTCUSDT"]
 
     _scheduler = AsyncIOScheduler(timezone=tzinfo)
-    trigger = CronTrigger(hour=hour, minute=minute, timezone=tzinfo)
-    _scheduler.add_job(lambda: run_daily_report_from_cache(get_bot, symbol=symbol, system_logger=system_logger),
-                       trigger, id="daily_report", replace_existing=True)
+
+    for idx, sym in enumerate(symbols):
+        sec = (idx * stagger_seconds) % 60  # 예: 0s, 10s, 20s ...
+        trigger = CronTrigger(hour=hour, minute=minute, second=sec, timezone=tzinfo)
+
+        # lambda late-binding 방지: 기본인자로 캡쳐
+        _scheduler.add_job(
+            lambda s=sym: run_daily_report_from_cache(get_bot, symbol=s, system_logger=system_logger),
+            trigger,
+            id=f"daily_report_{sym}",
+            replace_existing=True,
+        )
+        if system_logger:
+            system_logger.debug(
+                f"🕖 APScheduler 등록: 매일 {hour:02d}:{minute:02d}:{sec:02d} {sym} 리포트(캐시)"
+            )
+
     _scheduler.start()
-    if system_logger:
-        system_logger.debug(f"🕖 APScheduler 등록: 매일 {hour:02d}:{minute:02d} 리포트(캐시)")
     return _scheduler
 
 # --- 번호 붙이기 / 라벨 포맷 ---
