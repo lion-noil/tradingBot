@@ -88,7 +88,6 @@ def get_short_entry_signal(
         extra={"reentry_cooldown_sec": reentry_cooldown_sec}
     )
 
-# ---------- 익싯 신호 ----------
 def get_exit_signal(
     position: str,
     price: float,
@@ -115,7 +114,7 @@ def get_exit_signal(
     # 1) 24시간 초과면 무조건 EXIT
     if held_sec is not None and held_sec > time_limit_sec:
         hours = time_limit_sec / 3600
-        reasons = [f"⏰ 진입 후 {held_sec}초 경과 ({hours:.1f}시간 초과)"]
+        reasons = [f"⏰ 진입 후 ({hours:.1f}시간 초과)"]
         reason_code = "TIME_LIMIT"
     else:
         # 2) 시간 구간에 따른 트리거 퍼센트 선택

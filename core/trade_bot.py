@@ -56,7 +56,8 @@ class TradeBot:
         self.balance = {s: {} for s in self.symbols}
         self.last_position_time = {s: {"LONG": None, "SHORT": None} for s in self.symbols}
         self.prev = {s: None for s in self.symbols}  # 3분 전 가격
-
+        self.percent = 5 #진입 비율
+        self.leverage_limit = 50 # 최대 비율
     def record_price(self, symbol):
         ts = time.time()
         price = None
@@ -73,7 +74,6 @@ class TradeBot:
             ts = ph[-1][0] + 1e-6
         ph.append((ts, float(price)))
 
-    # ---------- 급등락 체크(심볼별) ----------
     def check_price_jump(self, symbol):
         min_sec = self.polling_interval
         max_sec = self.polling_interval * self.history_num
@@ -107,9 +107,9 @@ class TradeBot:
         self.balance[symbol] = status.get("balance", {})
         self.pos_dict[symbol] = {p["position"]: p for p in status_list}
         self.last_position_time[symbol] = {
-            "LONG": (self.pos_dict[symbol].get("LONG", {}).get("entries") or [[None]])[0][0]
+            "LONG": (self.pos_dict[symbol].get("LONG", {}).get("entries") or [[None]])[-1][0]
             if self.pos_dict[symbol].get("LONG") and self.pos_dict[symbol]["LONG"]["entries"] else None,
-            "SHORT": (self.pos_dict[symbol].get("SHORT", {}).get("entries") or [[None]])[0][0]
+            "SHORT": (self.pos_dict[symbol].get("SHORT", {}).get("entries") or [[None]])[-1][0]
             if self.pos_dict[symbol].get("SHORT") and self.pos_dict[symbol]["SHORT"]["entries"] else None,
         }
 
@@ -173,12 +173,12 @@ class TradeBot:
             # dict면 {command, percent, side, symbol} 가능
             if isinstance(cmd, dict):
                 command = cmd.get("command")
-                percent = cmd.get("percent", 10)
+                percent = cmd.get("percent", self.percent)
                 close_side = cmd.get("side")
                 symbol = cmd.get("symbol") or (self.symbols[0] if self.symbols else None)
             else:
                 command = cmd
-                percent = 10
+                percent = self.percent
                 close_side = None
                 symbol = self.symbols[0]
             # 심볼이 유효하지 않으면 무시
@@ -257,7 +257,7 @@ class TradeBot:
             # (d) 상태 로그
             self.system_logger.debug(self.make_status_log_msg(symbol))
 
-            # (e) 자동매매(쿨다운 공통, 심볼마다 개별 적용하려면 dict로 쿨다운 분리도 가능)
+            # (e) 자동매매
             if time.monotonic() >= self._just_traded_until:
                 # --- 청산 ---
                 for side in ["LONG", "SHORT"]:
@@ -268,7 +268,7 @@ class TradeBot:
                     sig = get_exit_signal(
                         side, latest_price, self.now_ma100[symbol],
                         recent_entry_time=recent_time,
-                        ma_threshold=self.ma_threshold[symbol],
+                        ma_threshold = self.ma_threshold[symbol],
                         exit_ma_threshold=self.exit_ma_threshold[symbol],
                         time_limit_sec=24 * 3600,
                         near_touch_window_sec=30 * 60
@@ -289,14 +289,12 @@ class TradeBot:
                         )
 
                 # --- Short 진입 ---
-                percent = 10
-                leverage_limit = 30
                 recent_short_time = self.last_position_time[symbol].get("SHORT")
                 short_amt = abs(float(self.pos_dict[symbol].get("SHORT", {}).get("position_amt", 0)))
                 short_position_value = short_amt * latest_price
                 total_balance = self.balance[symbol].get("total", 0) or 0
                 position_ratio = (short_position_value / total_balance) if total_balance else 0
-                if position_ratio < leverage_limit:
+                if position_ratio < self.leverage_limit:
                     sig = get_short_entry_signal(
                         price=latest_price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
                         ma_threshold=self.ma_threshold[symbol],
@@ -316,7 +314,7 @@ class TradeBot:
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
                             self.status[symbol], symbol,
-                            symbol, "short", latest_price, percent, self.balance[symbol]
+                            symbol, "short", latest_price, self.percent, self.balance[symbol]
                         )
 
                 # --- Long 진입 ---
@@ -325,7 +323,7 @@ class TradeBot:
                 long_position_value = long_amt * latest_price
                 total_balance = self.balance[symbol].get("total", 0) or 0
                 position_ratio = (long_position_value / total_balance) if total_balance else 0
-                if position_ratio < leverage_limit:
+                if position_ratio < self.leverage_limit:
                     sig = get_long_entry_signal(
                         price=latest_price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
                         ma_threshold=self.ma_threshold[symbol],
@@ -345,7 +343,7 @@ class TradeBot:
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
                             self.status[symbol], symbol,
-                            symbol, "long", latest_price, percent, self.balance[symbol]
+                            symbol, "long", latest_price, self.percent, self.balance[symbol]
                         )
 
 

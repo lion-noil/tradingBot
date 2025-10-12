@@ -636,6 +636,7 @@ class BybitRestController:
                 if abs(remaining_qty) < 1e-8:
                     break
 
+            entry_logs = entry_logs[::-1]
             results.append({
                 "position": direction,
                 "position_amt": position_amt,
@@ -920,7 +921,7 @@ class BybitRestController:
         raw_qty = total_balance * self.leverage / price * percent / 100.0
         qty = self.normalize_qty(symbol, raw_qty, mode="floor")
         if qty <= 0:
-            self.system_logger.warning(
+            self.system_logger.error(
                 f"❗ 주문 수량이 최소단위 미만입니다. raw={raw_qty:.8f}, norm={qty:.8f} ({symbol})"
             )
             return None
