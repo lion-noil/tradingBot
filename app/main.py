@@ -103,13 +103,13 @@ async def startup_event():
     global bot, bybit_websocket_controller, bybit_rest_controller, scheduler
     system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
 
-    symbols = ("BTCUSDT", "ETHUSDT")
+    symbols = ("BTCUSDT", "ETHUSDT","XAUTUSDT")
 
     bybit_websocket_controller = BybitWebSocketController(
         symbols=symbols,
         system_logger=system_logger
     )
-    bybit_websocket_controller = BybitWebSocketController(symbols=("BTCUSDT","ETHUSDT"), system_logger = system_logger)
+    bybit_websocket_controller = BybitWebSocketController(symbols=symbols, system_logger = system_logger)
     bybit_rest_controller = BybitRestController(system_logger = system_logger)
     bot = TradeBot(
         bybit_websocket_controller,
