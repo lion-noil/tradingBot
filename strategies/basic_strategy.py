@@ -165,4 +165,3 @@ def get_exit_signal(
             "time_held_sec": held_sec
         }
     )
-

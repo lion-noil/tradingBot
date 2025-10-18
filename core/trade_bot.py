@@ -3,10 +3,11 @@ from strategies.basic_strategy import get_short_entry_signal,get_long_entry_sign
 import time
 import math
 import asyncio
-import json
+import json, hashlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from collections import deque
+from core.redis_client import redis_client
 
 _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
@@ -58,6 +59,11 @@ class TradeBot:
         self.prev = {s: None for s in self.symbols}  # 3분 전 가격
         self.percent = 5 #진입 비율
         self.leverage_limit = 50 # 최대 비율
+
+        for symbol in symbols:
+            self.bybit_rest_controller.set_leverage(symbol=symbol, leverage=self.leverage_limit)
+
+
     def record_price(self, symbol):
         ts = time.time()
         price = None
@@ -162,6 +168,26 @@ class TradeBot:
             # 같은 루프에서 자동 조건이 바로 또 트리거되지 않도록 짧은 쿨다운
             self._just_traded_until = time.monotonic() + 0.8
             return result
+
+    def _make_id(self, symbol: str, ts_iso: str) -> str:
+        # 결정적 ID: 같은 (symbol, ts)이면 같은 id → 중복 안전
+        return hashlib.sha1(f"{symbol}|{ts_iso}".encode("utf-8")).hexdigest()
+
+    def _to_epoch_sec(self, ts_iso: str) -> int:
+        # ts 예: "2025-10-07T22:43:46.885465+09:00"
+        return int(datetime.fromisoformat(ts_iso).timestamp())
+
+    def upload_signal(self, sig: dict):
+        symbol = sig["symbol"]
+        ts_iso = sig["ts"]  # 예) '2025-10-07T22:43:46.885465+09:00'
+        day = ts_iso[:10]  # 'YYYY-MM-DD'
+        sid = self._make_id(symbol, ts_iso)  # 결정적 ID
+
+        field = f"{day}|{sid}"
+        value = json.dumps(sig, ensure_ascii=False, separators=(",", ":"))
+
+        # HSET name, key, value
+        redis_client.hset("trading:signal", field, value)
 
     async def run_once(self,):
 
@@ -273,6 +299,7 @@ class TradeBot:
                         time_limit_sec=24 * 3600,
                         near_touch_window_sec=30 * 60
                     )
+
                     if sig:
                         self.trading_logger.info("SIG " + json.dumps({
                             "kind": sig.kind, "side": sig.side, "symbol": symbol,
@@ -282,6 +309,8 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
+                        self.upload_signal(sig)
+
                         await self._execute_and_sync(
                             self.bybit_rest_controller.close_market,
                             self.status[symbol], symbol,
@@ -311,6 +340,8 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
+                        self.upload_signal(sig)
+
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
                             self.status[symbol], symbol,
@@ -340,6 +371,8 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
+                        self.upload_signal(sig)
+
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
                             self.status[symbol], symbol,
