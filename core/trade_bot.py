@@ -309,7 +309,7 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
-                        self.upload_signal(sig)
+                        self.upload_signal(sig.dict())
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.close_market,
@@ -340,7 +340,7 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
-                        self.upload_signal(sig)
+                        self.upload_signal(sig.dict())
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
@@ -371,7 +371,7 @@ class TradeBot:
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
                         }, ensure_ascii=False))
-                        self.upload_signal(sig)
+                        self.upload_signal(sig.dict())
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
