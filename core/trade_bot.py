@@ -8,6 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from collections import deque
 from core.redis_client import redis_client
+from typing import Any
 
 _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
@@ -177,7 +178,7 @@ class TradeBot:
         # ts 예: "2025-10-07T22:43:46.885465+09:00"
         return int(datetime.fromisoformat(ts_iso).timestamp())
 
-    def upload_signal(self, sig: dict):
+    def upload_signal(self, sig: Any):
         symbol = sig["symbol"]
         ts_iso = sig["ts"]  # 예) '2025-10-07T22:43:46.885465+09:00'
         day = ts_iso[:10]  # 'YYYY-MM-DD'
@@ -186,14 +187,12 @@ class TradeBot:
         field = f"{day}|{sid}"
         value = json.dumps(sig, ensure_ascii=False, separators=(",", ":"))
 
-        # HSET name, key, value
         redis_client.hset("trading:signal", field, value)
 
     async def run_once(self,):
 
         now = time.time()
 
-        # 3) 수동 명령 먼저 소화(여러 심볼 지원)
         if not self.manual_queue.empty():
             cmd = await self.manual_queue.get()
             # dict면 {command, percent, side, symbol} 가능
@@ -301,15 +300,16 @@ class TradeBot:
                     )
 
                     if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
+                        sig_dict = {
                             "kind": sig.kind, "side": sig.side, "symbol": symbol,
                             "ts": datetime.now(_TZ).isoformat(),
                             "price": sig.price, "ma100": sig.ma100,
                             "ma_delta_pct": sig.ma_delta_pct,
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
-                        }, ensure_ascii=False))
-                        self.upload_signal(sig.dict())
+                        }
+                        self.trading_logger.info('SIG ' + json.dumps(sig_dict, ensure_ascii=False))
+                        self.upload_signal(sig_dict)
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.close_market,
@@ -331,16 +331,16 @@ class TradeBot:
                         recent_entry_time=recent_short_time, reentry_cooldown_sec=60 * 60
                     )
                     if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
+                        sig_dict = {
                             "kind": sig.kind, "side": sig.side, "symbol": symbol,
                             "ts": datetime.now(_TZ).isoformat(),
                             "price": sig.price, "ma100": sig.ma100,
                             "ma_delta_pct": sig.ma_delta_pct,
-                            "momentum_pct": sig.momentum_pct,
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
-                        }, ensure_ascii=False))
-                        self.upload_signal(sig.dict())
+                        }
+                        self.trading_logger.info('SIG ' + json.dumps(sig_dict, ensure_ascii=False))
+                        self.upload_signal(sig_dict)
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,
@@ -362,16 +362,16 @@ class TradeBot:
                         recent_entry_time=recent_long_time, reentry_cooldown_sec=60 * 60
                     )
                     if sig:
-                        self.trading_logger.info("SIG " + json.dumps({
+                        sig_dict = {
                             "kind": sig.kind, "side": sig.side, "symbol": symbol,
                             "ts": datetime.now(_TZ).isoformat(),
                             "price": sig.price, "ma100": sig.ma100,
                             "ma_delta_pct": sig.ma_delta_pct,
-                            "momentum_pct": sig.momentum_pct,
                             "thresholds": sig.thresholds, "reasons": sig.reasons,
                             "extra": sig.extra or {}
-                        }, ensure_ascii=False))
-                        self.upload_signal(sig.dict())
+                        }
+                        self.trading_logger.info('SIG ' + json.dumps(sig_dict, ensure_ascii=False))
+                        self.upload_signal(sig_dict)
 
                         await self._execute_and_sync(
                             self.bybit_rest_controller.open_market,

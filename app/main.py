@@ -16,7 +16,6 @@ from asyncio import Queue
 from utils.logger import setup_logger
 from pydantic import BaseModel
 from typing import Literal
-from services.daily_report import init_daily_report_scheduler, run_daily_report_from_cache
 
 class ManualOrderRequest(BaseModel):
     percent: float = 10  # 기본값: 10%
@@ -121,7 +120,6 @@ async def startup_event():
     )
 
     asyncio.create_task(bot_loop())
-    scheduler = init_daily_report_scheduler(lambda: bot, symbols=symbols, system_logger=system_logger)
 
 @app.get("/info")
 async def status(symbol: str = "BTCUSDT", plain: bool = True):
@@ -150,21 +148,6 @@ async def manual_close(request: ManualCloseRequest):
     await manual_queue.put({"command": "close", "side": request.side})
     return {"status": f"close triggered for {request.side}"}
 """
-
-# app/main.py - 수동 트리거용 엔드포인트(원하면)
-@app.get("/dailyreport")
-async def trigger_daily_report(symbol: str = "BTCUSDT"):
-    # 심볼 유효성 체크(보고서도 심볼별)
-    if bot is None:
-        raise HTTPException(status_code=503, detail="Bot not initialized yet")
-    if symbol not in bot.symbols:
-        raise HTTPException(status_code=400, detail=f"Unknown symbol: {symbol}. Available: {bot.symbols}")
-
-    try:
-        result = run_daily_report_from_cache(lambda: bot, symbol=symbol, system_logger=system_logger)
-        return {"status": "ok", "rows": result.get("count")}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
