@@ -21,122 +21,194 @@ def _safe_int(x):
         return int(float(x))
 
 class BybitWebSocketController:
-    def __init__(self, symbols=("BTCUSDT",),system_logger=None):
+    def __init__(self, symbols=("BTCUSDT",), system_logger=None):
         self.symbols = list(symbols)
         self.system_logger = system_logger
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
-        # self.private_ws_url = "wss://stream.bybit.com/v5/private"  # 실전용
-        self.prices = {}
 
-        self.ws = None
-        self.api_key = os.getenv("BYBIT_TEST_API_KEY")
-        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET")
-
-        # 동시성 보호용
+        # 공유 상태
         self._lock = threading.Lock()
+        self.ws: WebSocketApp | None = None
+        self._last_frame_monotonic = 0.0
+
+        # 시세/타임스탬프(스레드 안전)
+        self._prices: dict[str, float] = {}
+        self._last_tick_monotonic: dict[str, float] = {}   # WS 신선도 판단용 (monotonic)
+        self._last_exchange_ts: dict[str, float] = {}      # 거래소가 준 ts(초) 기반 분캔들 경계용
+
+        # 재연결 backoff
+        self._reconnect_delay = 5
+
         self._start_public_websocket()
 
-    def _start_public_websocket(self):
-        def on_open(ws):
-            self.system_logger.debug("✅ Public WebSocket 연결됨")
-            args = [f"tickers.{sym}" for sym in self.symbols]
-
-            subscribe = {
-                "op": "subscribe",
-                "args": args
-            }
-            ws.send(json.dumps(subscribe))
-
-        def on_message(ws, message):
-            try:
-                parsed = json.loads(message)
-                if "data" not in parsed or not parsed["data"]:
-                    return
-                data = parsed["data"]
-
-                # v5는 data가 dict 또는 list로 올 수 있으니 모두 처리
-                items = data if isinstance(data, list) else [data]
-                with self._lock:
-                    for item in items:
-                        sym = item.get("symbol")
-                        if not sym:
-                            continue
-                        # lastPrice가 우선, 없으면 호가 사용
-                        price = item.get("lastPrice") or item.get("ask1Price") or item.get("bid1Price")
-                        if price is None:
-                            continue
-                        try:
-                            self.prices[sym] = float(price)
-                        except (TypeError, ValueError):
-                            pass
-            except Exception as e:
-                if self.system_logger:
-                    self.system_logger.debug(f"❌ Public 메시지 처리 오류: {e}")
-
-        def on_error(ws, error):
-            self.system_logger.debug(f"❌ Public WebSocket 오류: {error}")
-
-        def on_close(ws, *args):
-            self.system_logger.debug("🔌 WebSocket closed. Reconnecting in 5 seconds...")
-            time.sleep(5)
-            self._start_public_websocket()  # or private
-
-        def run():
-            try:
-                ws_app = WebSocketApp(
-                    self.ws_url,
-                    on_open=on_open,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close
-                )
-                ws_app.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception as e:
-                self.system_logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
-                time.sleep(5)
-                self._start_public_websocket()
-
-        thread = threading.Thread(target=run)
-        thread.daemon = True
-        thread.start()
-
-        # =============== 편의 메서드 ===============
-    def get_price(self, symbol):
+    # ──────────────────────────────────────────────
+    # 외부에서 쓰는 읽기 API
+    def get_price(self, symbol: str) -> float | None:
         with self._lock:
-            return self.prices.get(symbol)
+            return self._prices.get(symbol)
 
-    def get_all_prices(self):
+    def get_all_prices(self) -> dict[str, float]:
         with self._lock:
-            # 복사본 반환
-            return dict(self.prices)
+            return dict(self._prices)
 
+    def get_last_tick_time(self, symbol: str) -> float | None:
+        """마지막 틱 수신 시각(monotonic) → 신선도 체크에 사용"""
+        with self._lock:
+            return self._last_tick_monotonic.get(symbol)
+
+    def get_last_exchange_ts(self, symbol: str) -> float | None:
+        """거래소가 제공한 마지막 업데이트 시각(초) → 분 경계 정확도 향상"""
+        with self._lock:
+            return self._last_exchange_ts.get(symbol)
+
+    # ──────────────────────────────────────────────
+    # 런타임 구독 제어
     def subscribe_symbols(self, *new_symbols):
-        """런타임에 심볼 추가 구독"""
         to_add = [s for s in new_symbols if s not in self.symbols]
         if not to_add:
             return
         with self._lock:
             self.symbols.extend(to_add)
-        if self.ws:
+        # 이미 연결돼 있으면 즉시 구독
+        ws = self.ws
+        if ws:
             msg = {"op": "subscribe", "args": [f"tickers.{s}" for s in to_add]}
             try:
-                self.ws.send(json.dumps(msg))
+                ws.send(json.dumps(msg))
             except Exception:
                 pass
 
     def unsubscribe_symbols(self, *symbols_to_remove):
-        """런타임에 심볼 구독 해지"""
         to_remove = [s for s in symbols_to_remove if s in self.symbols]
         if not to_remove:
             return
         with self._lock:
             self.symbols = [s for s in self.symbols if s not in to_remove]
-        if self.ws:
+        ws = self.ws
+        if ws:
             msg = {"op": "unsubscribe", "args": [f"tickers.{s}" for s in to_remove]}
             try:
-                self.ws.send(json.dumps(msg))
+                ws.send(json.dumps(msg))
             except Exception:
                 pass
+
+    def get_last_frame_time(self) -> float | None:
+        return self._last_frame_monotonic or None
+    # ──────────────────────────────────────────────
+    # 내부: WS 수명주기
+    def _start_public_websocket(self):
+        def on_open(ws):
+            # 연결 객체 보관
+            self.ws = ws
+            self._reconnect_delay = 5
+            self._last_frame_monotonic = time.monotonic()  # ✅ 추가
+            if self.system_logger:
+                self.system_logger.debug("✅ Public WebSocket 연결됨")
+            # 현재 보유 심볼 재구독
+            args = [f"tickers.{sym}" for sym in self.symbols]
+            ws.send(json.dumps({"op": "subscribe", "args": args}))
+
+        def on_pong(ws, data):
+            # ✅ 핑/퐁만 와도 연결은 살아있음
+            self._last_frame_monotonic = time.monotonic()
+
+        def on_message(ws, message: str):
+            try:
+                parsed = json.loads(message)
+
+                self._last_frame_monotonic = time.monotonic()
+                data = parsed.get("data")
+                if not data:
+                    return
+
+                # data가 dict 또는 list일 수 있음
+                items = data if isinstance(data, list) else [data]
+                topic = parsed.get("topic", "")
+
+                # 프레임 자체의 ts(ms)도 올 수 있음
+                frame_ts_ms = parsed.get("ts")
+
+                with self._lock:
+                    for item in items:
+                        sym = item.get("symbol")
+                        if not sym:
+                            # topic에서 심볼을 유추 (tickers.BTCUSDT)
+                            if topic.startswith("tickers.") and len(topic.split(".")) == 2:
+                                sym = topic.split(".")[1]
+                            else:
+                                continue
+
+                        # 가격: lastPrice 우선, 없으면 최우선 호가 사용
+                        price_str = item.get("lastPrice") or item.get("ask1Price") or item.get("bid1Price")
+                        if price_str is None:
+                            continue
+
+                        try:
+                            price = float(price_str)
+                        except (TypeError, ValueError):
+                            continue
+
+                        # 거래소 ts(ms) → 초 단위 float
+                        exch_ts_ms = (
+                            item.get("ts") or item.get("timestamp") or frame_ts_ms
+                        )
+                        if exch_ts_ms:
+                            try:
+                                exch_ts = float(exch_ts_ms) / 1000.0
+                            except Exception:
+                                exch_ts = time.time()
+                        else:
+                            exch_ts = time.time()
+
+                        # 상태 반영
+                        self._prices[sym] = price
+                        self._last_tick_monotonic[sym] = time.monotonic()
+                        self._last_exchange_ts[sym] = exch_ts
+
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.debug(f"❌ Public 메시지 처리 오류: {e}")
+
+        def on_error(ws, error):
+            if self.system_logger:
+                self.system_logger.debug(f"❌ Public WebSocket 오류: {error}")
+
+        def on_close(ws, *args):
+            if self.system_logger:
+                self.system_logger.debug("🔌 WebSocket closed.")
+            # 끊길 때 핸들 비움
+            self.ws = None
+            # 재연결
+            delay = self._reconnect_delay
+            if self.system_logger:
+                self.system_logger.debug(f"⏳ {delay}s 후 재연결 시도…")
+            time.sleep(delay)
+            # 점진적 backoff 최대 60초
+            self._reconnect_delay = min(self._reconnect_delay * 2, 60)
+            self._start_public_websocket()
+
+        def run():
+            while True:
+                try:
+                    ws_app = WebSocketApp(
+                        self.ws_url,
+                        on_open=on_open,
+                        on_message=on_message,
+                        on_error=on_error,
+                        on_close=on_close,
+                        on_pong=on_pong,
+                    )
+                    # ping을 주기적으로 보내 연결 유지
+                    ws_app.run_forever(ping_interval=20, ping_timeout=10)
+                except Exception as e:
+                    if self.system_logger:
+                        self.system_logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
+                    # 치명적 예외 시에도 재시도
+                    time.sleep(self._reconnect_delay)
+                    self._reconnect_delay = min(self._reconnect_delay * 2, 60)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
 
 
 

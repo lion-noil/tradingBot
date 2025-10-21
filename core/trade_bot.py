@@ -11,6 +11,16 @@ from core.redis_client import redis_client
 from typing import Any
 from decimal import Decimal, ROUND_HALF_UP
 
+from dataclasses import dataclass
+
+@dataclass
+class CandleState:
+    minute: int      # epoch // 60 (분 단위)
+    o: float
+    h: float
+    l: float
+    c: float
+
 _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
     def __init__(
@@ -22,8 +32,13 @@ class TradeBot:
         self.manual_queue = manual_queue
         self.system_logger = system_logger
         self.trading_logger = trading_logger
+        self.ws_stale_sec = 30.0
+        self.ws_global_stale_sec = 60.0  # 전체 프레임 기준
 
         self.symbols = list(symbols)
+        self._candle_state: dict[str, CandleState | None] = {s: None for s in self.symbols}
+        self._rest_fallback_on: dict[str, bool] = {s: False for s in self.symbols}
+        self._stale_counts = {s: 0 for s in self.symbols}
         subscribe = getattr(self.bybit_websocket_controller, "subscribe_symbols", None)
         if callable(subscribe):
             try:
@@ -63,8 +78,130 @@ class TradeBot:
         self.leverage_limit = 50 # 최대 비율
         self._thr_quantized = {s: None for s in self.symbols}
 
+        self._seeded = {s: False for s in self.symbols}
+        self._bootstrapped = {s: False for s in self.symbols}
+        for s in self.symbols:
+            ok = self._bootstrap_indicators_once(s)
+            self._bootstrapped[s] = bool(ok)
+            if not ok:
+                self.system_logger.warning(f"[{s}] 초기 부트스트랩 실패(캔들/MA 미계산)")
+
+
         for symbol in symbols:
             self.bybit_rest_controller.set_leverage(symbol=symbol, leverage=self.leverage_limit)
+
+    def _upsert_last_minute_candle(self, symbol: str, st: CandleState):
+        """
+        st.minute와 self.candles[symbol]의 마지막 minute가 같으면 교체, 다르면 append.
+        REST 마지막 캔들이 '현재 분'을 이미 포함한 경우 중복 방지.
+        """
+        dq = self.candles[symbol]
+        item = {"open": st.o, "high": st.h, "low": st.l, "close": st.c, "minute": st.minute}
+
+        if dq and isinstance(dq[-1], dict) and dq[-1].get("minute") == st.minute:
+            dq[-1] = item  # replace (덮어쓰기)
+        else:
+            dq.append(item)
+        # closes 갱신
+        self.closes[symbol] = [c["close"] for c in dq]
+
+    def _ws_is_fresh(self, symbol: str) -> bool:
+        get_last_tick = getattr(self.bybit_websocket_controller, "get_last_tick_time", None)
+        get_last_frame = getattr(self.bybit_websocket_controller, "get_last_frame_time", None)
+        now_m = time.monotonic()
+
+        if callable(get_last_tick):
+            lt = get_last_tick(symbol)
+            if lt and (now_m - lt) < self.ws_stale_sec:
+                return True
+
+        if callable(get_last_frame):
+            lf = get_last_frame()
+            if lf and (now_m - lf) < self.ws_global_stale_sec:
+                return True
+
+        return False
+
+    def _accumulate_candle_with_ws(self, symbol: str, price: float, ts_sec: float):
+        """WS 틱(가격, epoch초)으로 1분 캔들을 로컬 집계."""
+        minute = int(ts_sec) // 60
+        st = self._candle_state[symbol]
+
+        if st is None or st.minute != minute:
+            # 이전 분 캔들 마감 → self.candles / self.closes에 반영
+            if st is not None:
+                self._close_minute_candle(symbol, st)
+            # 새 분 시작
+            self._candle_state[symbol] = CandleState(
+                minute=minute, o=price, h=price, l=price, c=price
+            )
+        else:
+            # 현재 분 갱신
+            st.h = max(st.h, price)
+            st.l = min(st.l, price)
+            st.c = price
+
+    def _close_minute_candle(self, symbol: str, st: CandleState):
+        # 🔁 기존 append를 업서트로 교체
+        self._upsert_last_minute_candle(symbol, st)
+
+        # MA/threshold 갱신 (그대로)
+        self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
+        raw_thr = self.bybit_rest_controller.find_optimal_threshold(
+            self.closes[symbol], self.ma100s[symbol],
+            min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
+        )
+        quant_thr = self._quantize_ma_threshold(raw_thr)
+        if quant_thr != self._thr_quantized[symbol]:
+            self.ma_threshold[symbol] = quant_thr
+            self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
+            self._thr_quantized[symbol] = quant_thr
+            self.system_logger.info(f"[{symbol}] 🔧 MA threshold 업데이트(WS): {quant_thr:.4%}")
+
+        self._after_candle_update(symbol)
+
+    def _rest_backfill_one_minute(self, symbol: str):
+        try:
+            self.bybit_rest_controller.update_candles(self.candles[symbol], symbol=symbol,
+                                                      count=self.candles_num)
+            self.closes[symbol] = [c["close"] for c in self.candles[symbol]]
+            self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
+
+            raw_thr = self.bybit_rest_controller.find_optimal_threshold(
+                self.closes[symbol], self.ma100s[symbol],
+                min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
+            )
+            quant_thr = self._quantize_ma_threshold(raw_thr)
+            if quant_thr != self._thr_quantized[symbol]:
+                self.ma_threshold[symbol] = quant_thr
+                self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
+                self._thr_quantized[symbol] = quant_thr
+                self.system_logger.info(f"[{symbol}] 🔧 MA threshold 업데이트(REST): {quant_thr:.4%}")
+
+            # ✅ 공통 처리
+            self._after_candle_update(symbol)
+
+        except Exception as e:
+            self.system_logger.error(f"[{symbol}] REST 백필 실패: {e}")
+
+    def _seed_state_from_rest(self, symbol: str):
+        dq = self.candles[symbol]
+        if not dq:
+            return
+        last = dq[-1]
+        # minute 필드가 없다면 여기서 채워 넣기(가능하면 REST 리스폰스에서 원천 ts를 써주세요)
+        minute = last.get("minute")
+        if minute is None:
+            # 1분봉이라면 '해당 캔들의 시작 epoch초 // 60'으로 넣는 게 가장 정확
+            # 불가피하면 현재 시간을 쓰되, 중복 위험이 있으니 WS 첫 틱에서 덮어쓰기 기대
+            minute = int(time.time()) // 60
+
+        o = float(last.get("open", last.get("close")))
+        h = float(last.get("high", last.get("close")))
+        l = float(last.get("low", last.get("close")))
+        c = float(last.get("close"))
+
+        self._candle_state[symbol] = CandleState(minute=minute, o=o, h=h, l=l, c=c)
 
     def _quantize_ma_threshold(self, thr: float | None) -> float | None:
         if thr is None:
@@ -126,6 +263,37 @@ class TradeBot:
             "SHORT": (self.pos_dict[symbol].get("SHORT", {}).get("entries") or [[None]])[-1][0]
             if self.pos_dict[symbol].get("SHORT") and self.pos_dict[symbol]["SHORT"]["entries"] else None,
         }
+
+    def _bootstrap_indicators_once(self, symbol: str):
+        # 1) 캔들/클로즈 로드
+        self.bybit_rest_controller.update_candles(self.candles[symbol], symbol=symbol, count=self.candles_num)
+        self.closes[symbol] = [c["close"] for c in self.candles[symbol]]
+        if not self.closes[symbol]:
+            return False
+
+        # 2) MA/threshold 계산
+        self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
+        if not self.ma100s[symbol]:
+            return False
+        self.now_ma100[symbol] = self.ma100s[symbol][-1]
+
+        raw_thr = self.bybit_rest_controller.find_optimal_threshold(
+            self.closes[symbol], self.ma100s[symbol],
+            min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
+        )
+        quant = self._quantize_ma_threshold(raw_thr)
+        self.ma_threshold[symbol] = quant
+        self.momentum_threshold[symbol] = (quant / 3) if quant is not None else None
+        self._thr_quantized[symbol] = quant
+
+        # 3) prev(3틱 전) 세팅
+        if len(self.closes[symbol]) >= 3:
+            self.prev[symbol] = self.closes[symbol][-3]
+
+        # 4) 상태 동기화(선택)
+        self._after_candle_update(symbol)
+        return True
+
 
     async def _execute_and_sync(self, fn, prev_status, symbol, *args, **kwargs):
         async with self._sync_lock:
@@ -196,10 +364,32 @@ class TradeBot:
 
         redis_client.hset("trading:signal", field, value)
 
+    def _after_candle_update(self, symbol: str):
+        """1분 캔들이 갱신된 '직후'에 항상 실행할 공통 처리."""
+        # closes/ma100/threshold는 이미 갱신되어 있다는 전제(WS/REST 경로에서 갱신 완료 후 호출)
+        # now_ma100, prev(3틱 전), 포지션/주문/잔고/시간 동기화 등 공통 처리
+        self.now_ma100[symbol] = self.ma100s[symbol][-1] if self.ma100s[symbol] else None
+        if len(self.closes[symbol]) >= 3:
+            self.prev[symbol] = self.closes[symbol][-3]
+
+        # 거래소 상태/주문/지갑 정보 동기화
+        self.bybit_rest_controller.set_full_position_info(symbol)
+        self.bybit_rest_controller.sync_orders_from_bybit(symbol)
+        self.bybit_rest_controller.set_wallet_balance()
+        new_status = self.bybit_rest_controller.get_current_position_status(symbol=symbol)
+        self._apply_status(symbol, new_status)
+
+        # 서버/클라 시간 싱크(기존에 하던 것 그대로)
+        self.bybit_rest_controller.sync_time()
+
+
     async def run_once(self,):
+        for s in self.symbols:
+            if not self._seeded[s] and self.candles[s]:
+                self._seed_state_from_rest(s)
+                self._seeded[s] = True
 
         now = time.time()
-
         if not self.manual_queue.empty():
             cmd = await self.manual_queue.get()
             # dict면 {command, percent, side, symbol} 가능
@@ -250,41 +440,54 @@ class TradeBot:
             self.record_price(symbol)
             if not self.price_history[symbol]:
                 continue
-            _, latest_price = self.price_history[symbol][-1]
 
-            # (b) 1분마다 캔들/지표 갱신
-            if now - self.last_closes_update[symbol] >= 60:
-                self.bybit_rest_controller.update_candles(self.candles[symbol], symbol=symbol,
-                                                          count=self.candles_num)
-                self.closes[symbol] = [c["close"] for c in self.candles[symbol]]
-                self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
-                self.last_closes_update[symbol] = now
+            use_ws = self._ws_is_fresh(symbol)
+            if use_ws:
+                self._stale_counts[symbol] = 0
+            else:
+                self._stale_counts[symbol] += 1
 
-                raw_thr = self.bybit_rest_controller.find_optimal_threshold(
-                    self.closes[symbol], self.ma100s[symbol],
-                    min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
-                )
-                quant_thr = self._quantize_ma_threshold(raw_thr)  # 퍼센트 2자리 반올림 반영값
-                prev_quant = self._thr_quantized[symbol]
-                if quant_thr != prev_quant:
-                    self.ma_threshold[symbol] = quant_thr
-                    self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
-                    self._thr_quantized[symbol] = quant_thr
-                    self.system_logger.info(
-                        f"[{symbol}] 🔧 MA threshold 업데이트: raw={raw_thr!r} → 적용={quant_thr:.4%}"
-                    )
+            if use_ws or self._stale_counts[symbol] < 2:
 
-                self.bybit_rest_controller.set_full_position_info(symbol)
-                self.bybit_rest_controller.sync_orders_from_bybit(symbol)
-                self.bybit_rest_controller.set_wallet_balance()
-                new_status = self.bybit_rest_controller.get_current_position_status(symbol=symbol)
-                self._apply_status(symbol, new_status)
+                # fallback에서 복구되었다면 한번만 info
+                if self._rest_fallback_on[symbol]:
+                    self._rest_fallback_on[symbol] = False
+                    self.system_logger.info(f"[{symbol}] ✅ WS 복구, 실시간 집계 재개")
 
-                self.now_ma100[symbol] = self.ma100s[symbol][-1] if self.ma100s[symbol] else None
-                # 3분 전 가격: 단순히 3틱 전으로 유지하던 로직 → 네 상황에 맞게 조정
-                if len(self.closes[symbol]) >= 3:
-                    self.prev[symbol] = self.closes[symbol][-3]
-                self.bybit_rest_controller.sync_time()
+                # WS 틱으로 1분 캔들 집계
+                _, latest_price = self.price_history[symbol][-1]
+                # WS가 거래소 ts를 제공한다면 그걸 쓰고, 아니면 now
+                get_ts = getattr(self.bybit_websocket_controller, "get_last_exchange_ts", None)
+                if callable(get_ts):
+                    ts_sec = float(get_ts(symbol) or now)
+                else:
+                    ts_sec = now
+
+                self._accumulate_candle_with_ws(symbol, latest_price, ts_sec)
+
+            else:
+                # d) REST fallback (WS stale)
+                if not self._rest_fallback_on[symbol]:
+                    self._rest_fallback_on[symbol] = True
+                    self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필 모드 진입")
+                self._rest_backfill_one_minute(symbol)
+                rest_price = self.closes[symbol][-1] if self.closes[symbol] else None
+                if rest_price is not None:
+                    # price_history에도 보강해서 이후 로직이 동일하게 동작하도록
+                    ts = time.time()
+                    ph = self.price_history[symbol]
+                    if ph and ts <= ph[-1][0]:
+                        ts = ph[-1][0] + 1e-6  # 단조 증가 보장
+                    ph.append((ts, float(rest_price)))
+                    latest_price = rest_price
+                else:
+                    # closes가 비어있을 예외 케이스에선 기존 히스토리의 마지막가로 대체
+                    if self.price_history[symbol]:
+                        _, latest_price = self.price_history[symbol][-1]
+                    else:
+                        # 정말 아무 가격도 없다면 이 심볼은 이번 턴 스킵
+                        self.system_logger.error(f"[{symbol}] REST 백필 후에도 가격 미존재 → 심볼 스킵")
+                        continue
 
             # (c) 급등락 테스트
             state, min_dt, max_dt = self.check_price_jump(symbol)
@@ -424,8 +627,8 @@ class TradeBot:
         price = ph[-1][1] if ph else None
         ma100 = self.now_ma100.get(symbol)
         prev = self.prev.get(symbol)
-        thr = (self.ma_threshold.get(symbol) or 0) * 100
-        mom_thr = self.momentum_threshold.get(symbol)
+        thr = (self.ma_threshold.get(symbol) or 0)
+        mom_thr_ratio = (self.momentum_threshold.get(symbol) or 0.0)
 
         if price is None or ma100 is None or prev is None or thr is None:
             return ""
@@ -441,7 +644,7 @@ class TradeBot:
             f"  • 현재가      : {price:,.1f} (MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
             f"  • MA100       : {ma100:,.1f}\n"
             f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} (👉[±{thr*100:.2f}%]👈)\n"
-            f"  • 급등락목표 : {mom_thr*100:.3f}% ( 3분전대비 👉[{chg_3m_str}]👈)\n"
+            f"  • 급등락목표 : {mom_thr_ratio*100:.3f}% ( 3분전대비 👉[{chg_3m_str}]👈)\n"
             f"  • 청산기준 : {self.exit_ma_threshold[symbol]*100:.3f}%\n"
             f"  • 목표 크로스: {self.target_cross}회 / {self.closes_num} 분)\n"
         )
