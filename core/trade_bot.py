@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from collections import deque
 from core.redis_client import redis_client
 from typing import Any
+from decimal import Decimal, ROUND_HALF_UP
 
 _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
@@ -60,10 +61,16 @@ class TradeBot:
         self.prev = {s: None for s in self.symbols}  # 3분 전 가격
         self.percent = 5 #진입 비율
         self.leverage_limit = 50 # 최대 비율
+        self._thr_quantized = {s: None for s in self.symbols}
 
         for symbol in symbols:
             self.bybit_rest_controller.set_leverage(symbol=symbol, leverage=self.leverage_limit)
 
+    def _quantize_ma_threshold(self, thr: float | None) -> float | None:
+        if thr is None:
+            return None
+        p = (Decimal(str(thr)) * Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)  # % 단위 2자리
+        return float(p) / 100.0  # 다시 [0,1]로
 
     def record_price(self, symbol):
         ts = time.time()
@@ -253,12 +260,19 @@ class TradeBot:
                 self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
                 self.last_closes_update[symbol] = now
 
-                thr = self.bybit_rest_controller.find_optimal_threshold(
+                raw_thr = self.bybit_rest_controller.find_optimal_threshold(
                     self.closes[symbol], self.ma100s[symbol],
                     min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
                 )
-                self.ma_threshold[symbol] = thr
-                self.momentum_threshold[symbol] = thr / 3 if thr else None
+                quant_thr = self._quantize_ma_threshold(raw_thr)  # 퍼센트 2자리 반올림 반영값
+                prev_quant = self._thr_quantized[symbol]
+                if quant_thr != prev_quant:
+                    self.ma_threshold[symbol] = quant_thr
+                    self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
+                    self._thr_quantized[symbol] = quant_thr
+                    self.system_logger.info(
+                        f"[{symbol}] 🔧 MA threshold 업데이트: raw={raw_thr!r} → 적용={quant_thr:.4%}"
+                    )
 
                 self.bybit_rest_controller.set_full_position_info(symbol)
                 self.bybit_rest_controller.sync_orders_from_bybit(symbol)
@@ -394,7 +408,7 @@ class TradeBot:
         jump_state, min_dt, max_dt = self.check_price_jump(symbol)
         thr = (self.ma_threshold.get(symbol) or 0) * 100
         log_msg = (
-            f"\n[{symbol}] ⏱️ 감시 구간(±{thr:.3f}%)\n"
+            f"\n[{symbol}] ⏱️ 감시 구간(±{thr:.2f}%)\n"
             f"  • 체크 구간 : {min_sec:.1f}초 ~ {max_sec:.1f}초\n"
         )
         if jump_state is True:
@@ -410,7 +424,7 @@ class TradeBot:
         price = ph[-1][1] if ph else None
         ma100 = self.now_ma100.get(symbol)
         prev = self.prev.get(symbol)
-        thr = self.ma_threshold.get(symbol)
+        thr = (self.ma_threshold.get(symbol) or 0) * 100
         mom_thr = self.momentum_threshold.get(symbol)
 
         if price is None or ma100 is None or prev is None or thr is None:
@@ -426,7 +440,7 @@ class TradeBot:
             f"\n[{symbol}] 💹 시세 정보\n"
             f"  • 현재가      : {price:,.1f} (MA대비 👉[{ma_diff_pct:+.3f}%]👈)\n"
             f"  • MA100       : {ma100:,.1f}\n"
-            f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} (👉[±{thr*100:.3f}%]👈)\n"
+            f"  • 진입목표 : {ma_lower:,.1f} / {ma_upper:,.1f} (👉[±{thr*100:.2f}%]👈)\n"
             f"  • 급등락목표 : {mom_thr*100:.3f}% ( 3분전대비 👉[{chg_3m_str}]👈)\n"
             f"  • 청산기준 : {self.exit_ma_threshold[symbol]*100:.3f}%\n"
             f"  • 목표 크로스: {self.target_cross}회 / {self.closes_num} 분)\n"
