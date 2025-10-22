@@ -141,22 +141,73 @@ class TradeBot:
             st.l = min(st.l, price)
             st.c = price
 
-    def _close_minute_candle(self, symbol: str, st: CandleState):
-        # 🔁 기존 append를 업서트로 교체
-        self._upsert_last_minute_candle(symbol, st)
+    def _kst_now_str(self):
+        kst = ZoneInfo("Asia/Seoul")
 
-        # MA/threshold 갱신 (그대로)
+        return datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S %z")
+
+    def _fmt_pct(self, p):
+        if p is None:
+            return "—"
+        s = f"{p * 100:.2f}".rstrip("0").rstrip(".")
+        return f"{s}%"
+
+    def _arrow(self, prev, new, eps=1e-9):
+        if prev is None or new is None or abs(new - prev) < eps:
+            return "→"
+        return "↑" if new > prev else "↓"
+
+    def _xadd_one(self, symbol: str, name: str, prev, new, arrow: str, msg: str):
+        stream_key = f"OpenPctLog"
+
+        fields = {
+            "ts": self._kst_now_str(),  # KST
+            "sym": symbol,
+            "name": name,
+            "prev": "" if prev is None else f"{float(prev):.10f}",  # 계산/조회용(0~1)
+            "new": "" if new is None else f"{float(new):.10f}",  # 계산/조회용(0~1)
+            "msg": msg,  # 원문 로그(선택)
+        }
+        redis_client.xadd(stream_key, fields, maxlen=30, approximate=False)
+
+    def _log_change(self, symbol: str, name: str, prev, new, fmt="pct"):
+        """
+        다른 함수들에서 공통으로 호출:
+          - name: 'MA threshold', 'momentum_threshold' 등
+          - fmt : 'pct' | 'float' | 'int' (필요시 확장)
+        """
+        if fmt == "pct":
+            f = self._fmt_pct
+        elif fmt == "float":
+            f = (lambda v: "—" if v is None else f"{v:.4f}")
+        elif fmt == "int":
+            f = (lambda v: "—" if v is None else str(int(v)))
+        else:
+            f = (lambda v: "—" if v is None else str(v))
+
+        arrow = self._arrow(prev, new)
+        msg = f"[{symbol}] 🔧 {name}: {f(prev)} {arrow} {f(new)}"
+        self.system_logger.info(msg)
+        self._xadd_one(symbol, name, prev, new, arrow, msg)
+
+    def _close_minute_candle(self, symbol: str, st: CandleState):
+        self._upsert_last_minute_candle(symbol, st)
         self.ma100s[symbol] = self.bybit_rest_controller.ma100_list(self.closes[symbol])
         raw_thr = self.bybit_rest_controller.find_optimal_threshold(
             self.closes[symbol], self.ma100s[symbol],
             min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
         )
         quant_thr = self._quantize_ma_threshold(raw_thr)
-        if quant_thr != self._thr_quantized[symbol]:
+
+        prev_thr = self._thr_quantized.get(symbol)
+
+        if quant_thr != prev_thr:
             self.ma_threshold[symbol] = quant_thr
-            self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
+            new_mom = (quant_thr / 3) if quant_thr is not None else None
+            self.momentum_threshold[symbol] = new_mom
             self._thr_quantized[symbol] = quant_thr
-            self.system_logger.info(f"[{symbol}] 🔧 MA threshold 업데이트(WS): {quant_thr:.4%}")
+
+            self._log_change(symbol, "MA threshold", prev_thr, quant_thr, fmt="pct")
 
         self._after_candle_update(symbol)
 
@@ -172,11 +223,13 @@ class TradeBot:
                 min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
             )
             quant_thr = self._quantize_ma_threshold(raw_thr)
-            if quant_thr != self._thr_quantized[symbol]:
+            prev_thr = self._thr_quantized.get(symbol)
+            if quant_thr != prev_thr:
                 self.ma_threshold[symbol] = quant_thr
                 self.momentum_threshold[symbol] = (quant_thr / 3) if quant_thr is not None else None
                 self._thr_quantized[symbol] = quant_thr
-                self.system_logger.info(f"[{symbol}] 🔧 MA threshold 업데이트(REST): {quant_thr:.4%}")
+                # ✅ 초기/변경 모두 공통 로그
+                self._log_change(symbol, "MA threshold(REST)", prev_thr, quant_thr, fmt="pct")
 
             # ✅ 공통 처리
             self._after_candle_update(symbol)
@@ -282,8 +335,12 @@ class TradeBot:
             min_thr=0.005, max_thr=0.03, target_cross=self.target_cross
         )
         quant = self._quantize_ma_threshold(raw_thr)
+        prev_thr = self._thr_quantized.get(symbol)  # 초기에는 None
         self.ma_threshold[symbol] = quant
-        self.momentum_threshold[symbol] = (quant / 3) if quant is not None else None
+        new_mom = (quant / 3) if quant is not None else None
+        self.momentum_threshold[symbol] = new_mom
+        # ✅ 초기 세팅도 변경으로 간주하여 로그 남김
+        self._log_change(symbol, "MA threshold(init)", prev_thr, quant, fmt="pct")
         self._thr_quantized[symbol] = quant
 
         # 3) prev(3틱 전) 세팅
