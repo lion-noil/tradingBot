@@ -51,7 +51,7 @@ class TradeBot:
         self.candles_num = 10080
         self.closes_num = 10080
         self.TAKER_FEE_RATE = 0.00055
-        self.target_cross = 10
+        self.target_cross = 5
         self.leverage = 50
         self.history_num = 10
         self.polling_interval = 0.5
@@ -171,11 +171,6 @@ class TradeBot:
         redis_client.xadd(stream_key, fields, maxlen=30, approximate=False)
 
     def _log_change(self, symbol: str, name: str, prev, new, fmt="pct"):
-        """
-        다른 함수들에서 공통으로 호출:
-          - name: 'MA threshold', 'momentum_threshold' 등
-          - fmt : 'pct' | 'float' | 'int' (필요시 확장)
-        """
         if fmt == "pct":
             f = self._fmt_pct
         elif fmt == "float":
