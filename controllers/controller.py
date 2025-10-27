@@ -22,6 +22,10 @@ def _safe_int(x):
 
 class BybitWebSocketController:
     def __init__(self, symbols=("BTCUSDT",), system_logger=None):
+        self.kline_interval = "1"  # "1" = 1분봉
+        self._last_kline: dict[tuple[str, str], dict] = {}  # {(symbol, interval): kline dict}
+        self._last_kline_confirmed: dict[tuple[str, str], dict] = {}  # 마지막으로 마감된 봉
+
         self.symbols = list(symbols)
         self.system_logger = system_logger
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
@@ -69,10 +73,12 @@ class BybitWebSocketController:
             return
         with self._lock:
             self.symbols.extend(to_add)
-        # 이미 연결돼 있으면 즉시 구독
+
         ws = self.ws
         if ws:
-            msg = {"op": "subscribe", "args": [f"tickers.{s}" for s in to_add]}
+            # ✅ ticker + kline.1 동시 구독
+            args = [f"tickers.{s}" for s in to_add] + [f"kline.{self.kline_interval}.{s}" for s in to_add]
+            msg = {"op": "subscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
             except Exception:
@@ -84,9 +90,12 @@ class BybitWebSocketController:
             return
         with self._lock:
             self.symbols = [s for s in self.symbols if s not in to_remove]
+
         ws = self.ws
         if ws:
-            msg = {"op": "unsubscribe", "args": [f"tickers.{s}" for s in to_remove]}
+            # ✅ ticker + kline.1 동시 해제
+            args = [f"tickers.{s}" for s in to_remove] + [f"kline.{self.kline_interval}.{s}" for s in to_remove]
+            msg = {"op": "unsubscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
             except Exception:
@@ -94,18 +103,32 @@ class BybitWebSocketController:
 
     def get_last_frame_time(self) -> float | None:
         return self._last_frame_monotonic or None
+
+    def get_last_kline(self, symbol: str, interval: str | None = None) -> dict | None:
+        interval = interval or self.kline_interval
+        with self._lock:
+            return self._last_kline.get((symbol, interval))
+
+    # 최근 '마감된' kline (confirm=True)
+    def get_last_confirmed_kline(self, symbol: str, interval: str | None = None) -> dict | None:
+        interval = interval or self.kline_interval
+        with self._lock:
+            return self._last_kline_confirmed.get((symbol, interval))
+
+
     # ──────────────────────────────────────────────
     # 내부: WS 수명주기
     def _start_public_websocket(self):
         def on_open(ws):
-            # 연결 객체 보관
             self.ws = ws
             self._reconnect_delay = 5
-            self._last_frame_monotonic = time.monotonic()  # ✅ 추가
+            self._last_frame_monotonic = time.monotonic()
             if self.system_logger:
                 self.system_logger.debug("✅ Public WebSocket 연결됨")
-            # 현재 보유 심볼 재구독
-            args = [f"tickers.{sym}" for sym in self.symbols]
+
+            # ✅ ticker + kline.1 두 토픽 모두 재구독
+            args = [f"tickers.{sym}" for sym in self.symbols] + [f"kline.{self.kline_interval}.{sym}" for sym in
+                                                                 self.symbols]
             ws.send(json.dumps({"op": "subscribe", "args": args}))
 
         def on_pong(ws, data):
@@ -115,56 +138,76 @@ class BybitWebSocketController:
         def on_message(ws, message: str):
             try:
                 parsed = json.loads(message)
-
                 self._last_frame_monotonic = time.monotonic()
+
                 data = parsed.get("data")
                 if not data:
                     return
 
-                # data가 dict 또는 list일 수 있음
                 items = data if isinstance(data, list) else [data]
                 topic = parsed.get("topic", "")
-
-                # 프레임 자체의 ts(ms)도 올 수 있음
                 frame_ts_ms = parsed.get("ts")
 
                 with self._lock:
                     for item in items:
-                        sym = item.get("symbol")
-                        if not sym:
-                            # topic에서 심볼을 유추 (tickers.BTCUSDT)
-                            if topic.startswith("tickers.") and len(topic.split(".")) == 2:
-                                sym = topic.split(".")[1]
-                            else:
+                        # ── 1) ticker 처리 ─────────────────────────────
+                        if topic.startswith("tickers."):
+                            sym = item.get("symbol") or topic.split(".")[1]
+                            price_str = item.get("lastPrice") or item.get("ask1Price") or item.get("bid1Price")
+                            if price_str is None:
+                                continue
+                            try:
+                                price = float(price_str)
+                            except (TypeError, ValueError):
                                 continue
 
-                        # 가격: lastPrice 우선, 없으면 최우선 호가 사용
-                        price_str = item.get("lastPrice") or item.get("ask1Price") or item.get("bid1Price")
-                        if price_str is None:
-                            continue
-
-                        try:
-                            price = float(price_str)
-                        except (TypeError, ValueError):
-                            continue
-
-                        # 거래소 ts(ms) → 초 단위 float
-                        exch_ts_ms = (
-                            item.get("ts") or item.get("timestamp") or frame_ts_ms
-                        )
-                        if exch_ts_ms:
-                            try:
-                                exch_ts = float(exch_ts_ms) / 1000.0
-                            except Exception:
+                            exch_ts_ms = item.get("ts") or item.get("timestamp") or frame_ts_ms
+                            if exch_ts_ms:
+                                try:
+                                    exch_ts = float(exch_ts_ms) / 1000.0
+                                except Exception:
+                                    exch_ts = time.time()
+                            else:
                                 exch_ts = time.time()
-                        else:
-                            exch_ts = time.time()
 
-                        # 상태 반영
-                        self._prices[sym] = price
-                        self._last_tick_monotonic[sym] = time.monotonic()
-                        self._last_exchange_ts[sym] = exch_ts
+                            self._prices[sym] = price
+                            self._last_tick_monotonic[sym] = time.monotonic()
+                            self._last_exchange_ts[sym] = exch_ts
+                            continue
 
+                        # ── 2) kline 처리 ──────────────────────────────
+                        if topic.startswith("kline."):
+                            # topic 예: "kline.1.BTCUSDT"
+                            parts = topic.split(".")
+                            if len(parts) < 3:
+                                continue
+                            interval, sym = parts[1], parts[2]
+
+                            # item 필드: start/end/confirm/open/high/low/close/volume/turnover 등(문자열/숫자 혼재)
+                            try:
+                                k = {
+                                    "symbol": sym,
+                                    "interval": interval,
+                                    "start": int(item["start"]),
+                                    "end": int(item["end"]),
+                                    "confirm": bool(item["confirm"]),
+                                    "open": float(item["open"]),
+                                    "high": float(item["high"]),
+                                    "low": float(item["low"]),
+                                    "close": float(item["close"]),
+                                    "volume": float(item.get("volume", 0) or 0),
+                                    "turnover": float(item.get("turnover", 0) or 0),
+                                    "ts": int(item.get("timestamp") or frame_ts_ms or 0),
+                                }
+                            except Exception:
+                                # 필수 필드가 없거나 타입 변환 실패 시 skip
+                                continue
+
+                            key = (sym, interval)
+                            self._last_kline[key] = k
+                            if k["confirm"]:
+                                self._last_kline_confirmed[key] = k
+                            continue
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.debug(f"❌ Public 메시지 처리 오류: {e}")
@@ -776,11 +819,6 @@ class BybitRestController:
             self.system_logger.error(f"[ERROR] 지갑 저장 실패: {e}")
 
     def update_candles(self, candles, symbol=None, count=None):
-        """
-        candles: 바깥에서 넘겨주는 deque/list (mutable)
-        symbol:  조회할 심볼(미지정 시 self.symbol)
-        count:   최종 갯수 (없으면 최대 1000)
-        """
         try:
             symbol = symbol or self.symbol
             url = f"{self.base_url}/v5/market/kline"
@@ -862,7 +900,7 @@ class BybitRestController:
             last = candles[-1] if candles else None
             if last:
                 self.system_logger.debug(
-                    f"📊 ({symbol}) 캔들 갱신 완료: {len(candles)}개, 최근 OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']})"
+                    f"📊 ({symbol}) 캔들 갱신 완료: {len(candles)}개, last OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']})"
                 )
             else:
                 self.system_logger.debug(f"📊 ({symbol}) 캔들 갱신: 결과 없음")
