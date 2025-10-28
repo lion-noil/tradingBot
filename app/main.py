@@ -122,7 +122,7 @@ async def startup_event():
     global bot, bybit_websocket_controller, bybit_rest_controller
     system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
 
-    symbols = ("BTCUSDT",)
+    symbols = ("BTCUSDT","ETHUSDT","XAUTUSDT")
 
     # WS/REST 컨트롤러 초기화 (중복 생성 제거)
     bybit_websocket_controller = BybitWebSocketController(
