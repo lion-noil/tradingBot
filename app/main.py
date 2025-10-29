@@ -10,7 +10,6 @@ from typing import Literal
 from dotenv import load_dotenv
 load_dotenv()
 
-# 윈도우 이벤트 루프 설정
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -123,6 +122,7 @@ async def startup_event():
     system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
 
     symbols = ("BTCUSDT","ETHUSDT","XAUTUSDT")
+    # symbols = ("BTCUSDT",)
 
     # WS/REST 컨트롤러 초기화 (중복 생성 제거)
     bybit_websocket_controller = BybitWebSocketController(

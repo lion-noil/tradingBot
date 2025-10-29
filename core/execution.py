@@ -44,7 +44,7 @@ class ExecutionEngine:
                     self.rest.append_order(symbol, trade)
                 self.rest.set_wallet_balance()
                 if self.system_logger:
-                    self.system_logger.info(f"🧾 체결 동기화 완료: {order_id[-6:]}")
+                    self.system_logger.debug(f"🧾 체결 동기화 완료: {order_id[-6:]}")
             elif orderStatus in ("CANCELLED", "REJECTED"):
                 if self.system_logger: self.system_logger.warning(f"⚠️ 주문 {order_id[-6:]} 상태: {orderStatus} (체결 없음)")
             elif orderStatus == "TIMEOUT":

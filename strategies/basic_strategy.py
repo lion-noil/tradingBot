@@ -6,17 +6,32 @@ from typing import Optional, List, Dict, Any
 
 @dataclass
 class Signal:
-    ok: bool                 # 신호 성립 여부
-    kind: str                # 'ENTRY' | 'EXIT'
-    side: str                # 'LONG' | 'SHORT'
-    reasons: List[str]       # 사람이 보는 사유 리스트
-    price: float             # 관측가(신호 시점)
+    ok: bool
+    kind: str
+    side: str
+    reasons: List[str]
+    price: float
     ma100: float
-    ma_delta_pct: float      # (price - ma100)/ma100
-    momentum_pct: Optional[float]  # (price-prev)/prev (롱은 음수 기대, 숏은 양수)
-    thresholds: Dict[str, float]   # {"ma":..., "momentum":...}
-    extra: Dict[str, Any] = None   # 보유시간, 코드 등 부가정보
+    ma_delta_pct: float
+    momentum_pct: Optional[float]
+    thresholds: Dict[str, float]
+    extra: Dict[str, Any] = None
 
+def _fmt_edge(seconds: int) -> str:
+    if seconds % 3600 == 0:
+        return f"{seconds//3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds//60}m"
+    return f"{seconds}s"
+
+def _fmt_dur(sec: int | None) -> str:
+    if sec is None:
+        return "N/A"
+    m, s = divmod(int(sec), 60)
+    h, m = divmod(m, 60)
+    if h: return f"{h}h {m}m {s}s"
+    if m: return f"{m}m {s}s"
+    return f"{s}s"
 # ---------- 엔트리 신호 ----------
 def get_long_entry_signal(
     price: float,
@@ -96,60 +111,78 @@ def get_exit_signal(
     ma_threshold: float = 0.005,               # 0.5% (사용자 평소값)
     exit_ma_threshold: float = 0.0005,         # 0.05% (근접 터치)
     time_limit_sec: int = 24 * 3600,           # 24시간 초과 시 무조건 EXIT
-    near_touch_window_sec: int = 30 * 60       # 30분 이내는 근접 기준
+    near_touch_window_sec: int = 60 * 60
 ) -> Optional["Signal"]:
     """
     position: "LONG" | "SHORT"
     recent_entry_time: 엔트리 시각(ms). 없으면 시간기반 로직 없이 MA 기준만 적용(일반 기준 사용).
     """
     now_ms = int(time.time() * 1000)
-    reasons: List[str] = []
-    reason_code = None
 
-    # 경과 시간 계산
-    held_sec = None
+    # 1) 경과시간 계산(시그널 체인 기준)
+    chain_elapsed_sec = None
     if recent_entry_time is not None:
-        held_sec = max(0, (now_ms - recent_entry_time) // 1000)
+        chain_elapsed_sec = max(0, (now_ms - recent_entry_time) // 1000)
 
-    # 1) 24시간 초과면 무조건 EXIT
-    if held_sec is not None and held_sec > time_limit_sec:
-        hours = time_limit_sec / 3600
-        reasons = [f"⏰ 진입 후 ({hours:.1f}시간 초과)"]
-        reason_code = "TIME_LIMIT"
+    x = near_touch_window_sec
+    y = time_limit_sec
+
+    # 2) 절대 종료 먼저(가장 강한 조건)
+    if chain_elapsed_sec is not None and chain_elapsed_sec > y:
+        # 문자열은 '성립'이므로 이제 생성
+        reasons = [
+            f"⏰ 시간 제한 {y / 3600:.1f}h 초과",
+            f"⛳ 구간: {_fmt_edge(y)}~",
+            f"⏱ 체인 경과: {_fmt_dur(chain_elapsed_sec)}"
+        ]
+        ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
+        return Signal(
+            ok=True, kind="EXIT", side=position, reasons=reasons,
+            price=price, ma100=ma100, ma_delta_pct=ma_delta,
+            momentum_pct=None,
+            thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
+        )
+
+    # 3) 트리거 선택만 계산 (문자열 생성 X)
+    if chain_elapsed_sec is None:
+        trigger_pct = ma_threshold
+        trigger_name = "일반"
+        band_label = "⛳ 구간: N/A"
+    elif chain_elapsed_sec <= x:
+        trigger_pct = exit_ma_threshold
+        trigger_name = "근접"
+        band_label = f"⛳ 구간: 0~{_fmt_edge(x)}"
     else:
-        # 2) 시간 구간에 따른 트리거 퍼센트 선택
-        if held_sec is not None and held_sec <= near_touch_window_sec:
-            trigger_pct = exit_ma_threshold
-            window_label = "근접 기준"
-            touch_code_suffix = "RETOUCH"
-        else:
-            # (recent_entry_time 없으면 일반 기준 사용)
-            trigger_pct = ma_threshold
-            window_label = "일반 기준"
-            touch_code_suffix = "TOUCH"
+        trigger_pct = ma_threshold
+        trigger_name = "일반"
+        band_label = f"⛳ 구간: {_fmt_edge(x)}~{_fmt_edge(y)}"
 
-        # 3) MA100 재터치(또는 터치) 조건
-        if position == "LONG":
-            # 가격이 MA100까지 (1 + trigger_pct) 이상 올라오면 청산
-            if price >= ma100 * (1 + trigger_pct):
-                pct = trigger_pct * 100
-                reasons = [f"MA100 대비 +{pct:.4f}% {window_label} 도달"]
-                reason_code = f"MA_{touch_code_suffix}_LONG"
-        elif position == "SHORT":
-            # 가격이 MA100까지 (1 - trigger_pct) 이하로 내려오면 청산
-            if price <= ma100 * (1 - trigger_pct):
-                pct = trigger_pct * 100
-                reasons = [f"MA100 대비 -{pct:.4f}% {window_label} 도달"]
-                reason_code = f"MA_{touch_code_suffix}_SHORT"
-        else:
-            # 예상치 못한 포지션 문자열 보호
-            return None
-
-    if not reasons:
+    # 4) 터치 성립 여부만 먼저 판단 (문자열 생성 X)
+    touched = False
+    if position == "LONG":
+        touched = price >= ma100 * (1 + trigger_pct)
+    elif position == "SHORT":
+        touched = price <= ma100 * (1 - trigger_pct)
+    else:
         return None
 
-    ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
+    if not touched:
+        return None  # 성립 안 하면 바로 끝 (문자열/계산 낭비 없음)
 
+    # 5) 여기서부터 '성립'이므로 필요한 문자열/계산 생성
+    pct_val = trigger_pct * 100
+    if position == "LONG":
+        head = f"MA100 대비 +{pct_val:.4f}% {trigger_name} 트리거 도달"
+    else:
+        head = f"MA100 대비 -{pct_val:.4f}% {trigger_name} 트리거 도달"
+
+    reasons: List[str] = [
+        head,
+        band_label,
+        f"⏱ 체인 경과: {_fmt_dur(chain_elapsed_sec)}",
+    ]
+
+    ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
     return Signal(
         ok=True,
         kind="EXIT",
@@ -160,8 +193,4 @@ def get_exit_signal(
         ma_delta_pct=ma_delta,
         momentum_pct=None,
         thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
-        extra={
-            "reason_code": reason_code,
-            "time_held_sec": held_sec
-        }
     )
