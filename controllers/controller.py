@@ -13,6 +13,7 @@ import json
 KST = timezone(timedelta(hours=9))
 from urllib.parse import urlencode
 import math
+from core.redis_client import redis_client
 
 def _safe_int(x):
     try:
@@ -279,9 +280,8 @@ class BybitRestController:
     def _fp_orders(self, symbol: str) -> str:
         return f"{symbol}_orders.json"
 
-    def _fp_wallet(self) -> str:
-        # 지갑은 계정 레벨이라 심볼 비독립 파일 권장
-        return "wallet.json"
+    def _fp_asset(self) -> str:
+        return "asset.json"
 
     def _build_query(self, params_pairs: list[tuple[str, str]] | None) -> str:
         if not params_pairs:
@@ -454,7 +454,7 @@ class BybitRestController:
         except Exception as e:
             self.system_logger.error(f"[ERROR] 포지션 저장 실패: {e}")
 
-    def set_full_position_info(self, symbol="BTCUSDT"):
+    def set_full_position_info(self, symbol="BTCUSDT", save_local: bool = True, save_redis: bool = True):
         # Bybit에서 포지션 조회
         result = self.get_positions(symbol=symbol)
         new_positions = result.get("result", {}).get("list", []) if isinstance(result, dict) else []
@@ -477,8 +477,23 @@ class BybitRestController:
         cleaned_new = [clean_position(p) for p in new_positions]
 
         if json.dumps(cleaned_local, sort_keys=True) != json.dumps(cleaned_new, sort_keys=True):
-            self.system_logger.debug(f"📌 ({symbol}) 포지션 변경 감지 → 로컬 파일 업데이트")
-            self.save_local_positions(symbol, cleaned_new)
+            if save_local:
+                if self.system_logger:
+                    self.system_logger.debug(f"📌 ({symbol}) 포지션 변경 감지 → 로컬 파일 업데이트")
+                self.save_local_positions(symbol, cleaned_new)
+
+        if save_redis:
+            try:
+                redis_client.hset(
+                    "asset",
+                    f"positions.{symbol}",
+                    json.dumps(cleaned_new, ensure_ascii=False, separators=(',', ':'))
+                )
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.error(f"[WARN] Redis 저장 실패: {e}")
+
+        return result  # 또는 필요하면 cleaned_new 반환으로 바꿔도 됩니다.
 
     def load_orders(self, symbol: str):
         path = self._fp_orders(symbol)
@@ -715,12 +730,8 @@ class BybitRestController:
     def get_current_position_status(self, symbol="BTCUSDT"):
         local_positions = self.load_local_positions(symbol)
         local_orders = self.load_orders(symbol)
-        balance_info = self.load_local_wallet_balance()
-        total = float(balance_info.get("coin_equity", 0.0))  # ✅ 수정됨
-        avail = float(balance_info.get("available_balance", 0.0))  # ✅
 
         results = []
-        leverage = self.leverage
         for pos in local_positions or []:
             position_amt = abs(float(pos.get("size", 0)))
             if position_amt == 0:
@@ -760,45 +771,70 @@ class BybitRestController:
             })
 
         return {
-            "balance": {
-                "total": total,
-                "available": avail,
-                "leverage": leverage if results else 0  # 포지션 없으면 0
-            },
             "positions": results
         }
 
-    def set_wallet_balance(self, coin="USDT", account_type="UNIFIED", save_local=True):
+    def get_usdt_balance(self):
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
-        params_pairs = [("accountType", account_type), ("coin", coin)]
+        coin = "USDT"
+        params_pairs = [("accountType", "UNIFIED"), ("coin", coin)]
 
         try:
             resp = self._request_with_resync(method, endpoint, params_pairs=params_pairs, body_dict=None, timeout=5)
             data = resp.json()
         except Exception as e:
             self.system_logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
-            return self.load_local_wallet_balance()
+            return self.load_local_asset_balance()
 
-        if isinstance(data, dict) and data.get("retCode") != 0:
-            self.system_logger.error(f"[ERROR] 잔고 조회 실패: {data.get('retMsg')}")
-            return self.load_local_wallet_balance()
+        # API 에러 처리
+        if not isinstance(data, dict) or data.get("retCode") != 0:
+            self.system_logger.error(
+                f"[ERROR] 잔고 조회 실패: {data.get('retMsg') if isinstance(data, dict) else 'Unknown error'}")
+            return self.load_local_asset_balance()
 
-        account_data = data["result"]["list"][0]
-        coin_data = next((c for c in account_data["coin"] if c["coin"] == coin), {})
+        try:
+            account = (data.get("result", {}).get("list") or [{}])[0]
+            coin_list = account.get("coin", [])
+            coin_data = next((c for c in coin_list if c.get("coin") == coin), {})
 
-        result = {
-            "coin_equity": float(coin_data.get("equity", 0)),
-            "available_balance": float(account_data.get("totalAvailableBalance", 0)),
-        }
+            # 1순위: 코인 레벨 walletBalance
+            wb_raw = coin_data.get("walletBalance")
 
-        if save_local:
-            self.save_local_wallet_balance(result)
+            # 값이 없거나 빈 문자열이면 계정 레벨 totalWalletBalance로 폴백
+            if wb_raw in (None, "", "null"):
+                wb_raw = account.get("totalWalletBalance", 0)
+
+            wallet_balance = float(wb_raw or 0)
+
+            result = {
+                "coin": coin_data.get("coin") or coin,  # 명시적으로 USDT 표기
+                "wallet_balance": wallet_balance,  # 스네이크 케이스 권장
+            }
+
+        except Exception as e:
+            self.system_logger.error(f"[ERROR] 지갑 응답 파싱 실패: {e}")
+            return self.load_local_asset_balance()
 
         return result
 
-    def load_local_wallet_balance(self):
-        path = self._fp_wallet()
+    def set_asset(self, save_local: bool = True, save_redis: bool = True):
+        result = self.get_usdt_balance()
+        if save_local:
+            self.save_local_wallet_balance(result)
+
+        if save_redis:
+            try:
+                redis_client.hset("asset", f"wallet.{result['coin']}", f"{result['wallet_balance']:.10f}")
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.error(f"[WARN] Redis 저장 실패: {e}")
+
+        return result
+
+
+    def load_local_asset_balance(self):
+        path = self._fp_asset()
 
         if not os.path.exists(path):
             return {}
@@ -811,7 +847,7 @@ class BybitRestController:
             return {}
 
     def save_local_wallet_balance(self, data):
-        path = self._fp_wallet()
+        path = self._fp_asset()
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1022,12 +1058,12 @@ class BybitRestController:
         self.system_logger.error(f"❌ 주문 실패: {data.get('retMsg')} (코드 {data.get('retCode')})")
         return None
 
-    def open_market(self, symbol, side, price, percent, balance):
-        if price is None or balance is None:
+    def open_market(self, symbol, side, price, percent, wallet):
+        if price is None or wallet is None:
             self.system_logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
             return None
 
-        total_balance = balance.get("total", 0)
+        total_balance = wallet.get("USDT", 0)
         raw_qty = total_balance * self.leverage / price * percent / 100.0
         qty = self.normalize_qty(symbol, raw_qty, mode="floor")
         if qty <= 0:
@@ -1087,47 +1123,36 @@ class BybitRestController:
         v5/market/instruments-info에서 lotSizeFilter/priceFilter를 읽어 규칙 반환.
         네트워크/응답 이슈시 예외를 올림.
         """
-        try:
-            url = f"{self.base_url}/v5/market/instruments-info"
-            params = {"category": category, "symbol": symbol}
-            r = requests.get(url, params=params, timeout=5)
-            r.raise_for_status()
-            j = r.json()
-            if j.get("retCode") != 0:
-                raise RuntimeError(f"retCode={j.get('retCode')}, retMsg={j.get('retMsg')}")
-            lst = (j.get("result") or {}).get("list") or []
-            if not lst:
-                raise RuntimeError("empty instruments list")
-            info = lst[0]
-            lot = info.get("lotSizeFilter", {}) or {}
-            price = info.get("priceFilter", {}) or {}
+        url = f"{self.base_url}/v5/market/instruments-info"
+        params = {"category": category, "symbol": symbol}
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("retCode") != 0:
+            raise RuntimeError(f"retCode={j.get('retCode')}, retMsg={j.get('retMsg')}")
+        lst = (j.get("result") or {}).get("list") or []
+        if not lst:
+            raise RuntimeError("empty instruments list")
+        info = lst[0]
+        lot = info.get("lotSizeFilter", {}) or {}
+        price = info.get("priceFilter", {}) or {}
 
-            rules = {
-                "qtyStep": float(lot.get("qtyStep", 0) or 0),
-                "minOrderQty": float(lot.get("minOrderQty", 0) or 0),
-                "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0),
-                "tickSize": float(price.get("tickSize", 0) or 0),
-                "minPrice": float(price.get("minPrice", 0) or 0),
-                "maxPrice": float(price.get("maxPrice", 0) or 0),
-            }
-            # 방어: 기본값 보정
-            if rules["qtyStep"] <= 0:
-                rules["qtyStep"] = 0.001  # 안전 폴백
-            if rules["minOrderQty"] <= 0:
-                rules["minOrderQty"] = rules["qtyStep"]
+        rules = {
+            "qtyStep": float(lot.get("qtyStep", 0) or 0),
+            "minOrderQty": float(lot.get("minOrderQty", 0) or 0),
+            "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0),
+            "tickSize": float(price.get("tickSize", 0) or 0),
+            "minPrice": float(price.get("minPrice", 0) or 0),
+            "maxPrice": float(price.get("maxPrice", 0) or 0),
+        }
+        # 방어: 기본값 보정
+        if rules["qtyStep"] <= 0:
+            rules["qtyStep"] = 0.001  # 안전 폴백
+        if rules["minOrderQty"] <= 0:
+            rules["minOrderQty"] = rules["qtyStep"]
 
-            self._symbol_rules[symbol] = rules
-            return rules
-        except Exception as e:
-            # 안전 폴백(대표값): BTC 0.001, ETH 0.01, 기타 0.001
-            defaults = {
-                "BTCUSDT": {"qtyStep": 0.001, "minOrderQty": 0.001, "tickSize": 0.5},
-                "ETHUSDT": {"qtyStep": 0.01, "minOrderQty": 0.01, "tickSize": 0.05},
-            }
-            rules = defaults.get(symbol, {"qtyStep": 0.001, "minOrderQty": 0.001, "tickSize": 0.01})
-            self.system_logger.warning(f"⚠️ 심볼 규칙 조회 실패({symbol}): {e} → 폴백 사용 {rules}")
-            self._symbol_rules[symbol] = rules
-            return rules
+        self._symbol_rules[symbol] = rules
+        return rules
 
     def get_symbol_rules(self, symbol: str) -> dict:
         return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)

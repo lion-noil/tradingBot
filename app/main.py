@@ -1,11 +1,9 @@
 # app/main.py
 
-import os
 import sys
-import time
-import asyncio
-import logging
 from typing import Literal
+import signal, os, asyncio, logging, threading, time
+from collections import deque
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,8 +14,7 @@ if sys.platform.startswith("win"):
 from fastapi import FastAPI, Response, HTTPException
 from pydantic import BaseModel
 
-# 새 구조에 맞춘 import
-from core.trade_bot import TradeBot                # ← core.trade_bot 에서 변경
+from core.trade_bot import TradeBot
 from controllers.controller import (
     BybitWebSocketController,
     BybitRestController,
@@ -35,7 +32,62 @@ class ManualCloseRequest(BaseModel):
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+class BurstWarningTerminator(logging.Handler):
+    """
+    window_sec 동안 WARNING(이상) 로그가 threshold회 이상 발생하면 프로세스를 종료.
+    """
+    def __init__(self, threshold: int = 3, window_sec: float = 5.0, grace_sec: float = 0.2):
+        super().__init__()
+        self.threshold = threshold
+        self.window_sec = window_sec
+        self.grace_sec = grace_sec
+        self._ts = deque()
+        self._lock = threading.Lock()
+        self._armed = True
+        logging.captureWarnings(True)  # warnings.warn 도 logging으로 보냄
+
+    def emit(self, record: logging.LogRecord):
+        if record.levelno < logging.WARNING or not self._armed:
+            return
+
+        # (선택) 특정 메시지/로거 제외 예시:
+        # msg = record.getMessage()
+        # if "무시할문구" in msg:  # 또는 record.name == "some.logger"
+        #     return
+
+        now = time.monotonic()
+        with self._lock:
+            self._ts.append(now)
+            cutoff = now - self.window_sec
+            while self._ts and self._ts[0] < cutoff:
+                self._ts.popleft()
+
+            if len(self._ts) >= self.threshold:
+                self._armed = False
+                logging.getLogger("system").error(
+                    f"🚨 WARNING {len(self._ts)}회/{self.window_sec:.1f}s → 안전 종료 시도"
+                )
+                self._shutdown()
+
+    def _shutdown(self):
+        # uvicorn 그레이스풀 셧다운 유도 (SIGINT)
+        def _kill():
+            try:
+                os.kill(os.getpid(), signal.SIGINT)
+            except Exception:
+                raise SystemExit(1)
+
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                loop.call_later(self.grace_sec, _kill)
+                return
+        except RuntimeError:
+            pass
+        _kill()
+
 # ── 로거 설정 ───────────────────────────────────
+
 system_logger = setup_logger(
     "system",
     logger_level=logging.DEBUG,
@@ -46,6 +98,9 @@ system_logger = setup_logger(
     exclude_sig_in_file=False,
     telegram_mode="both",
 )
+
+_terminator = BurstWarningTerminator(threshold=3, window_sec=10.0, grace_sec=0.2)
+system_logger.addHandler(_terminator)
 
 trading_logger = setup_logger(
     "trading",
@@ -83,8 +138,9 @@ async def warmup_with_ws_prices():
             missing: dict[str, int] = {}
             for sym in bot.symbols:
                 price = bybit_websocket_controller.get_price(sym)
+                exchange_ts = bybit_websocket_controller.get_last_exchange_ts(sym)
                 if price:
-                    bot.jump.record_price(sym, price, ts=time.time())
+                    bot.jump.record_price(sym, price, exchange_ts)
                 cur = len(bot.jump.price_history.get(sym, []))
                 if cur < MIN_TICKS:
                     missing[sym] = cur

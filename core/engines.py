@@ -117,27 +117,62 @@ class JumpDetector:
         if symbol not in self.price_history:
             self.price_history[symbol] = deque(maxlen=self.history_num)
 
-    def record_price(self, symbol: str, price: float, ts: float | None = None):
+    def record_price(
+        self,
+        symbol: str,
+        price: float,
+        exchange_ts: float | None = None,
+        recv_ts: float | None = None,
+    ):
+        """거래소 timestamp + 로컬 timestamp + 가격을 함께 기록"""
         self.ensure_symbol(symbol)
         if not isinstance(price, (int, float)) or not (price > 0) or math.isnan(price) or math.isinf(price):
             return
-        ts = ts or time.time()
-        ph = self.price_history[symbol]
-        if ph and ts <= ph[-1][0]:
-            ts = ph[-1][0] + 1e-6  # 단조 증가
-        ph.append((ts, float(price)))
 
-    def check_jump(self, symbol: str, jump_pct: Optional[float]) -> Tuple[Optional[str], Optional[float], Optional[float]]:
+        recv_ts = recv_ts or time.time()
+        exchange_ts = exchange_ts or recv_ts  # fallback
+
+        ph = self.price_history[symbol]
+        if ph and recv_ts <= ph[-1][1]:
+            recv_ts = ph[-1][1] + 1e-6  # 단조 증가 유지
+
+        ph.append((float(exchange_ts), float(recv_ts), float(price)))
+
+    def check_jump(
+            self,
+            symbol: str,
+            jump_pct: Optional[float],
+            use_exchange_ts: bool = True,
+            max_age_sec: float = 2.0,  # ✅ 최신 샘플은 지금으로부터 이내여야 함
+            skew_allow_sec: float = 3.0,  # ✅ 거래소/로컬 시계 오차 허용
+    ) -> Tuple[Optional[str], Optional[float], Optional[float]]:
+        """급등락 감지. exchange_ts 기준(default) or recv_ts 기준."""
         self.ensure_symbol(symbol)
         ph = self.price_history[symbol]
         if len(ph) < self.history_num or jump_pct is None:
             return None, None, None
+
+        idx_ts = 0 if use_exchange_ts else 1
+        now_ts_sel, now_price = ph[-1][idx_ts], ph[-1][2]
+
+        now_wall = time.time()
+        age = now_wall - now_ts_sel
+        if age < 0 and abs(age) <= skew_allow_sec:
+            age = 0.0
+        if age > max_age_sec:
+            return None, None, None
+
         min_sec = self.polling_interval
         max_sec = self.polling_interval * self.history_num
-        now_ts, now_price = ph[-1]
+
         in_window, dts = False, []
-        for ts, past_price in list(ph)[:-1]:
-            dt = now_ts - ts
+        for entry in list(ph)[:-1]:
+            ts = entry[idx_ts]
+            past_price = entry[2]
+            dt = now_ts_sel - ts
+            if dt < 0:
+                # 비정상(시간 역행) 샘플은 스킵
+                continue
             if min_sec <= dt <= max_sec:
                 in_window = True
                 dts.append(dt)
@@ -145,6 +180,7 @@ class JumpDetector:
                     change_rate = (now_price - past_price) / past_price
                     if abs(change_rate) >= jump_pct:
                         return ("UP" if change_rate > 0 else "DOWN", min(dts), max(dts))
+
         if in_window:
-            return True, min(dts), max(dts)
+            return True, (min(dts) if dts else None), (max(dts) if dts else None)
         return None, None, None
