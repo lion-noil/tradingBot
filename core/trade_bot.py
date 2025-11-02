@@ -40,8 +40,6 @@ class TradeBot:
         self.leverage_limit = 50
 
         # 상태
-        self.status = {s: {} for s in self.symbols}
-        self.pos_dict = {s: {} for s in self.symbols}
         self.asset = {
             "wallet": {"USDT": 0.0},
             "positions": {s: {} for s in self.symbols},
@@ -87,8 +85,8 @@ class TradeBot:
             except Exception as e:
                 if self.system_logger: self.system_logger.warning(f"[{sym}] 초기 부트스트랩 실패: {e}")
         self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
-        self.sync_account_state()
-        self.sync_asset_positions_all()
+        for sym in self.symbols:
+            self.sync_asset_positions(sym)
 
         self.rest.get_positions('BTCUSDT')
         self._last_log_snapshot = None  # 마지막 로그 원문
@@ -143,10 +141,6 @@ class TradeBot:
         self.asset["positions"][symbol]["LONG"] = long_pos
         self.asset["positions"][symbol]["SHORT"] = short_pos
 
-
-    def sync_asset_positions_all(self):
-        for sym in self.symbols:
-            self.sync_asset_positions(sym)
 
     def _ws_is_fresh(self, symbol: str) -> bool:
         get_last_tick = getattr(self.ws, "get_last_tick_time", None)
@@ -274,15 +268,6 @@ class TradeBot:
         if len(closes) >= 3:
             self.prev[symbol] = closes[-3]
 
-    def sync_account_state(self,):
-        for sym in self.symbols:
-            try:
-                self.status[sym] = self.rest.get_current_position_status(symbol=sym)
-                st_list = self.status[sym].get("positions", [])
-                self.pos_dict[sym] = {p["position"]: p for p in st_list}
-            except Exception as e:
-                if self.system_logger:
-                    self.system_logger.error(f"[{sym}] 계정 동기화 실패: {e}")
 
     def _build_entries_from_orders(self, local_orders: list, symbol: str, direction: str, target_qty: float):
         if not target_qty or target_qty <= 0:
@@ -335,42 +320,6 @@ class TradeBot:
 
     # ─────────────────────────────────────────────
     async def run_once(self):
-        # 수동 명령
-        """if not self.manual_queue.empty():
-            cmd = await self.manual_queue.get()
-            if isinstance(cmd, dict):
-                command = cmd.get("command")
-                close_side = cmd.get("side")
-                symbol = cmd.get("symbol") or (self.symbols[0] if self.symbols else None)
-            else:
-                command = cmd
-                close_side = None
-                symbol = self.symbols[0]
-            if symbol not in self.symbols:
-                if self.system_logger: self.system_logger.info(f"❗ 알 수 없는 심볼: {symbol}")
-            else:
-                price = getattr(self.ws, "get_price")(symbol)
-                if price:
-                    prev_status = self.status[symbol]
-                    if command in ("long", "short"):
-                        await self.exec.execute_and_sync(
-                            self.rest.open_market, prev_status, symbol,
-                            symbol, command, price, self.percent, self.asset['wallet']
-                        )
-                    elif command == "close":
-                        if close_side and close_side in self.pos_dict[symbol]:
-                            pos_amt = float(self.pos_dict[symbol][close_side]["position_amt"])
-                            if pos_amt != 0:
-                                await self.exec.execute_and_sync(
-                                    self.rest.close_market, prev_status, symbol,
-                                    symbol, side=close_side, qty=pos_amt
-                                )
-                                self._record_entry_signal_ts(symbol, close_side, None)
-                            else:
-                                if self.system_logger: self.system_logger.info(f"❗ ({symbol}) 청산 {close_side} 없음 (수량 0)")
-                        else:
-                            if self.system_logger: self.system_logger.info(f"❗ ({symbol}) 포지션 정보 없음/잘못된 side: {close_side}")
-"""
         # 자동 루프
         now = time.time()
         for symbol in self.symbols:
@@ -461,23 +410,22 @@ class TradeBot:
                 }
                 if self.trading_logger: self.trading_logger.info('SIG ' + json.dumps(sig_dict, ensure_ascii=False))
                 self.upload_signal(sig_dict)
-                pos_amt = float(self.pos_dict[symbol].get(side, {}).get("position_amt", 0))
+                pos_amt = abs(float((self.asset['positions'][symbol].get(side) or {}).get('qty') or 0))
                 if pos_amt == 0:
                     if self.system_logger:
                         self.system_logger.info(f"({symbol}) EXIT 신호 발생했지만 포지션 {side} 수량 0 → 체결 스킵")
                     continue
 
                 await self.exec.execute_and_sync(
-                    self.rest.close_market, self.status[symbol], symbol,
+                    self.rest.close_market, self.asset['positions'][symbol][side], symbol,
                     symbol, side=side, qty=pos_amt
                 )
-                self.sync_account_state()
+                self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
                 self.sync_asset_positions(symbol)
 
             # --- Short 진입 ---
             recent_short_signal_time = self._get_recent_entry_signal_ts(symbol, "SHORT")
-
-            short_amt = abs(float(self.pos_dict[symbol].get("SHORT", {}).get("position_amt", 0)))
+            short_amt = abs(float((self.asset['positions'][symbol].get('SHORT') or {}).get('qty') or 0))
             short_pos_val = short_amt * price
             total_balance = self.asset['wallet'].get('USDT',0) or 0
             position_ratio = (short_pos_val / total_balance) if total_balance else 0
@@ -504,15 +452,15 @@ class TradeBot:
                     self._record_entry_signal_ts(symbol, "SHORT", now_ms)
 
                     await self.exec.execute_and_sync(
-                        self.rest.open_market, self.status[symbol], symbol,
+                        self.rest.open_market, self.asset['positions'][symbol][sig.side], symbol,
                         symbol, "short", price, self.percent, self.asset['wallet']
                     )
-                    self.sync_account_state()
+                    self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
                     self.sync_asset_positions(symbol)
 
             # --- Long 진입 ---
             recent_long_signal_time = self._get_recent_entry_signal_ts(symbol, "LONG")
-            long_amt = abs(float(self.pos_dict[symbol].get("LONG", {}).get("position_amt", 0)))
+            long_amt = abs(float((self.asset['positions'][symbol].get('LONG') or {}).get('qty') or 0))
             long_pos_val = long_amt * price
             position_ratio = (long_pos_val / total_balance) if total_balance else 0
             if position_ratio < self.leverage_limit:
@@ -537,18 +485,17 @@ class TradeBot:
                     self._record_entry_signal_ts(symbol, "LONG", now_ms)
 
                     await self.exec.execute_and_sync(
-                        self.rest.open_market, self.status[symbol], symbol,
+                        self.rest.open_market, self.asset['positions'][symbol][sig.side], symbol,
                         symbol, "long", price, self.percent, self.asset['wallet']
                     )
-                    self.sync_account_state()
+                    self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
                     self.sync_asset_positions(symbol)
 
         new_status = self.make_status_log_msg()
 
         if self._should_log_update(new_status):
             if self.system_logger:
-                self.system_logger.debug(self._last_log_reason)
-                self.system_logger.debug(new_status)
+                self.system_logger.debug(self._last_log_reason+new_status)
             self._last_log_snapshot = new_status
 
     # ─────────────────────────────────────────────
@@ -558,43 +505,38 @@ class TradeBot:
         log_msg = f"\n💰 총 자산: {total_usdt:.2f} USDT\n"
         # 각 심볼별로 jump 상태 + 포지션 정보 출력
         for symbol in self.symbols:
-            log_msg += self._format_symbol_section(symbol)
+            js = (self.jump_state or {}).get(symbol, {})
+            state = js.get("state")
+            min_dt = js.get("min_dt")
+            max_dt = js.get("max_dt")
+            thr_pct = (self.ma_threshold.get(symbol) or 0) * 100
+
+            # 상태 이모지 결정
+            if state == "UP":
+                emoji = "📈"
+            elif state == "DOWN":
+                emoji = "📉"
+            else:
+                emoji = "👀"
+
+            if min_dt and max_dt:
+                jump_info = f"{emoji} jump({thr_pct:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
+            else:
+                jump_info = f"{emoji} jump({thr_pct:.2f}%)"
+
+            # 포지션 상세는 기존 로직 그대로 재사용
+            pos_info = self._format_asset_section(symbol)
+
+            log_msg += f"[{symbol}] {jump_info}\n{pos_info}"
+
         return log_msg.rstrip()
 
-    def _format_symbol_section(self, symbol):
-        """각 symbol의 jump 상태 + 포지션 상세"""
-        js = (self.jump_state or {}).get(symbol, {})
-        state = js.get("state")
-        min_dt = js.get("min_dt")
-        max_dt = js.get("max_dt")
-        thr_pct = (self.ma_threshold.get(symbol) or 0) * 100
-
-        # 상태 이모지 결정
-        if state == "UP":
-            emoji = "📈"
-        elif state == "DOWN":
-            emoji = "📉"
-        elif state is True:
-            emoji = "👀"
-        else:
-            emoji = "—"
-
-        if min_dt and max_dt:
-            jump_info = f"{emoji} jump({thr_pct:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
-        else:
-            jump_info = f"{emoji} jump({thr_pct:.2f}%)"
-
-        # 포지션 상세는 기존 로직 그대로 재사용
-        pos_info = self._format_asset_section(symbol)
-
-        return f"[{symbol}] {jump_info}\n{pos_info}"
 
     def _format_asset_section(self, symbol):
         """self.asset['positions'] 기반 포지션 요약 출력"""
         pos = (self.asset.get("positions") or {}).get(symbol, {})
         long_pos = pos.get("LONG")
         short_pos = pos.get("SHORT")
-        total_usdt = float(self.asset.get("wallet", {}).get("USDT", 0.0))
 
         price = getattr(self.ws, "get_price")(symbol)
         if price is None:
@@ -662,10 +604,7 @@ class TradeBot:
         lines = text.splitlines()
 
         cur_sym = None
-        # 헤더: [BTCUSDT] 📈 jump(…)
         header_re = re.compile(r"^\[(?P<sym>[A-Z0-9]+)\]\s+(?P<emoji>[📈📉👀—])\s+jump\(")
-        # 포지션:   - 포지션: LONG (qty, entry, +1.234%, …)
-        # 그룹: side, qty, pct
         pos_re = re.compile(
             r"^\s*-\s*포지션:\s*(?P<side>LONG|SHORT)\s*\("
             r"\s*(?P<qty>\d+(?:\.\d+)?)\s*,\s*[^,]+,\s*(?P<pct>[+\-]?\d+\.\d+)%"
@@ -695,11 +634,6 @@ class TradeBot:
         return summary
 
     def _should_log_update(self, new_status: str) -> bool:
-        """
-        입력: new_status(문자열)만.
-        트리거: jump 상태 변경, 포지션 등장/소멸, 수익률(±_rate_trigger_pct) 변화, qty(±_qty_trigger_abs) 변화
-        이유는 self._last_log_reason에 저장.
-        """
         new_summary = self._extract_status_summary_from_text(new_status)
 
         # 첫 로그

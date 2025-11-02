@@ -16,7 +16,7 @@ class ExecutionEngine:
         self._sync_lock = asyncio.Lock()
         self._just_traded_until = 0.0
 
-    async def execute_and_sync(self, fn, prev_status, symbol, *args, **kwargs):
+    async def execute_and_sync(self, fn, position_detail, symbol, *args, **kwargs):
         async with self._sync_lock:
             try:
                 result = fn(*args, **kwargs)
@@ -37,7 +37,7 @@ class ExecutionEngine:
             orderStatus = (filled or {}).get("orderStatus", "").upper()
 
             if orderStatus == "FILLED":
-                self._log_fill(filled, prev_status=prev_status)
+                self._log_fill(filled, position_detail)
                 self.rest.set_full_position_info(symbol)
                 trade = self.rest.get_trade_w_order_id(symbol, order_id)
                 if trade:
@@ -73,53 +73,34 @@ class ExecutionEngine:
             if pos == 2 and side == "SELL":  return "SHORT_OPEN"
         return None
 
-    def _log_fill(self, filled: dict, prev_status: dict | None = None):
+    def _log_fill(self, filled: dict, position_detail: dict | None = None):
         intent = self._classify_intent(filled)
         if not intent: return
         side, action = intent.split("_")
         order_tail = (filled.get("orderId") or "")[-6:] or "UNKNOWN"
-        avg_price = float(filled.get("avgPrice") or 0.0)
+        filled_avg_price = float(filled.get("avgPrice") or 0.0)
         exec_qty  = float(filled.get("cumExecQty") or filled.get("qty") or 0.0)
 
         if not action.endswith("CLOSE"):
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 주문 체결 완료 | id:{order_tail} | avg:{avg_price:.2f} | qty:{exec_qty}"
+                    f"✅ {side} 주문 체결 완료 | id:{order_tail} | avg:{filled_avg_price:.2f} | qty:{exec_qty}"
                 )
             return
-
-        entry_price = self._extract_entry_price_from_prev(filled, prev_status)
-        if entry_price is None: entry_price = avg_price  # 방어적
+        avg_price = position_detail.get('avg_price')
 
         if (side, action) == ("LONG", "CLOSE"):
-            profit_gross = (avg_price - entry_price) * exec_qty
+            profit_gross = (filled_avg_price - avg_price) * exec_qty
         else:
-            profit_gross = (entry_price - avg_price) * exec_qty
+            profit_gross = (avg_price - filled_avg_price) * exec_qty
 
-        total_fee = (entry_price * exec_qty + avg_price * exec_qty) * self.TAKER_FEE_RATE
+        total_fee = (avg_price * exec_qty + filled_avg_price * exec_qty) * self.TAKER_FEE_RATE
         profit_net = profit_gross - total_fee
-        profit_rate = (profit_gross / entry_price) * 100 if entry_price else 0.0
+        profit_rate = (profit_gross / avg_price) * 100 if avg_price else 0.0
 
         if self.trading_logger:
             self.trading_logger.info(
-                f"✅ {side} 청산 | id:{order_tail} | entry:{entry_price:.2f} / close:{avg_price:.2f} | "
+                f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
                 f"qty:{exec_qty} | PnL(net):{profit_net:.2f} | gross:{profit_gross:.2f}, fee:{total_fee:.2f} | "
                 f"rate:{profit_rate:.2f}%"
             )
-
-    def _extract_entry_price_from_prev(self, filled: dict, prev_status: dict | None) -> float | None:
-        if not prev_status: return None
-        pos_idx = int(filled.get("positionIdx") or 0)  # 1: LONG, 2: SHORT
-        side_key = "LONG" if pos_idx == 1 else "SHORT"
-        positions = prev_status.get("positions") or []
-        for p in positions:
-            if (p.get("position") or "").upper() == side_key:
-                ep = p.get("entryPrice") or p.get("avgPrice")
-                if ep is not None:
-                    try: return float(ep)
-                    except: pass
-                entries = p.get("entries") or []
-                if entries:
-                    try: return float(entries[-1][2])  # (ts, qty, price, t_str)
-                    except: pass
-        return None
