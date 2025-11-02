@@ -214,23 +214,6 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
     return {"symbol": symbol, "message": status_text}
 
 
-# 필요하면 수동 엔드포인트를 다시 열어 사용하세요.
-# @app.post("/long")
-# async def manual_buy(request: ManualOrderRequest):
-#     await manual_queue.put({"command": "long", "percent": request.percent, "symbol": request.symbol})
-#     return {"status": f"long triggered with {request.percent}%", "symbol": request.symbol}
-#
-# @app.post("/short")
-# async def manual_sell(request: ManualOrderRequest):
-#     await manual_queue.put({"command": "short", "percent": request.percent, "symbol": request.symbol})
-#     return {"status": f"short triggered with {request.percent}%", "symbol": request.symbol}
-#
-# @app.post("/close")
-# async def manual_close(request: ManualCloseRequest):
-#     await manual_queue.put({"command": "close", "side": request.side, "symbol": request.symbol})
-#     return {"status": f"close triggered for {request.side}", "symbol": request.symbol}
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)

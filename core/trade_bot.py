@@ -298,8 +298,8 @@ class TradeBot:
                 recent_time = self._get_recent_entry_signal_ts(symbol, side)
                 if not recent_time:
                     continue
-                ma_thr = self.ma_threshold.get(symbol) or 0.005
-                ex_thr = self.exit_ma_threshold.get(symbol) or 0.0005
+                ma_thr = self.ma_threshold.get(symbol)
+                ex_thr = self.exit_ma_threshold.get(symbol)
 
                 sig = get_exit_signal(
                     side,
@@ -436,9 +436,9 @@ class TradeBot:
                 emoji = "👀"
 
             if min_dt and max_dt:
-                jump_info = f"{emoji} jump({thr_pct:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
+                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
             else:
-                jump_info = f"{emoji} jump({thr_pct:.2f}%)"
+                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%)"
 
             # 포지션 상세는 기존 로직 그대로 재사용
             pos_info = self._format_asset_section(symbol)
@@ -505,54 +505,76 @@ class TradeBot:
         if line_s: log.append(line_s)
         return "\n".join(log) + "\n"
 
-
     def _extract_status_summary_from_text(self, text: str) -> dict:
-        """
-        new_status 문자열에서 심볼별 jump 상태와 포지션 (qty, 수익률%)만 요약 추출.
-        반환 예:
-        {
-          "BTCUSDT": {"jump":"📈","LONG":{"q":0.123456,"pr":+1.2},"SHORT":None},
-          ...
-        }
-        """
         import re
         summary = {}
         lines = text.splitlines()
 
         cur_sym = None
-        header_re = re.compile(r"^\[(?P<sym>[A-Z0-9]+)\]\s+(?P<emoji>[📈📉👀—])\s+jump\(")
+        header_ma_re = re.compile(
+            r"^\[(?P<sym>[A-Z0-9]+)\]\s+(?P<emoji>[📈📉👀—])\s+ma_thr\(\s*(?P<thr>[0-9.]+)\s*%\s*\)"
+        )
+        # jump 헤더가 남아 있더라도 무시해도 되지만, 이모지 추출용으로 두면 UI 일관성에 좋아요.
+        header_jump_re = re.compile(
+            r"^\[(?P<sym>[A-Z0-9]+)\]\s+(?P<emoji>[📈📉👀—])\s+jump\("
+        )
+
         pos_re = re.compile(
             r"^\s*-\s*포지션:\s*(?P<side>LONG|SHORT)\s*\("
             r"\s*(?P<qty>\d+(?:\.\d+)?)\s*,\s*[^,]+,\s*(?P<pct>[+\-]?\d+\.\d+)%"
         )
 
-        for line in lines:
-            m = header_re.match(line.strip())
+        def _ensure(sym, emoji=None):
+            if sym not in summary:
+                summary[sym] = {"jump": "—", "ma_thr": None, "LONG": None, "SHORT": None}
+            if emoji is not None:
+                summary[sym]["jump"] = emoji
+
+        for raw in lines:
+            line = raw.strip()
+
+            m = header_ma_re.match(line)
             if m:
                 cur_sym = m.group("sym")
-                emoji = m.group("emoji")
-                summary[cur_sym] = {"jump": emoji, "LONG": None, "SHORT": None}
+                _ensure(cur_sym, m.group("emoji"))
+                try:
+                    summary[cur_sym]["ma_thr"] = float(m.group("thr"))  # 단위: %
+                except:
+                    summary[cur_sym]["ma_thr"] = None
+                continue
+
+            # jump(...) 헤더가 있어도 emoji만 확보
+            m = header_jump_re.match(line)
+            if m:
+                cur_sym = m.group("sym")
+                _ensure(cur_sym, m.group("emoji"))
                 continue
 
             if cur_sym:
-                pm = pos_re.match(line.strip())
+                pm = pos_re.match(line)
                 if pm:
                     side = pm.group("side")
-                    qty = float(pm.group("qty"))
-                    pct = float(pm.group("pct"))
-                    if cur_sym not in summary:
-                        summary[cur_sym] = {"jump": "—", "LONG": None, "SHORT": None}
-                    summary[cur_sym][side] = {
-                        "q": round(qty, 6),  # 노이즈 방지용 라운딩
-                        "pr": round(pct, 1),  # 0.1% 단위
-                    }
+                    qty = float(pm.group("qty") or 0.0)
+                    pct = float(pm.group("pct") or 0.0)
+                    _ensure(cur_sym)
+                    summary[cur_sym][side] = {"q": round(qty, 6), "pr": round(pct, 1)}
+
+        # ma_thr 보강: 로그에 없으면 self.ma_threshold에서 가져오기 (내부 값이 비율이면 %로 변환)
+        mt = getattr(self, "ma_threshold", {}) or {}
+        for sym, v in summary.items():
+            if v.get("ma_thr") is None and sym in mt and mt[sym] is not None:
+                try:
+                    raw = float(mt[sym])
+                    # make_status_log_msg에서 thr_pct = ma_threshold[sym]*100 쓰고 있으니 여기서도 %값으로 맞춥니다.
+                    v["ma_thr"] = raw * 100.0
+                except:
+                    pass
 
         return summary
 
     def _should_log_update(self, new_status: str) -> bool:
         new_summary = self._extract_status_summary_from_text(new_status)
 
-        # 첫 로그
         if getattr(self, "_last_log_summary", None) is None:
             self._last_log_summary = new_summary
             self._last_log_snapshot = new_status
@@ -563,15 +585,9 @@ class TradeBot:
         symbols = set(new_summary.keys()) | set(old.keys())
 
         rate_thr = 1
-        qty_thr = getattr(self, "_qty_trigger_abs", 0.0001)  # abs qty
+        qty_thr = getattr(self, "_qty_trigger_abs", 0.0001)
 
         def _norm(val):
-            """
-            포맷 정규화:
-            - dict {"q": float, "pr": float}  -> (q, pr)
-            - float(수익률만)                 -> (None, pr)
-            - None                            -> (None, None)
-            """
             if val is None:
                 return (None, None)
             if isinstance(val, dict):
@@ -599,10 +615,23 @@ class TradeBot:
             except Exception:
                 return f"{prev}→{cur}{unit}"
 
-        # 심볼별로 변화 탐지 → 가장 먼저 잡힌 한 가지 이유를 기록
+        def _as_float(x):
+            try:
+                return None if x is None else float(x)
+            except:
+                return None
+
         for sym in symbols:
-            n = new_summary.get(sym, {"jump": "—", "LONG": None, "SHORT": None})
-            o = old.get(sym, {"jump": "—", "LONG": None, "SHORT": None})
+            n = new_summary.get(sym, {"jump": "—", "ma_thr": None, "LONG": None, "SHORT": None})
+            o = old.get(sym, {"jump": "—", "ma_thr": None, "LONG": None, "SHORT": None})
+
+            # 0) ma_thr 변화 → 임계치 없이 '값만' 달라도 무조건 로그 (단위: %)
+            nth, oth = _as_float(n.get("ma_thr")), _as_float(o.get("ma_thr"))
+            if (nth is None) != (oth is None) or (nth is not None and oth is not None and nth != oth):
+                self._last_log_summary = new_summary
+                self._last_log_snapshot = new_status
+                self._last_log_reason = f"{sym} MA threshold Δ={_fmt_delta(nth, oth, unit='%')}"
+                return True
 
             # 1) jump 이모지 변화
             if n.get("jump") != o.get("jump"):
@@ -624,14 +653,13 @@ class TradeBot:
 
             # 3) qty / 수익률 변화
             for side in ("LONG", "SHORT"):
-                npos = n.get(side)
+                npos = n.get(side);
                 opos = o.get(side)
                 if npos is None or opos is None:
                     continue
-                nq, npr = _norm(npos)
+                nq, npr = _norm(npos);
                 oq, opr = _norm(opos)
 
-                # qty 변화
                 if nq is not None and oq is not None:
                     try:
                         if abs(nq - oq) >= qty_thr:
@@ -642,18 +670,17 @@ class TradeBot:
                     except Exception:
                         pass
 
-                # 수익률 변화
                 if npr is not None and opr is not None:
                     try:
                         if abs(npr - opr) >= rate_thr:
                             self._last_log_summary = new_summary
                             self._last_log_snapshot = new_status
-                            self._last_log_reason = f"{sym} {side} PnL Δ={_fmt_delta(f'{npr:.1f}%', f'{opr:.1f}%', unit='')}"
+                            self._last_log_reason = f"{sym} {side} PnL Δ={_fmt_delta(f'{npr:.1f}%', f'{opr:.1f}%')}"
                             return True
                     except Exception:
                         pass
 
-        # 변화 없음
         return False
+
 
 
