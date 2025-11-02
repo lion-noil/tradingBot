@@ -38,11 +38,9 @@ class ExecutionEngine:
 
             if orderStatus == "FILLED":
                 self._log_fill(filled, position_detail)
-                self.rest.set_full_position_info(symbol)
                 trade = self.rest.get_trade_w_order_id(symbol, order_id)
                 if trade:
                     self.rest.append_order(symbol, trade)
-                self.rest.set_asset()
                 if self.system_logger:
                     self.system_logger.debug(f"🧾 체결 동기화 완료: {order_id[-6:]}")
             elif orderStatus in ("CANCELLED", "REJECTED"):

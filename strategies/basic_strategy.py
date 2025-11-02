@@ -52,9 +52,9 @@ def get_long_entry_signal(
 
     reasons: List[str] = []
     if price < ma100 * (1 - ma_threshold):
-        reasons.append(f"MA100 대비 -{ma_threshold*100:.2f}% 이상 하락")
+        reasons.append(f"MA100 -{ma_threshold*100:.2f}%")
     if (prev - price) / max(prev, 1e-12) > momentum_threshold:
-        reasons.append(f"3분 전 대비 {momentum_threshold*100:.2f}% 이상 급락")
+        reasons.append(f"3m -{momentum_threshold*100:.2f}%")
     if len(reasons) < 2:
         return None
 
@@ -87,9 +87,9 @@ def get_short_entry_signal(
 
     reasons: List[str] = []
     if price > ma100 * (1 + ma_threshold):
-        reasons.append(f"MA100 대비 +{ma_threshold*100:.2f}% 이상 돌파")
+        reasons.append(f"MA100 +{ma_threshold*100:.2f}%")
     if (price - prev) / max(prev, 1e-12) > momentum_threshold:
-        reasons.append(f"3분 전 대비 {momentum_threshold*100:.2f}% 이상 급등")
+        reasons.append(f"3m +{momentum_threshold*100:.2f}%")
     if len(reasons) < 2:
         return None
 
@@ -131,9 +131,9 @@ def get_exit_signal(
     if chain_elapsed_sec is not None and chain_elapsed_sec > y:
         # 문자열은 '성립'이므로 이제 생성
         reasons = [
-            f"⏰ 시간 제한 {y / 3600:.1f}h 초과",
-            f"⛳ 구간: {_fmt_edge(y)}~",
-            f"⏱ 체인 경과: {_fmt_dur(chain_elapsed_sec)}"
+            f"⏰ {y / 3600:.1f}h 초과",
+            f"⛳: {_fmt_edge(y)}~",
+            f"⏱ : {_fmt_dur(chain_elapsed_sec)}"
         ]
         ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
         return Signal(
@@ -147,15 +147,15 @@ def get_exit_signal(
     if chain_elapsed_sec is None:
         trigger_pct = ma_threshold
         trigger_name = "일반"
-        band_label = "⛳ 구간: N/A"
+        band_label = "⛳: N/A"
     elif chain_elapsed_sec <= x:
         trigger_pct = exit_ma_threshold
         trigger_name = "근접"
-        band_label = f"⛳ 구간: 0~{_fmt_edge(x)}"
+        band_label = f"⛳: 0~{_fmt_edge(x)}"
     else:
         trigger_pct = ma_threshold
         trigger_name = "일반"
-        band_label = f"⛳ 구간: {_fmt_edge(x)}~{_fmt_edge(y)}"
+        band_label = f"⛳: {_fmt_edge(x)}~{_fmt_edge(y)}"
 
     # 4) 터치 성립 여부만 먼저 판단 (문자열 생성 X)
     touched = False
@@ -172,14 +172,14 @@ def get_exit_signal(
     # 5) 여기서부터 '성립'이므로 필요한 문자열/계산 생성
     pct_val = trigger_pct * 100
     if position == "LONG":
-        head = f"MA100 대비 +{pct_val:.4f}% {trigger_name} 트리거 도달"
+        head = f"MA100 +{pct_val:.4f}% {trigger_name}"
     else:
-        head = f"MA100 대비 -{pct_val:.4f}% {trigger_name} 트리거 도달"
+        head = f"MA100 -{pct_val:.4f}% {trigger_name}"
 
     reasons: List[str] = [
         head,
         band_label,
-        f"⏱ 체인 경과: {_fmt_dur(chain_elapsed_sec)}",
+        f"⏱ : {_fmt_dur(chain_elapsed_sec)}",
     ]
 
     ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)

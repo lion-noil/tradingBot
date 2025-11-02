@@ -23,7 +23,6 @@ class TradeBot:
         self.system_logger = system_logger
         self.trading_logger = trading_logger
         self.symbols = list(symbols)
-        self.last_entry_signal_time = {s: {"LONG": None, "SHORT": None} for s in self.symbols}
         self.last_entry_signal_time = self._load_entry_signal_ts_from_redis()
         self.target_cross = 20
         # 구성 요소
@@ -73,74 +72,23 @@ class TradeBot:
 
         # 초기 세팅
         for sym in self.symbols:
+            self.asset = self.rest.getNsav_asset(asset = self.asset, symbol=sym, save_redis=True)
             # 레버리지
             try: self.rest.set_leverage(symbol=sym, leverage=self.leverage)
             except Exception: pass
             try:
                 self.rest.update_candles(self.candle.get_candles(sym), symbol=sym, count=10080)
                 self._refresh_indicators(sym)
-                self.rest.set_full_position_info(sym)
                 self.rest.sync_orders_from_bybit(sym)
 
             except Exception as e:
                 if self.system_logger: self.system_logger.warning(f"[{sym}] 초기 부트스트랩 실패: {e}")
-        self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
-        for sym in self.symbols:
-            self.sync_asset_positions(sym)
 
-        self.rest.get_positions('BTCUSDT')
         self._last_log_snapshot = None  # 마지막 로그 원문
         self._last_log_summary = None  # 마지막 요약(파싱결과)
         self._last_log_reason = None
     # ─────────────────────────────────────────────
     # 보조
-
-    def sync_asset_positions(self, symbol: str):
-        """Bybit 포지션 정보 동기화 — qty, avg_price만"""
-        try:
-            resp = self.rest.get_positions(symbol=symbol)
-            rows = (resp.get("result") or {}).get("list") or []
-        except Exception:
-            rows = []
-
-        # 기본 구조 보장
-        if "positions" not in self.asset:
-            self.asset["positions"] = {}
-        self.asset["positions"].setdefault(symbol, {"LONG": None, "SHORT": None})
-
-        long_pos, short_pos = None, None
-
-        for r in rows:
-            size = float(r.get("size", 0) or 0)
-            if size == 0:
-                continue
-
-            avg_price = float(r.get("avgPrice", 0) or 0)
-            idx = r.get("positionIdx")
-
-            if idx == 1:
-                long_pos = {"qty": size, "avg_price": avg_price}
-            elif idx == 2:
-                short_pos = {"qty": size, "avg_price": avg_price}
-            else:
-                side = r.get("side", "").upper()
-                if side == "BUY":
-                    long_pos = {"qty": size, "avg_price": avg_price}
-                elif side == "SELL":
-                    short_pos = {"qty": size, "avg_price": avg_price}
-
-        local_orders = self.rest.load_orders(symbol)
-        if long_pos is not None:
-            long_pos["entries"] = self._build_entries_from_orders(
-                local_orders, symbol, "LONG", long_pos["qty"]
-            )
-        if short_pos is not None:
-            short_pos["entries"] = self._build_entries_from_orders(
-                local_orders, symbol, "SHORT", short_pos["qty"]
-            )
-        self.asset["positions"][symbol]["LONG"] = long_pos
-        self.asset["positions"][symbol]["SHORT"] = short_pos
-
 
     def _ws_is_fresh(self, symbol: str) -> bool:
         get_last_tick = getattr(self.ws, "get_last_tick_time", None)
@@ -236,6 +184,7 @@ class TradeBot:
         v = Decimal(str(max(lo, min(hi, float(thr)))))
         return float(v.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
+
     def _refresh_indicators(self, symbol: str):
         closes = self.candle._get_closes(symbol)
         now_ma100, thr_raw, mom_raw, ma100s = self.indicator.compute_all(
@@ -269,37 +218,6 @@ class TradeBot:
             self.prev[symbol] = closes[-3]
 
 
-    def _build_entries_from_orders(self, local_orders: list, symbol: str, direction: str, target_qty: float):
-        if not target_qty or target_qty <= 0:
-            return []
-
-        # 해당 심볼, 해당 방향(LONG/SHORT), OPEN 체결만 추출
-        open_orders = [
-            o for o in local_orders
-            if o.get("symbol") == symbol and o.get("side") == direction and o.get("type") == "OPEN"
-        ]
-        # 최신부터 소비하기 위해 시간 내림차순
-        open_orders.sort(key=lambda x: x.get("time", 0), reverse=True)
-
-        remaining = float(target_qty)
-        picked = []
-        for o in open_orders:
-            if remaining <= 1e-12:
-                break
-            this_qty = float(o.get("qty", 0.0) or 0.0)
-            use_qty = min(this_qty, remaining)
-            ts_ms = int(o.get("time", 0) or 0)
-            picked.append({
-                "ts": ts_ms,
-                "qty": use_qty,
-                "price": float(o.get("price", 0.0) or 0.0),
-                "ts_str": datetime.fromtimestamp(ts_ms / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S"),
-            })
-            remaining -= use_qty
-
-        # 오래된 → 최신 순으로 정렬해 반환
-        picked.sort(key=lambda x: x["ts"])
-        return picked
 
     def _kst_now_str(self):
         return datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S %z")
@@ -420,8 +338,7 @@ class TradeBot:
                     self.rest.close_market, self.asset['positions'][symbol][side], symbol,
                     symbol, side=side, qty=pos_amt
                 )
-                self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
-                self.sync_asset_positions(symbol)
+                self.asset = self.rest.getNsav_asset(asset=self.asset,symbol=symbol, save_redis=True)
 
             # --- Short 진입 ---
             recent_short_signal_time = self._get_recent_entry_signal_ts(symbol, "SHORT")
@@ -455,8 +372,7 @@ class TradeBot:
                         self.rest.open_market, self.asset['positions'][symbol][sig.side], symbol,
                         symbol, "short", price, self.percent, self.asset['wallet']
                     )
-                    self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
-                    self.sync_asset_positions(symbol)
+                    self.rest.getNsav_asset(asset=self.asset, symbol=symbol, save_redis=True)
 
             # --- Long 진입 ---
             recent_long_signal_time = self._get_recent_entry_signal_ts(symbol, "LONG")
@@ -488,8 +404,8 @@ class TradeBot:
                         self.rest.open_market, self.asset['positions'][symbol][sig.side], symbol,
                         symbol, "long", price, self.percent, self.asset['wallet']
                     )
-                    self.asset["wallet"]["USDT"] = float(self.rest.get_usdt_balance()["wallet_balance"])
-                    self.sync_asset_positions(symbol)
+                    self.asset = self.rest.getNsav_asset(asset=self.asset,symbol=symbol, save_redis=True)
+
 
         new_status = self.make_status_log_msg()
 

@@ -274,8 +274,6 @@ class BybitRestController:
     # -------------------------
     # Path helpers (심볼별 로컬 파일 경로)
     # -------------------------
-    def _fp_positions(self, symbol: str) -> str:
-        return f"{symbol}_positions.json"
 
     def _fp_orders(self, symbol: str) -> str:
         return f"{symbol}_orders.json"
@@ -427,73 +425,11 @@ class BybitRestController:
         return max(optimal, min_thr)
 
     def get_positions(self, symbol=None, category="linear"):
-        symbol = symbol or self.symbol
+        symbol = symbol
         endpoint = "/v5/position/list"
         params_pairs = [("category", category), ("symbol", symbol)]
         resp = self._request_with_resync("GET", endpoint, params_pairs=params_pairs, body_dict=None, timeout=5)
         return resp.json()
-
-
-    def load_local_positions(self, symbol: str):
-        path = self._fp_positions(symbol)
-        if not os.path.exists(path):
-            return []
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                return json.loads(content) if content else []
-        except Exception as e:
-            self.system_logger.error(f"[ERROR] 로컬 포지션 파일 읽기 오류: {e}")
-            return []
-
-    def save_local_positions(self, symbol: str, data):
-        path = self._fp_positions(symbol)
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.system_logger.error(f"[ERROR] 포지션 저장 실패: {e}")
-
-    def set_full_position_info(self, symbol="BTCUSDT", save_local: bool = True, save_redis: bool = True):
-        # Bybit에서 포지션 조회
-        result = self.get_positions(symbol=symbol)
-        new_positions = result.get("result", {}).get("list", []) if isinstance(result, dict) else []
-        new_positions = [p for p in new_positions if float(p.get("size", 0)) != 0]
-
-        local_positions = self.load_local_positions(symbol)
-
-        def clean_position(pos):
-            return {
-                "symbol": pos.get("symbol"),
-                "side": pos.get("side"),
-                "size": str(pos.get("size")),
-                "avgPrice": str(pos.get("avgPrice")),
-                "leverage": str(pos.get("leverage")),
-                "positionValue": str(pos.get("positionValue", "")),
-                "positionStatus": pos.get("positionStatus"),
-            }
-
-        cleaned_local = [clean_position(p) for p in local_positions]
-        cleaned_new = [clean_position(p) for p in new_positions]
-
-        if json.dumps(cleaned_local, sort_keys=True) != json.dumps(cleaned_new, sort_keys=True):
-            if save_local:
-                if self.system_logger:
-                    self.system_logger.debug(f"📌 ({symbol}) 포지션 변경 감지 → 로컬 파일 업데이트")
-                self.save_local_positions(symbol, cleaned_new)
-
-        if save_redis:
-            try:
-                redis_client.hset(
-                    "asset",
-                    f"positions.{symbol}",
-                    json.dumps(cleaned_new, ensure_ascii=False, separators=(',', ':'))
-                )
-            except Exception as e:
-                if self.system_logger:
-                    self.system_logger.error(f"[WARN] Redis 저장 실패: {e}")
-
-        return result  # 또는 필요하면 cleaned_new 반환으로 바꿔도 됩니다.
 
     def load_orders(self, symbol: str):
         path = self._fp_orders(symbol)
@@ -727,53 +663,6 @@ class BybitRestController:
 
         return trade
 
-    def get_current_position_status(self, symbol="BTCUSDT"):
-        local_positions = self.load_local_positions(symbol)
-        local_orders = self.load_orders(symbol)
-
-        results = []
-        for pos in local_positions or []:
-            position_amt = abs(float(pos.get("size", 0)))
-            if position_amt == 0:
-                continue
-
-            side = pos.get("side", "").upper()
-            direction = "LONG" if side == "BUY" else "SHORT"
-            entry_price = float(pos.get("avgPrice", 0)) or 0.0
-
-            # 진입 주문 로그 추출
-            remaining_qty = position_amt
-            open_orders = [
-                o for o in local_orders
-                if o["symbol"] == symbol and o["side"] == direction and o["type"] == "OPEN"
-            ]
-
-            open_orders.sort(key=lambda x: x["time"], reverse=True)
-
-            entry_logs = []
-            for order in open_orders:
-                order_qty = float(order["qty"])
-                used_qty = min(order_qty, remaining_qty)
-                price = float(order["price"])
-                order_time = int(order["time"])
-                order_time_str = datetime.fromtimestamp(order_time / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
-                entry_logs.append((order_time, used_qty, price,order_time_str))
-                remaining_qty -= used_qty
-                if abs(remaining_qty) < 1e-8:
-                    break
-
-            entry_logs = entry_logs[::-1]
-            results.append({
-                "position": direction,
-                "position_amt": position_amt,
-                "entryPrice": entry_price,
-                "entries": entry_logs
-            })
-
-        return {
-            "positions": results
-        }
-
     def get_usdt_balance(self):
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
@@ -785,13 +674,13 @@ class BybitRestController:
             data = resp.json()
         except Exception as e:
             self.system_logger.error(f"[ERROR] 지갑 조회 실패 (API): {e}")
-            return self.load_local_asset_balance()
+            return None
 
         # API 에러 처리
         if not isinstance(data, dict) or data.get("retCode") != 0:
             self.system_logger.error(
                 f"[ERROR] 잔고 조회 실패: {data.get('retMsg') if isinstance(data, dict) else 'Unknown error'}")
-            return self.load_local_asset_balance()
+            return None
 
         try:
             account = (data.get("result", {}).get("list") or [{}])[0]
@@ -814,45 +703,109 @@ class BybitRestController:
 
         except Exception as e:
             self.system_logger.error(f"[ERROR] 지갑 응답 파싱 실패: {e}")
-            return self.load_local_asset_balance()
+            return None
 
         return result
 
-    def set_asset(self, save_local: bool = True, save_redis: bool = True):
-        result = self.get_usdt_balance()
-        if save_local:
-            self.save_local_wallet_balance(result)
+    def _json_or_empty_list(self,inpobj):
+        # 포지션 없으면 [] 그대로, 있으면 compact JSON
+        if inpobj is None:
+            return "[]"
+        return json.dumps(inpobj, separators=(",", ":"), ensure_ascii=False)
 
-        if save_redis:
+
+    def getNsav_asset(self, asset, symbol : str = None, save_redis: bool = True):
+        result = self.get_usdt_balance()
+
+        if asset["wallet"]["USDT"] != result["wallet_balance"] and save_redis:
             try:
                 redis_client.hset("asset", f"wallet.{result['coin']}", f"{result['wallet_balance']:.10f}")
+                asset["wallet"]["USDT"] = result["wallet_balance"]
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.error(f"[WARN] Redis 저장 실패: {e}")
 
-        return result
-
-
-    def load_local_asset_balance(self):
-        path = self._fp_asset()
-
-        if not os.path.exists(path):
-            return {}
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                return json.loads(content) if content else {}
-        except Exception as e:
-            self.system_logger.error(f"[ERROR] 로컬 지갑 파일 읽기 오류: {e}")
-            return {}
+            resp = self.get_positions(symbol=symbol)
+            rows = (resp.get("result") or {}).get("list") or []
+        except Exception:
+            rows = []
 
-    def save_local_wallet_balance(self, data):
-        path = self._fp_asset()
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.system_logger.error(f"[ERROR] 지갑 저장 실패: {e}")
+        long_pos, short_pos = None, None
+
+        for r in rows:
+            size = float(r.get("size", 0) or 0)
+            if size == 0:
+                continue
+
+            avg_price = float(r.get("avgPrice", 0) or 0)
+            idx = r.get("positionIdx")
+
+            if idx == 1:
+                long_pos = {"qty": size, "avg_price": avg_price}
+            elif idx == 2:
+                short_pos = {"qty": size, "avg_price": avg_price}
+            else:
+                side = r.get("side", "").upper()
+                if side == "BUY":
+                    long_pos = {"qty": size, "avg_price": avg_price}
+                elif side == "SELL":
+                    short_pos = {"qty": size, "avg_price": avg_price}
+
+        local_orders = self.load_orders(symbol)
+
+        if long_pos is not None:
+            long_pos["entries"] = self._build_entries_from_orders(
+                local_orders, symbol, "LONG", long_pos["qty"]
+            )
+        if short_pos is not None:
+            short_pos["entries"] = self._build_entries_from_orders(
+                local_orders, symbol, "SHORT", short_pos["qty"]
+            )
+        asset["positions"][symbol]["LONG"] = long_pos
+        asset["positions"][symbol]["SHORT"] = short_pos
+
+        if save_redis:
+            try:
+                redis_client.hset("asset", f"positions.{symbol}", self._json_or_empty_list(asset["positions"][symbol]))
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.error(f"[WARN] Redis 저장 실패({symbol}): {e}")
+
+        return asset
+
+    def _build_entries_from_orders(self, local_orders: list, symbol: str, direction: str, target_qty: float):
+        if not target_qty or target_qty <= 0:
+            return []
+
+        # 해당 심볼, 해당 방향(LONG/SHORT), OPEN 체결만 추출
+        open_orders = [
+            o for o in local_orders
+            if o.get("symbol") == symbol and o.get("side") == direction and o.get("type") == "OPEN"
+        ]
+        # 최신부터 소비하기 위해 시간 내림차순
+        open_orders.sort(key=lambda x: x.get("time", 0), reverse=True)
+
+        remaining = float(target_qty)
+        picked = []
+        for o in open_orders:
+            if remaining <= 1e-12:
+                break
+            this_qty = float(o.get("qty", 0.0) or 0.0)
+            use_qty = min(this_qty, remaining)
+            ts_ms = int(o.get("time", 0) or 0)
+            picked.append({
+                "ts": ts_ms,
+                "qty": use_qty,
+                "price": float(o.get("price", 0.0) or 0.0),
+                "ts_str": datetime.fromtimestamp(ts_ms / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            remaining -= use_qty
+
+        # 오래된 → 최신 순으로 정렬해 반환
+        picked.sort(key=lambda x: x["ts"])
+        return picked
+
 
     def update_candles(self, candles, symbol=None, count=None):
         try:
