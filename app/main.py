@@ -208,7 +208,7 @@ async def status(symbol: str = "BTCUSDT", plain: bool = True):
     if symbol not in bot.symbols:
         raise HTTPException(status_code=400, detail=f"Unknown symbol: {symbol}. Available: {bot.symbols}")
 
-    status_text = bot.make_status_log_msg(symbol)
+    status_text = bot.make_status_log_msg()
     if plain:
         return Response(content=status_text, media_type="text/plain")
     return {"symbol": symbol, "message": status_text}

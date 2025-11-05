@@ -1,6 +1,6 @@
 import logging, os, json, html, requests
 from pathlib import Path
-
+from datetime import datetime
 class OnlySIG(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -36,22 +36,16 @@ class TelegramLogHandler(logging.Handler):
                 try:
                     obj = json.loads(msg.split(" ", 1)[1])
                     kind = obj.get("kind"); side = obj.get("side")
-                    price = obj.get("price"); ma100 = obj.get("ma100")
-                    d_pct = obj.get("ma_delta_pct") or 0; mom = obj.get("momentum_pct") or 0
-                    th = obj.get("thresholds", {}); ts = obj.get("ts")
-                    badge = "🟢" if (kind=="ENTRY" and side=="LONG") else \
-                            "🔴" if (kind=="ENTRY" and side=="SHORT") else \
-                            "🔵" if (kind=="EXIT"  and side=="LONG") else "🟣"
+                    price = obj.get("price")
+                    ma100 = obj.get("ma100")
+                    d_pct = obj.get("ma_delta_pct") or 0
+                    badge = "🟢" if side=="LONG" else "🔴"
                     title = "진입" if kind=="ENTRY" else "청산"
                     side_kr = "롱" if side=="LONG" else "숏"
                     text = (
-                        f"{badge} <b>{side_kr} {title} 신호</b>\n"
-                        f"• 가격: <code>{price:,.2f}</code>\n"
-                        f"• MA100: <code>{ma100:,.2f}</code> (Δ <code>{d_pct*100:+.2f}%</code>)\n"
-                        f"• 모멘텀(3분): <code>{mom*100:+.2f}%</code>\n"
-                        f"• 임계값: MA <code>±{th.get('ma',0)*100:.2f}%</code>, "
-                        f"모멘텀 <code>{th.get('momentum',0)*100:.2f}%</code>\n"
-                        f"• 시간: <i>{html.escape(str(ts))}</i>"
+                        f"{badge} <b>{title} {side_kr} </b>\n"
+                        f"• 가격: <code>{price:,.1f}</code>\n"
+                        f"• MA100: <code>{ma100:,.1f}</code> (Δ <code>{d_pct*100:+.2f}%</code>)\n"
                     )
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return
