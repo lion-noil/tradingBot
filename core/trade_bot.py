@@ -436,7 +436,7 @@ class TradeBot:
                 emoji = "👀"
 
             if min_dt and max_dt:
-                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
+                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%) ma100({self.now_ma100[symbol]:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
             else:
                 jump_info = f"{emoji} ma_thr({thr_pct:.2f}%)"
 
