@@ -35,6 +35,7 @@ class TelegramLogHandler(logging.Handler):
             if isinstance(msg, str) and msg.lstrip().startswith("SIG "):
                 try:
                     obj = json.loads(msg.split(" ", 1)[1])
+                    symbol = obj.get("symbol")
                     kind = obj.get("kind"); side = obj.get("side")
                     price = obj.get("price")
                     ma100 = obj.get("ma100")
@@ -43,9 +44,7 @@ class TelegramLogHandler(logging.Handler):
                     title = "진입" if kind=="ENTRY" else "청산"
                     side_kr = "롱" if side=="LONG" else "숏"
                     text = (
-                        f"{badge} <b>{title} {side_kr} </b>\n"
-                        f"• 가격: <code>{price:,.1f}</code>\n"
-                        f"• MA100: <code>{ma100:,.1f}</code> (Δ <code>{d_pct*100:+.2f}%</code>)\n"
+                        f"{badge} [{symbol}] {side_kr}{title} p: <code>{price:,.1f}</code> M100: <code>{ma100:,.1f}</code> (<code>{d_pct*100:+.2f}%</code>)\n"
                     )
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return
