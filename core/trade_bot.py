@@ -24,7 +24,7 @@ class TradeBot:
         self.trading_logger = trading_logger
         self.symbols = list(symbols)
         self.last_entry_signal_time = self._load_entry_signal_ts_from_redis()
-        self.target_cross = 20
+        self.target_cross = 5
         # 구성 요소
         self.candle = CandleEngine(candles_num=10080)
         self.indicator = IndicatorEngine(min_thr=0.005, max_thr=0.03, target_cross=self.target_cross)

@@ -99,7 +99,7 @@ system_logger = setup_logger(
     telegram_mode="both",
 )
 
-_terminator = BurstWarningTerminator(threshold=3, window_sec=10.0, grace_sec=0.2)
+_terminator = BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2)
 system_logger.addHandler(_terminator)
 
 trading_logger = setup_logger(

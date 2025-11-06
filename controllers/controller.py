@@ -1,5 +1,4 @@
 # controllers/controller.py
-
 import requests
 import hmac, hashlib
 import threading
