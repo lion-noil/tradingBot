@@ -450,8 +450,10 @@ class TradeBot:
             parts = [f"{emoji} ma_thr({thr_pct:.2f}%)"]
             if price is not None:
                 parts.append(f"P={price:.2f}")
+            if ma is not None:
+                parts.append(f"MA100={ma:.2f}")
             if diff_pct is not None:
-                parts.append(f"MA100{diff_pct:+.2f}%")
+                parts.append(f"ΔP/MA={diff_pct:+.2f}%")
             if min_dt is not None and max_dt is not None:
                 parts.append(f"Δt={min_dt:.3f}~{max_dt:.3f}s")
 
