@@ -255,6 +255,9 @@ class BybitWebSocketController:
 
 
 
+
+
+
 class BybitRestController:
     def __init__(self, system_logger=None):
         self.system_logger = system_logger
@@ -390,7 +393,7 @@ class BybitRestController:
 
             if last_state in ("below", "in") and state == "above":
                 cross_time = now_kst - timedelta(minutes=len(closes) - i)
-                if not last_cross_time_up or (cross_time - last_cross_time_up).total_seconds() > 1800:
+                if not last_cross_time_up or (cross_time - last_cross_time_up).total_seconds() > 3600:
                     count += 1
                     cross_times.append(("UP", cross_time.strftime("%Y-%m-%d %H:%M:%S"), upper, price, ma))
                     last_cross_time_up = cross_time
@@ -398,7 +401,7 @@ class BybitRestController:
 
             if last_state in ("above", "in") and state == "below":
                 cross_time = now_kst - timedelta(minutes=len(closes) - i)
-                if not last_cross_time_down or (cross_time - last_cross_time_down).total_seconds() > 1800:
+                if not last_cross_time_down or (cross_time - last_cross_time_down).total_seconds() > 3600:
                     count += 1
                     cross_times.append(("DOWN", cross_time.strftime("%Y-%m-%d %H:%M:%S"), lower, price, ma))
                     last_cross_time_down = cross_time

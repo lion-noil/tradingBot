@@ -44,7 +44,7 @@ class TelegramLogHandler(logging.Handler):
                     title = "진입" if kind=="ENTRY" else "청산"
                     side_kr = "롱" if side=="LONG" else "숏"
                     text = (
-                        f"{badge} [{symbol}] {side_kr}{title} p: <code>{price:,.1f}</code> M100: <code>{ma100:,.1f}</code> (<code>{d_pct*100:+.2f}%</code>)\n"
+                        f"{badge} [{symbol}] {side_kr}{title} \np: <code>{price:,.1f}</code> M100: <code>{ma100:,.1f}</code> (<code>{d_pct*100:+.2f}%</code>)\n"
                     )
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return

@@ -109,7 +109,7 @@ def get_exit_signal(
     ma100: float,
     recent_entry_time: Optional[int] = None,   # ms
     ma_threshold: float = 0.005,               # 0.5% (사용자 평소값)
-    exit_ma_threshold: float = 0.0005,         # 0.05% (근접 터치)
+    exit_ma_threshold: float = -0.0005,         # -0.05% (근접 직전)
     time_limit_sec: int = 24 * 3600,           # 24시간 초과 시 무조건 EXIT
     near_touch_window_sec: int = 60 * 60
 ) -> Optional["Signal"]:

@@ -47,7 +47,7 @@ class TradeBot:
         self.now_ma100 = {s: None for s in self.symbols}
         self.ma_threshold = {s: None for s in self.symbols}
         self.momentum_threshold = {s: None for s in self.symbols}
-        self.exit_ma_threshold = {s: 0.0005 for s in self.symbols}
+        self.exit_ma_threshold = {s: -0.0005 for s in self.symbols}
         self._thr_quantized = {s: None for s in self.symbols}
         self.prev = {s: None for s in self.symbols}
         self._rest_fallback_on = {s: False for s in self.symbols}
