@@ -144,7 +144,7 @@ class JumpDetector:
             jump_pct: Optional[float],
             use_exchange_ts: bool = True,
             max_age_sec: float = 2.0,
-            skew_allow_sec: float = 3.0,
+            skew_allow_sec: float = 7.0,
     ) -> Tuple[Optional[str], Optional[float], Optional[float]]:
         """급등락 감지. exchange_ts 기준(default) or recv_ts 기준."""
         self.ensure_symbol(symbol)
