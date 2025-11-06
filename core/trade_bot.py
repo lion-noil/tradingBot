@@ -427,7 +427,18 @@ class TradeBot:
             max_dt = js.get("max_dt")
             thr_pct = (self.ma_threshold.get(symbol) or 0) * 100
 
-            # 상태 이모지 결정
+            # ── 현재가 & MA100(가격) ──────────────────────────
+            ph = self.jump.price_history.get(symbol) or []
+            price = ph[-1][2] if ph and len(ph[-1]) >= 3 else None
+            ma = self.now_ma100.get(symbol)
+
+            # 괴리율(%) 계산: (현재가 - MA100) / MA100 * 100
+            if price is not None and ma is not None and ma != 0:
+                diff_pct = (price - ma) / ma * 100.0
+            else:
+                diff_pct = None
+
+            # 상태 이모지
             if state == "UP":
                 emoji = "📈"
             elif state == "DOWN":
@@ -435,12 +446,18 @@ class TradeBot:
             else:
                 emoji = "👀"
 
-            if min_dt and max_dt:
-                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%) ma100({self.now_ma100[symbol]:.2f}%) Δ={min_dt:.3f}~{max_dt:.3f}s"
-            else:
-                jump_info = f"{emoji} ma_thr({thr_pct:.2f}%)"
+            # 점프 윈도우/임계값 + 가격/MA100/괴리율 표시
+            parts = [f"{emoji} ma_thr({thr_pct:.2f}%)"]
+            if price is not None:
+                parts.append(f"P={price:.2f}")
+            if diff_pct is not None:
+                parts.append(f"MA100{diff_pct:+.2f}%")
+            if min_dt is not None and max_dt is not None:
+                parts.append(f"Δt={min_dt:.3f}~{max_dt:.3f}s")
 
-            # 포지션 상세는 기존 로직 그대로 재사용
+            jump_info = " ".join(parts)
+
+            # 포지션 상세 (기존 로직 재사용)
             pos_info = self._format_asset_section(symbol)
 
             log_msg += f"[{symbol}] {jump_info}\n{pos_info}"
