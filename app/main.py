@@ -14,7 +14,7 @@ if sys.platform.startswith("win"):
 from fastapi import FastAPI, Response, HTTPException
 from pydantic import BaseModel
 
-from core.trade_bot import TradeBot
+from bots.trade_bot import TradeBot
 from controllers.controller import (
     BybitWebSocketController,
     BybitRestController,
@@ -49,11 +49,6 @@ class BurstWarningTerminator(logging.Handler):
     def emit(self, record: logging.LogRecord):
         if record.levelno < logging.WARNING or not self._armed:
             return
-
-        # (선택) 특정 메시지/로거 제외 예시:
-        # msg = record.getMessage()
-        # if "무시할문구" in msg:  # 또는 record.name == "some.logger"
-        #     return
 
         now = time.monotonic()
         with self._lock:
