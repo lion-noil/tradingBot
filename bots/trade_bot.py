@@ -151,6 +151,14 @@ class TradeBot:
         # 8) 상태 로그 스냅샷/변화 감지
         self._finalize_status_log()
 
+
+
+
+
+
+
+
+
     def _finalize_status_log(self) -> None:
         new_status = build_full_status_log(
             total_usdt=float(self.asset['wallet'].get('USDT', 0.0) or 0.0),
