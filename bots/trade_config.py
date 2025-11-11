@@ -16,13 +16,13 @@ class TradeConfig:
 
     # 레버리지/진입
     leverage: int = 50
-    entry_percent: float = 5.0
-    max_effective_leverage: float = 25.0   # 보유노션/지갑 최대 배수 (가드)
+    entry_percent: float = 3
+    max_effective_leverage: float = 30.0   # 보유노션/지갑 최대 배수 (가드)
 
     # 인디케이터
     indicator_min_thr: float = 0.005
     indicator_max_thr: float = 0.04
-    target_cross: int = 5
+    target_cross: int = 10
 
     # 기본 청산 스레시홀드(심볼별 커스텀은 별도 해시)
     default_exit_ma_threshold: float = -0.0005
