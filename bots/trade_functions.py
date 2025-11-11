@@ -29,18 +29,48 @@ def quantize_thr(thr: Optional[float], lo: float = 0.005, hi: float = 0.03) -> O
     return float(v.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 # ── Redis 스트림 로깅(xadd) ────────────────────────
-def xadd_pct_log(redis_client, symbol: str, name: str,
-                 prev: Optional[float], new: Optional[float],
-                 arrow_mark: str, msg: str,
-                 stream_key: str = "OpenPctLog") -> None:
+def xadd_pct_log(
+    redis_client,
+    symbol: str,
+    name: str,
+    prev: Optional[float],
+    new: Optional[float],
+    arrow_mark: str,
+    msg: str,
+    stream_key: str = "OpenPctLog",
+    cross_times: Optional[List[Tuple[str, str, float, float, float]]] = None,
+    cross_times_max: int = 10,  # 너무 크면 최근 N개만
+) -> None:
+    def _fmt(x):
+        return "" if x is None else f"{float(x):.10f}"
+
+    # 필요시 최근 N개만 유지
+    if cross_times:
+        trimmed = cross_times[-cross_times_max:]
+        # tuple -> dict 로 바꿔두면 읽을 때 키로 접근하기 좋아요
+        ct_dicts = [
+            {
+                "dir": d,
+                "time": t,   # 이미 문자열 형태로 보이니 그대로
+                "price": float(p),
+                "bid": float(b),
+                "ask": float(a),
+            }
+            for (d, t, p, b, a) in trimmed
+        ]
+        ct_json = json.dumps(ct_dicts, ensure_ascii=False)
+    else:
+        ct_json = ""
+
     fields = {
         "ts": kst_now_str(),
         "sym": symbol,
         "name": name,
-        "prev": "" if prev is None else f"{float(prev):.10f}",
-        "new": "" if new is None else f"{float(new):.10f}",
+        "prev": _fmt(prev),
+        "new": _fmt(new),
         "arrow": arrow_mark,
         "msg": msg,
+        "cross_times": ct_json,   # << 여기 추가
     }
     redis_client.xadd(stream_key, fields, maxlen=30, approximate=False)
 
@@ -185,12 +215,13 @@ def compute_indicators_for_symbol(
     candle_engine, indicator_engine, rest_client, symbol: str
 ):
     closes = candle_engine._get_closes(symbol)
-    now_ma100, thr_raw, mom_raw, ma100s = indicator_engine.compute_all(
+    now_ma100, cross_times, thr_raw, mom_raw, ma100s = indicator_engine.compute_all(
         closes, rest_client.ma100_list, rest_client.find_optimal_threshold
     )
     prev_close_3 = closes[-3] if len(closes) >= 3 else None
     return {
         "now_ma100": now_ma100,
+        "cross_times":cross_times,
         "thr_raw": thr_raw,
         "ma100s": ma100s,
         "prev_close_3": prev_close_3,
@@ -249,7 +280,9 @@ def bootstrap_symbol(
     symbol: str,
     leverage: int,
     asset: Dict[str, Any],
+    closes_num:int,
     system_logger=None,
+
 ) -> Dict[str, Any]:
     # 지갑/포지션 동기화
     asset = rest_client.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
@@ -260,7 +293,7 @@ def bootstrap_symbol(
         pass
     # 캔들 백필 + 인디케이터 갱신 + 주문 동기화
     try:
-        rest_client.update_candles(candle_engine.get_candles(symbol), symbol=symbol, count=10080)
+        rest_client.update_candles(candle_engine.get_candles(symbol), symbol=symbol, count=closes_num)
         refresh_indicators(symbol)
         rest_client.sync_orders_from_bybit(symbol)
     except Exception as e:
@@ -275,12 +308,13 @@ def bootstrap_all_symbols(
     symbols: List[str],
     leverage: int,
     asset: Dict[str, Any],
+    closes_num:int,
     system_logger=None,
 ) -> Dict[str, Any]:
     for sym in symbols:
         asset = bootstrap_symbol(
             rest_client, candle_engine, refresh_indicators,
-            sym, leverage, asset, system_logger
+            sym, leverage, asset, closes_num, system_logger
         )
     return asset
 
@@ -325,7 +359,6 @@ def refresh_indicators_for_symbol(
     ma100s[symbol]          = res["ma100s"]
     now_ma100_map[symbol]   = now_ma100
     ma_threshold_map[symbol]= res["thr_raw"]
-
     q, mom_thr, log = derive_thresholds_and_log(prev_q, res["thr_raw"])
     thr_quantized_map[symbol]     = q
     momentum_threshold_map[symbol]= mom_thr
@@ -335,8 +368,17 @@ def refresh_indicators_for_symbol(
         msg = f"[{symbol}] {log['msg']}"
         if system_logger:
             system_logger.debug(msg)
-        xadd_pct_log(redis_client, symbol, "MA threshold",
-                     log["prev_q"], log["new_q"], log["arrow"], msg)
+        xadd_pct_log(
+            redis_client,
+            symbol,
+            "MA threshold",
+            log["prev_q"],
+            log["new_q"],
+            log["arrow"],
+            msg,
+            cross_times=res["cross_times"],  # << 추가
+        )
+
 
     # prev(3틱 전)
     if res["prev_close_3"] is not None:

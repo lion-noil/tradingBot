@@ -46,7 +46,7 @@ class TradeBot:
 
         # 2) 엔진/파라미터 주입
         self.target_cross = self.config.target_cross
-        self.candle = CandleEngine(candles_num=10080)
+        self.candle = CandleEngine(candles_num=self.config.closes_num)
         self.indicator = IndicatorEngine(
             min_thr=self.config.indicator_min_thr,
             max_thr=self.config.indicator_max_thr,
@@ -113,6 +113,7 @@ class TradeBot:
             symbols=self.symbols,
             leverage=self.leverage,
             asset=self.asset,
+            closes_num=self.config.closes_num,
             system_logger=self.system_logger,
         )
 
@@ -218,7 +219,7 @@ class TradeBot:
                     self._rest_fallback_on[symbol] = True
                     if self.system_logger:
                         self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
-                self.rest.update_candles(self.candle.get_candles(symbol), symbol=symbol, count=10080)
+                self.rest.update_candles(self.candle.get_candles(symbol), symbol=symbol, count=self.config.closes_num)
                 refresh_indicators_for_symbol(
                     self.candle, self.indicator, self.rest, symbol,
                     ma100s=self.ma100s,

@@ -424,7 +424,7 @@ class BybitRestController:
                 right = mid
         crosses, cross_times = self.count_cross(closes, ma100s, optimal)
 
-        return max(optimal, min_thr)
+        return cross_times, max(optimal, min_thr)
 
     def get_positions(self, symbol=None, category="linear"):
         symbol = symbol

@@ -20,9 +20,12 @@ class TradeConfig:
     max_effective_leverage: float = 30.0   # 보유노션/지갑 최대 배수 (가드)
 
     # 인디케이터
-    indicator_min_thr: float = 0.005
+    indicator_min_thr: float = 0.004
     indicator_max_thr: float = 0.04
     target_cross: int = 10
+
+    # 슬라이딩 윈도우(캔들 개수)
+    closes_num: int = 10080  # (예: 1분봉 7일치)
 
     # 기본 청산 스레시홀드(심볼별 커스텀은 별도 해시)
     default_exit_ma_threshold: float = -0.0005
@@ -34,7 +37,10 @@ class TradeConfig:
             pipe.hset(REDIS_KEY_CFG, k, str(v))
         pipe.execute()
         if publish:
-            payload = json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "config": d}, ensure_ascii=False)
+            payload = json.dumps(
+                {"ts": datetime.now(timezone.utc).isoformat(), "config": d},
+                ensure_ascii=False,
+            )
             redis_client.publish(REDIS_CH_CFG, payload)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -49,4 +55,5 @@ class TradeConfig:
         self.indicator_min_thr = max(0.0, float(self.indicator_min_thr))
         self.indicator_max_thr = max(self.indicator_min_thr, float(self.indicator_max_thr))
         self.target_cross = max(1, int(self.target_cross))
+        self.closes_num = max(1, int(self.closes_num))  # << 추가 가드
         return self

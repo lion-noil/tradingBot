@@ -94,11 +94,11 @@ class IndicatorEngine:
         ma100s = ma100_list_fn(closes)
         if not ma100s:
             return None, None, None, []
-        raw_thr = find_thr_fn(closes, ma100s, min_thr=self.min_thr, max_thr=self.max_thr, target_cross=self.target_cross)
+        cross_times, raw_thr = find_thr_fn(closes, ma100s, min_thr=self.min_thr, max_thr=self.max_thr, target_cross=self.target_cross)
         thr = self._quantize(raw_thr)
         now_ma100 = ma100s[-1]
         mom_thr = (thr / 3) if thr is not None else None
-        return now_ma100, thr, mom_thr, ma100s
+        return now_ma100, cross_times, thr, mom_thr, ma100s
 
     def _quantize(self, thr: float | None) -> float | None:
         if thr is None:
