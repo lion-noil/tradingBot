@@ -212,17 +212,21 @@ def extract_status_summary(text: str,
 
 # 2-1) 지표 계산 (순수)
 def compute_indicators_for_symbol(
-    candle_engine, indicator_engine, rest_client, symbol: str
+    candle_engine, indicator_engine, symbol: str
 ):
-    closes = candle_engine._get_closes(symbol)
-    now_ma100, cross_times, thr_raw, mom_raw, ma100s = indicator_engine.compute_all(
-        closes, rest_client.ma100_list, rest_client.find_optimal_threshold
-    )
-    prev_close_3 = closes[-3] if len(closes) >= 3 else None
+    candles = candle_engine.get_candles(symbol)
+
+    cross_times, q_thr, ma100s = indicator_engine.compute_all(candles)
+
+    # prev_close_3도 candles에서 뽑으면 됨
+    if len(candles) >= 3:
+        prev_close_3 = candles[-3]["close"]
+    else:
+        prev_close_3 = None
+
     return {
-        "now_ma100": now_ma100,
-        "cross_times":cross_times,
-        "thr_raw": thr_raw,
+        "cross_times": cross_times,
+        "q_thr": q_thr,
         "ma100s": ma100s,
         "prev_close_3": prev_close_3,
     }
@@ -280,7 +284,7 @@ def bootstrap_symbol(
     symbol: str,
     leverage: int,
     asset: Dict[str, Any],
-    closes_num:int,
+    candles_num:int,
     system_logger=None,
 
 ) -> Dict[str, Any]:
@@ -293,7 +297,7 @@ def bootstrap_symbol(
         pass
     # 캔들 백필 + 인디케이터 갱신 + 주문 동기화
     try:
-        rest_client.update_candles(candle_engine.get_candles(symbol), symbol=symbol, count=closes_num)
+        rest_client.update_candles(candle_engine.get_candles(symbol), symbol=symbol, count=candles_num)
         refresh_indicators(symbol)
         rest_client.sync_orders_from_bybit(symbol)
     except Exception as e:
@@ -308,13 +312,13 @@ def bootstrap_all_symbols(
     symbols: List[str],
     leverage: int,
     asset: Dict[str, Any],
-    closes_num:int,
+    candles_num:int,
     system_logger=None,
 ) -> Dict[str, Any]:
     for sym in symbols:
         asset = bootstrap_symbol(
             rest_client, candle_engine, refresh_indicators,
-            sym, leverage, asset, closes_num, system_logger
+            sym, leverage, asset, candles_num, system_logger
         )
     return asset
 
@@ -332,7 +336,6 @@ def log_jump(system_logger, symbol, state, min_dt, max_dt):
 def refresh_indicators_for_symbol(
     candle_engine,
     indicator_engine,
-    rest_client,
     symbol: str,
     *,
     ma100s: Dict[str, Any],
@@ -344,22 +347,15 @@ def refresh_indicators_for_symbol(
     system_logger=None,
     redis_client=None,
 ) -> None:
-    """
-    기존 _refresh_indicators가 하던 '계산→상태 반영→로그'를 전부 처리.
-    상태는 dict 레퍼런스를 주입 받아 수정함.
-    """
-    res = compute_indicators_for_symbol(candle_engine, indicator_engine, rest_client, symbol)
-    now_ma100 = res["now_ma100"]
-    if now_ma100 is None:
-        return
+    res = compute_indicators_for_symbol(candle_engine, indicator_engine, symbol)
 
     prev_q = thr_quantized_map.get(symbol)
 
     # 상태 반영
     ma100s[symbol]          = res["ma100s"]
-    now_ma100_map[symbol]   = now_ma100
-    ma_threshold_map[symbol]= res["thr_raw"]
-    q, mom_thr, log = derive_thresholds_and_log(prev_q, res["thr_raw"])
+    now_ma100_map[symbol]   = ma100s[symbol][-1]
+    ma_threshold_map[symbol] = res["q_thr"]
+    q, mom_thr, log = derive_thresholds_and_log(prev_q, res["q_thr"])
     thr_quantized_map[symbol]     = q
     momentum_threshold_map[symbol]= mom_thr
 
@@ -378,7 +374,6 @@ def refresh_indicators_for_symbol(
             msg,
             cross_times=res["cross_times"],  # << 추가
         )
-
 
     # prev(3틱 전)
     if res["prev_close_3"] is not None:

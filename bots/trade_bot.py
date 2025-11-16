@@ -46,7 +46,7 @@ class TradeBot:
 
         # 2) 엔진/파라미터 주입
         self.target_cross = self.config.target_cross
-        self.candle = CandleEngine(candles_num=self.config.closes_num)
+        self.candle = CandleEngine(candles_num=self.config.candles_num)
         self.indicator = IndicatorEngine(
             min_thr=self.config.indicator_min_thr,
             max_thr=self.config.indicator_max_thr,
@@ -100,7 +100,7 @@ class TradeBot:
             rest_client=self.rest,
             candle_engine=self.candle,
             refresh_indicators=lambda sym: refresh_indicators_for_symbol(
-                self.candle, self.indicator, self.rest, sym,
+                self.candle, self.indicator, sym,
                 ma100s=self.ma100s,
                 now_ma100_map=self.now_ma100,
                 ma_threshold_map=self.ma_threshold,
@@ -113,7 +113,7 @@ class TradeBot:
             symbols=self.symbols,
             leverage=self.leverage,
             asset=self.asset,
-            closes_num=self.config.closes_num,
+            candles_num=self.config.candles_num,
             system_logger=self.system_logger,
         )
 
@@ -197,7 +197,7 @@ class TradeBot:
                 self.candle.apply_confirmed_kline(symbol, k)
                 # 지표 갱신 유틸 호출
                 refresh_indicators_for_symbol(
-                    self.candle, self.indicator, self.rest, symbol,
+                    self.candle, self.indicator, symbol,
                     ma100s=self.ma100s,
                     now_ma100_map=self.now_ma100,
                     ma_threshold_map=self.ma_threshold,
@@ -227,9 +227,9 @@ class TradeBot:
                     self._rest_fallback_on[symbol] = True
                     if self.system_logger:
                         self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
-                self.rest.update_candles(self.candle.get_candles(symbol), symbol=symbol, count=self.config.closes_num)
+                self.rest.update_candles(self.candle.get_candles(symbol), symbol=symbol, count=self.config.candles_num)
                 refresh_indicators_for_symbol(
-                    self.candle, self.indicator, self.rest, symbol,
+                    self.candle, self.indicator, symbol,
                     ma100s=self.ma100s,
                     now_ma100_map=self.now_ma100,
                     ma_threshold_map=self.ma_threshold,

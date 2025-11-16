@@ -367,64 +367,7 @@ class BybitRestController:
             "X-BAPI-SIGN": sign
         }
 
-    def count_cross(self, closes, ma100s, threshold):
-        count = 0
-        cross_times = []  # 📌 크로스 발생 시간 저장
-        last_state = None  # "above", "below", "in"
-        closes = list(closes)  # 🔧 deque → list로 변환
-        now_kst = datetime.now(KST)
 
-        last_cross_time_up = None
-        last_cross_time_down = None
-
-
-        for i, (price, ma) in enumerate(zip(closes, ma100s)):
-            if ma is None:  # MA100 계산 안된 구간은 건너뜀
-                continue
-            upper = ma * (1 + threshold)
-            lower = ma * (1 - threshold)
-
-            if price > upper:
-                state = "above"
-            elif price < lower:
-                state = "below"
-            else:
-                state = "in"
-
-            if last_state in ("below", "in") and state == "above":
-                cross_time = now_kst - timedelta(minutes=len(closes) - i)
-                if not last_cross_time_up or (cross_time - last_cross_time_up).total_seconds() > 3600:
-                    count += 1
-                    cross_times.append(("UP", cross_time.strftime("%Y-%m-%d %H:%M:%S"), upper, price, ma))
-                    last_cross_time_up = cross_time
-
-
-            if last_state in ("above", "in") and state == "below":
-                cross_time = now_kst - timedelta(minutes=len(closes) - i)
-                if not last_cross_time_down or (cross_time - last_cross_time_down).total_seconds() > 3600:
-                    count += 1
-                    cross_times.append(("DOWN", cross_time.strftime("%Y-%m-%d %H:%M:%S"), lower, price, ma))
-                    last_cross_time_down = cross_time
-
-            last_state = state
-
-        return count, cross_times
-
-    def find_optimal_threshold(self, closes, ma100s, min_thr=0.005, max_thr=0.05, target_cross=None):
-        left, right = min_thr, max_thr
-        optimal = max_thr
-        for _ in range(20):  # 충분히 반복
-            mid = (left + right) / 2
-            crosses, _ = self.count_cross(closes, ma100s, mid)  # 시간은 무시
-
-            if crosses > target_cross:
-                left = mid  # threshold를 키워야 cross가 줄어듦
-            else:
-                optimal = mid
-                right = mid
-        crosses, cross_times = self.count_cross(closes, ma100s, optimal)
-
-        return cross_times, max(optimal, min_thr)
 
     def get_positions(self, symbol=None, category="linear"):
         symbol = symbol
@@ -811,7 +754,7 @@ class BybitRestController:
 
     def update_candles(self, candles, symbol=None, count=None):
         try:
-            symbol = symbol or self.symbol
+            symbol = symbol
             url = f"{self.base_url}/v5/market/kline"
 
             target = count if (isinstance(count, int) and count > 0) else 1000
@@ -899,15 +842,6 @@ class BybitRestController:
         except Exception as e:
             self.system_logger.warning(f"❌ ({symbol}) 캔들 요청 실패: {e}")
 
-    def ma100_list(self, closes):
-        closes_list = list(closes)
-        ma100s = []
-        for i in range(len(closes_list)):
-            if i < 99:
-                ma100s.append(None)  # MA100 계산 안 되는 구간
-            else:
-                ma100s.append(sum(closes_list[i - 99:i + 1]) / 100)
-        return ma100s
 
     def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
         try:

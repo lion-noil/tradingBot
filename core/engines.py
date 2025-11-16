@@ -2,8 +2,10 @@
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
-from typing import Iterable, Optional, Tuple, Deque, Dict, Any
+from typing import Iterable, Optional, Tuple, Deque, Dict, Any, List, Sequence,Mapping
 import math, time
+from datetime import datetime, timedelta, timezone
+KST = timezone(timedelta(hours=9))
 
 @dataclass
 class CandleState:
@@ -66,14 +68,6 @@ class CandleEngine:
         st = self._state.get(symbol)
         if st and st.minute == minute:
             self._state[symbol] = None
-
-    def _get_closes(self, symbol: str, limit: int | None = None) -> list[float]:
-        src = self.candles[symbol]
-        if limit is not None:
-            # 뒤에서 limit개만 추출 (deque → list 한 번만 캐스팅)
-            return [c["close"] for c in list(src)[-limit:]]
-        return [c["close"] for c in src]
-
     # --- 내부: state → deque 반영 ---
     def _close_minute_candle(self, symbol: str, st: CandleState):
         dq = self.candles[symbol]
@@ -83,28 +77,164 @@ class CandleEngine:
         else:
             dq.append(item)
 
+Candle = Mapping[str, float]
+
 class IndicatorEngine:
-    """MA/threshold 계산만 담당 (외부에서 ma100_list, find_optimal_threshold 주입)"""
-    def __init__(self, min_thr=0.005, max_thr=0.03, target_cross=5):
+    def __init__(
+        self,
+        min_thr: float = 0.005,
+        max_thr: float = 0.05,
+        target_cross: int = 5,
+    ):
         self.min_thr = min_thr
         self.max_thr = max_thr
         self.target_cross = target_cross
 
-    def compute_all(self, closes: Iterable[float], ma100_list_fn, find_thr_fn) -> Tuple[Optional[float], Optional[float], Optional[float], list[float]]:
-        ma100s = ma100_list_fn(closes)
-        if not ma100s:
-            return None, None, None, []
-        cross_times, raw_thr = find_thr_fn(closes, ma100s, min_thr=self.min_thr, max_thr=self.max_thr, target_cross=self.target_cross)
-        thr = self._quantize(raw_thr)
-        now_ma100 = ma100s[-1]
-        mom_thr = (thr / 3) if thr is not None else None
-        return now_ma100, cross_times, thr, mom_thr, ma100s
+    @staticmethod
+    def ma100_list(prices: Sequence[float]) -> List[Optional[float]]:
+        ma100s: List[Optional[float]] = []
+        for i in range(len(prices)):
+            if i < 99:
+                ma100s.append(None)  # MA100 계산 안 되는 구간
+            else:
+                ma100s.append(sum(prices[i - 99:i + 1]) / 100)
+        return ma100s
 
-    def _quantize(self, thr: float | None) -> float | None:
-        if thr is None:
-            return None
-        p = (Decimal(str(thr)) * Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        return float(p) / 100.0
+    def compute_all(
+        self,
+        candles: Iterable[Candle],
+    ) -> Tuple[Optional[float], list, Optional[float], Optional[float], List[Optional[float]]]:
+        candles_list = list(candles)  # 한 번만 리스트화해서 여러 번 재사용
+        hlc3 = [(c["high"] + c["low"] + c["close"]) / 3 for c in candles_list]  # high/low 평균
+
+        ma100s = self.ma100_list(hlc3)
+        if not ma100s:
+            return None, [], None, None, []
+
+        cross_times, raw_thr = self._find_optimal_threshold(candles_list, ma100s)
+
+        if raw_thr is None:
+            q_thr = None
+        else:
+            p = (Decimal(str(raw_thr)) * Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            q_thr = float(p) / 100.0
+        return cross_times, q_thr, ma100s
+
+    def _count_cross(
+            self,
+            candles: Sequence[Candle],
+            ma100s: Sequence[Optional[float]],
+            threshold: float,
+            now_kst: Optional[datetime] = None,
+            min_cross_interval_sec: int = 3600,
+            ) -> Tuple[int, list]:
+            if now_kst is None:
+                now_kst = datetime.now(KST)
+
+            count = 0
+            cross_times = []  # 📌 크로스 발생 시간 저장
+            last_state = None  # "above", "below", "in"
+
+            last_cross_time_up = None
+            last_cross_time_down = None
+
+            total_len = len(candles)
+
+            for i, (candle, ma) in enumerate(zip(candles, ma100s)):
+                if ma is None:  # MA100 계산 안된 구간은 건너뜀
+                    continue
+                high = candle["high"]
+                low = candle["low"]
+                close = candle["close"]
+
+                upper = ma * (1 + threshold)
+                lower = ma * (1 - threshold)
+
+                # ---- cross 발생 여부 (range 기준) ----
+                up_cross = last_state in ("below", "in") and high > upper
+                down_cross = last_state in ("above", "in") and low < lower
+
+                cross_time_base = now_kst - timedelta(minutes=total_len - i)
+
+                if up_cross:
+                    cross_time = cross_time_base
+                    if not last_cross_time_up or (cross_time - last_cross_time_up).total_seconds() > min_cross_interval_sec:
+                        count += 1
+                        cross_times.append(
+                            (
+                                "UP",
+                                cross_time.strftime("%Y-%m-%d %H:%M:%S"),
+                                upper,
+                                close,  # 로그에는 close를 남기는 게 보통 보기 좋음
+                                ma,
+                            )
+                        )
+                        last_cross_time_up = cross_time
+
+                if down_cross:
+                    cross_time = cross_time_base
+                    if not last_cross_time_down or (cross_time - last_cross_time_down).total_seconds() > min_cross_interval_sec:
+                        count += 1
+                        cross_times.append(
+                            (
+                                "DOWN",
+                                cross_time.strftime("%Y-%m-%d %H:%M:%S"),
+                                lower,
+                                close,
+                                ma,
+                            )
+                        )
+                        last_cross_time_down = cross_time
+
+                # ---- 다음 스텝에서의 상태는 close 기준으로 ----
+                if close > upper:
+                    state = "above"
+                elif close < lower:
+                    state = "below"
+                else:
+                    state = "in"
+
+                    last_state = state
+
+            return count, cross_times
+
+    def _find_optimal_threshold(
+            self,
+            candles: Sequence[Candle],
+            ma100s: Sequence[Optional[float]],
+            min_thr: Optional[float] = None,
+            max_thr: Optional[float] = None,
+            target_cross: Optional[int] = None,
+            min_cross_interval_sec: int = 3600,
+    ) -> Tuple[list, float]:
+        if min_thr is None:
+            min_thr = self.min_thr
+        if max_thr is None:
+            max_thr = self.max_thr
+        if target_cross is None:
+            target_cross = self.target_cross
+
+        left, right = min_thr, max_thr
+        optimal = max_thr
+
+        for _ in range(20):
+            mid = (left + right) / 2
+            crosses, _ = self._count_cross(
+                candles, ma100s, mid, min_cross_interval_sec=min_cross_interval_sec
+            )
+
+            if crosses > target_cross:
+                left = mid
+            else:
+                optimal = mid
+                right = mid
+
+        crosses, cross_times = self._count_cross(
+            candles, ma100s, optimal, min_cross_interval_sec=min_cross_interval_sec
+        )
+        return cross_times, max(optimal, min_thr)
 
 class JumpDetector:
     """최근 n개 가격 히스토리로 급등락 감지"""

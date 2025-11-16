@@ -25,7 +25,7 @@ class TradeConfig:
     target_cross: int = 10
 
     # 슬라이딩 윈도우(캔들 개수)
-    closes_num: int = 10080  # (예: 1분봉 7일치)
+    candles_num: int = 10080  # (예: 1분봉 7일치)
 
     # 기본 청산 스레시홀드(심볼별 커스텀은 별도 해시)
     default_exit_ma_threshold: float = -0.0005
@@ -55,5 +55,5 @@ class TradeConfig:
         self.indicator_min_thr = max(0.0, float(self.indicator_min_thr))
         self.indicator_max_thr = max(self.indicator_min_thr, float(self.indicator_max_thr))
         self.target_cross = max(1, int(self.target_cross))
-        self.closes_num = max(1, int(self.closes_num))  # << 추가 가드
+        self.candles_num = max(1, int(self.candles_num))  # << 추가 가드
         return self
