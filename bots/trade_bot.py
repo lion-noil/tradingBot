@@ -142,10 +142,10 @@ class TradeBot:
             if price is None or self.now_ma100[symbol] is None:
                 continue
 
-            # 6) 청산 처리
+            # 5-1) 청산 처리
             await self._process_exits(symbol, price)
 
-            # 7) 진입 처리
+            # 5-1) 진입 처리
             await self._process_entries(symbol, price)
 
         # 8) 상태 로그 스냅샷/변화 감지

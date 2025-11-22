@@ -16,7 +16,7 @@ class TradeConfig:
 
     # 레버리지/진입
     leverage: int = 50
-    entry_percent: float = 3
+    entry_percent: float = 3 # leverage * entry_percent 가 한번 진입 퍼센트:50 x 3 = 150% 진입
     max_effective_leverage: float = 30.0   # 보유노션/지갑 최대 배수 (가드)
 
     # 인디케이터
