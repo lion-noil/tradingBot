@@ -13,13 +13,16 @@ KST = timezone(timedelta(hours=9))
 def kst_now_str() -> str:
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %z")
 
+
 def arrow(prev: Optional[float], new: Optional[float]) -> str:
     if prev is None or new is None:
         return "→"
     return "↑" if new > prev else ("↓" if new < prev else "→")
 
+
 def fmt_pct(v: Optional[float]) -> str:
     return "—" if v is None else f"{float(v) * 100:.3f}%"
+
 
 # ── 임계값 양자화 ───────────────────────────────────
 def quantize_thr(thr: Optional[float], lo: float = 0.005, hi: float = 0.03) -> Optional[float]:
@@ -27,6 +30,7 @@ def quantize_thr(thr: Optional[float], lo: float = 0.005, hi: float = 0.03) -> O
         return None
     v = Decimal(str(max(lo, min(hi, float(thr)))))
     return float(v.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+
 
 # ── Redis 스트림 로깅(xadd) ────────────────────────
 def xadd_pct_log(
@@ -37,21 +41,35 @@ def xadd_pct_log(
     new: Optional[float],
     arrow_mark: str,
     msg: str,
-    stream_key: str = "OpenPctLog",
+    *,
+    namespace: Optional[str] = None,
+    stream_key: Optional[str] = None,
     cross_times: Optional[List[Tuple[str, str, float, float, float]]] = None,
     cross_times_max: int = 10,  # 너무 크면 최근 N개만
 ) -> None:
+    """
+    - 기본 키: "OpenPctLog"
+    - namespace가 있으면 기본 키: "trading:{namespace}:OpenPctLog"
+    - stream_key를 직접 넘기면 그 값을 그대로 사용
+    """
+
+    # 최종 스트림 키 결정
+    if stream_key is None:
+        if namespace:
+            stream_key = f"trading:{namespace}:OpenPctLog"
+        else:
+            stream_key = "OpenPctLog"
+
     def _fmt(x):
         return "" if x is None else f"{float(x):.10f}"
 
     # 필요시 최근 N개만 유지
     if cross_times:
         trimmed = cross_times[-cross_times_max:]
-        # tuple -> dict 로 바꿔두면 읽을 때 키로 접근하기 좋아요
         ct_dicts = [
             {
                 "dir": d,
-                "time": t,   # 이미 문자열 형태로 보이니 그대로
+                "time": t,
                 "price": float(p),
                 "bid": float(b),
                 "ask": float(a),
@@ -70,29 +88,47 @@ def xadd_pct_log(
         "new": _fmt(new),
         "arrow": arrow_mark,
         "msg": msg,
-        "cross_times": ct_json,   # << 여기 추가
+        "cross_times": ct_json,
     }
     redis_client.xadd(stream_key, fields, maxlen=30, approximate=False)
 
+
 # ── 트레이딩 시그널 업로드 ─────────────────────────
-def upload_signal(redis_client, sig: Dict[str, Any]) -> None:
+def upload_signal(redis_client, sig: Dict[str, Any], namespace: Optional[str] = None) -> None:
+    """
+    시그널은:
+    - 기존 글로벌 키 "trading:signal" 에는 계속 저장 (기존 프론트/툴 호환용)
+    - namespace 가 있으면 "trading:{namespace}:signal" 에도 추가로 저장
+    """
     symbol = sig["symbol"]
     ts_iso = sig["ts"]
     day = ts_iso[:10]
     sid = hashlib.sha1(f"{symbol}|{ts_iso}".encode("utf-8")).hexdigest()
     field = f"{day}|{sid}"
+
     extra = sig.get("extra") or {}
     if "ts_ms" not in extra:
         extra["ts_ms"] = int(time.time() * 1000)
         sig["extra"] = extra
+
     value = json.dumps(sig, ensure_ascii=False, separators=(",", ":"))
+
+    # 1) 기존 글로벌 키(그대로 유지)
     redis_client.hset("trading:signal", field, value)
 
+    # 2) 네임스페이스별 키(플랫폼별 분리용)
+    if namespace:
+        key_ns = f"trading:{namespace}:signal"
+        redis_client.hset(key_ns, field, value)
+
+
 # ── 자산/포지션 문자열 빌더(순수 함수) ────────────────
-def format_position_lines(get_price: Callable[[str], Optional[float]],
-                          taker_fee_rate: float,
-                          positions_for_symbol: Dict[str, Any],
-                          symbol: str) -> str:
+def format_position_lines(
+    get_price: Callable[[str], Optional[float]],
+    taker_fee_rate: float,
+    positions_for_symbol: Dict[str, Any],
+    symbol: str,
+) -> str:
     price = get_price(symbol)
     if price is None:
         return "  - 시세 없음\n"
@@ -116,33 +152,42 @@ def format_position_lines(get_price: Callable[[str], Optional[float]],
         fee_total = position_value * taker_fee_rate * 2  # 왕복
         net_profit = gross_profit - fee_total
 
-        s = [f"  - 포지션: {side_name} ({qty}, {entry:.1f}, {profit_rate:+.3f}%, {net_profit:+.1f})"]
+        s = [
+            f"  - 포지션: {side_name} ({qty}, {entry:.1f}, {profit_rate:+.3f}%, {net_profit:+.1f})"
+        ]
         entries = rec.get("entries") or []
         for i, e in enumerate(entries, start=1):
             q = float(e.get("qty", 0.0) or 0.0)
             signed_qty = (-q) if side_name == "SHORT" else q
             t_str = e.get("ts_str") or e.get("ts")
             if isinstance(t_str, (int, float)):
-                t_str = datetime.fromtimestamp(int(t_str) / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
+                t_str = datetime.fromtimestamp(
+                    int(t_str) / 1000, tz=KST
+                ).strftime("%Y-%m-%d %H:%M:%S")
             price_e = float(e.get("price", 0.0) or 0.0)
-            s.append(f"     └#{i} {signed_qty:+.3f} : {t_str or '-'}, {price_e:.1f} ")
+            s.append(
+                f"     └#{i} {signed_qty:+.3f} : {t_str or '-'}, {price_e:.1f} "
+            )
         return "\n".join(s)
 
     pos = positions_for_symbol or {}
-    long_line  = _fmt_one("LONG",  pos.get("LONG"))
+    long_line = _fmt_one("LONG", pos.get("LONG"))
     short_line = _fmt_one("SHORT", pos.get("SHORT"))
 
     if not long_line and not short_line:
         return "  - 포지션 없음\n"
     return "\n".join([x for x in (long_line, short_line) if x]) + "\n"
 
+
 # ── 상태 로그(점프/MA/괴리율) 빌더 ────────────────────
-def make_status_log_msg(total_usdt: float,
-                        symbols: List[str],
-                        jump_state: Dict[str, Dict[str, Any]],
-                        ma_threshold: Dict[str, Optional[float]],
-                        now_ma100: Dict[str, Optional[float]],
-                        get_price: Callable[[str], Optional[float]]) -> str:
+def make_status_log_msg(
+    total_usdt: float,
+    symbols: List[str],
+    jump_state: Dict[str, Dict[str, Any]],
+    ma_threshold: Dict[str, Optional[float]],
+    now_ma100: Dict[str, Optional[float]],
+    get_price: Callable[[str], Optional[float]],
+) -> str:
     log_msg = f"\n💰 총 자산: {total_usdt:.2f} USDT\n"
     for symbol in symbols:
         js = (jump_state or {}).get(symbol, {})
@@ -153,7 +198,11 @@ def make_status_log_msg(total_usdt: float,
 
         price = get_price(symbol)
         ma = now_ma100.get(symbol)
-        diff_pct = ((price - ma) / ma * 100.0) if (price is not None and ma not in (None, 0)) else None
+        diff_pct = (
+            (price - ma) / ma * 100.0
+            if (price is not None and ma not in (None, 0))
+            else None
+        )
         emoji = "📈" if state == "UP" else ("📉" if state == "DOWN" else "👀")
 
         parts = [f"{emoji} ma_thr({thr_pct:.2f}%)"]
@@ -169,6 +218,7 @@ def make_status_log_msg(total_usdt: float,
         log_msg += f"[{symbol}] " + " ".join(parts) + "\n"
     return log_msg.rstrip()
 
+
 # ── 상태 요약 파싱/변화 감지 ─────────────────────────
 _HEADER_MA_RE = re.compile(
     r"^\[(?P<sym>[A-Z0-9]+)\]\s+(?P<emoji>[📈📉👀—])\s+ma_thr\(\s*(?P<thr>[0-9.]+)\s*%\s*\)"
@@ -177,9 +227,11 @@ _POS_RE = re.compile(
     r"^\s*-\s*포지션:\s*(?P<side>LONG|SHORT)\s*\(\s*(?P<qty>\d+(?:\.\d+)?)\s*,\s*[^,]+,\s*(?P<pct>[+\-]?\d+\.\d+)%"
 )
 
-def extract_status_summary(text: str,
-                           fallback_ma_threshold_pct: Optional[Dict[str, Optional[float]]] = None
-                           ) -> Dict[str, Any]:
+
+def extract_status_summary(
+    text: str,
+    fallback_ma_threshold_pct: Optional[Dict[str, Optional[float]]] = None,
+) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
     cur_sym: Optional[str] = None
     for raw in text.splitlines():
@@ -187,7 +239,9 @@ def extract_status_summary(text: str,
         m = _HEADER_MA_RE.match(line)
         if m:
             cur_sym = m.group("sym")
-            summary.setdefault(cur_sym, {"jump": m.group("emoji"), "ma_thr": None, "LONG": None, "SHORT": None})
+            summary.setdefault(
+                cur_sym, {"jump": m.group("emoji"), "ma_thr": None, "LONG": None, "SHORT": None}
+            )
             try:
                 summary[cur_sym]["ma_thr"] = float(m.group("thr"))
             except Exception:
@@ -210,10 +264,9 @@ def extract_status_summary(text: str,
                     v["ma_thr"] = float(raw_val) * 1.0
     return summary
 
+
 # 2-1) 지표 계산 (순수)
-def compute_indicators_for_symbol(
-    candle_engine, indicator_engine, symbol: str
-):
+def compute_indicators_for_symbol(candle_engine, indicator_engine, symbol: str):
     candles = candle_engine.get_candles(symbol)
 
     cross_times, q_thr, ma100s = indicator_engine.compute_all(candles)
@@ -231,6 +284,7 @@ def compute_indicators_for_symbol(
         "prev_close_3": prev_close_3,
     }
 
+
 # 2-2) 임계값 파생치 & 로깅 메시지 준비 (순수)
 def derive_thresholds_and_log(prev_q: Optional[float], thr_raw: Optional[float]):
     q = quantize_thr(thr_raw)
@@ -246,6 +300,7 @@ def derive_thresholds_and_log(prev_q: Optional[float], thr_raw: Optional[float])
             "new_q": q,
         }
     return q, mom_thr, log
+
 
 def build_full_status_log(
     total_usdt: float,
@@ -263,7 +318,7 @@ def build_full_status_log(
         jump_state=jump_state,
         ma_threshold=ma_threshold,
         now_ma100=now_ma100,
-        get_price=get_price
+        get_price=get_price,
     )
     tails: List[str] = []
     for sym in symbols:
@@ -277,33 +332,67 @@ def build_full_status_log(
         )
     return (head + "\n" + "".join(tails)).rstrip()
 
-def bootstrap_symbol(
+
+def bootstrap_trading_state_for_symbol(
+    rest_client,
+    symbol: str,
+    leverage: int,
+    asset: Dict[str, Any],
+    system_logger=None,
+) -> Dict[str, Any]:
+    """
+    지갑/포지션, 레버리지, 주문 동기화만 담당.
+    - 실제 주문 모드에서만 필요.
+    """
+    # 지갑/포지션 동기화
+    try:
+        asset = rest_client.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
+    except Exception as e:
+        if system_logger:
+            system_logger.warning(f"[{symbol}] 자산/포지션 동기화 실패: {e}")
+
+    # 레버리지 설정 (MT5 환경에서는 no-op일 수도 있음)
+    try:
+        rest_client.set_leverage(symbol=symbol, leverage=leverage)
+    except Exception:
+        # set_leverage 미구현 / 불필요한 환경이면 조용히 무시
+        pass
+
+    # 주문 동기화 (Bybit 전용일 수 있으므로 방어적으로 호출)
+    try:
+        sync_orders = getattr(rest_client, "sync_orders_from_bybit", None)
+        if callable(sync_orders):
+            sync_orders(symbol)
+    except Exception as e:
+        if system_logger:
+            system_logger.warning(f"[{symbol}] 초기 주문 동기화 실패: {e}")
+
+    return asset
+
+
+def bootstrap_candles_for_symbol(
     rest_client,
     candle_engine,
     refresh_indicators: Callable[[str], None],
     symbol: str,
-    leverage: int,
-    asset: Dict[str, Any],
-    candles_num:int,
+    candles_num: int,
     system_logger=None,
-
-) -> Dict[str, Any]:
-    # 지갑/포지션 동기화
-    asset = rest_client.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
-    # 레버리지
+) -> None:
+    """
+    과거 캔들 백필 + 인디케이터(MA100 등) 갱신만 담당.
+    - 시그널 전용 모드에서도 반드시 필요.
+    """
     try:
-        rest_client.set_leverage(symbol=symbol, leverage=leverage)
-    except Exception:
-        pass
-    # 캔들 백필 + 인디케이터 갱신 + 주문 동기화
-    try:
-        rest_client.update_candles(candle_engine.get_candles(symbol), symbol=symbol, count=candles_num)
+        rest_client.update_candles(
+            candle_engine.get_candles(symbol),
+            symbol=symbol,
+            count=candles_num,
+        )
         refresh_indicators(symbol)
-        rest_client.sync_orders_from_bybit(symbol)
     except Exception as e:
         if system_logger:
-            system_logger.warning(f"[{symbol}] 초기 부트스트랩 실패: {e}")
-    return asset
+            system_logger.warning(f"[{symbol}] 초기 캔들/인디케이터 부트스트랩 실패: {e}")
+
 
 def bootstrap_all_symbols(
     rest_client,
@@ -312,18 +401,38 @@ def bootstrap_all_symbols(
     symbols: List[str],
     leverage: int,
     asset: Dict[str, Any],
-    candles_num:int,
+    candles_num: int,
     system_logger=None,
 ) -> Dict[str, Any]:
+    """
+    모든 심볼에 대해:
+    - 트레이딩 상태(지갑/포지션/레버리지/주문) 부트스트랩
+    - 캔들 + 인디케이터 부트스트랩
+    을 모두 수행.
+    (실제 주문 모드에서 사용)
+    """
     for sym in symbols:
-        asset = bootstrap_symbol(
-            rest_client, candle_engine, refresh_indicators,
-            sym, leverage, asset, candles_num, system_logger
+        asset = bootstrap_trading_state_for_symbol(
+            rest_client=rest_client,
+            symbol=sym,
+            leverage=leverage,
+            asset=asset,
+            system_logger=system_logger,
+        )
+        bootstrap_candles_for_symbol(
+            rest_client=rest_client,
+            candle_engine=candle_engine,
+            refresh_indicators=refresh_indicators,
+            symbol=sym,
+            candles_num=candles_num,
+            system_logger=system_logger,
         )
     return asset
 
+
 def position_ratio(position_value: float, total_balance: float) -> float:
     return (position_value / total_balance) if total_balance else 0.0
+
 
 def log_jump(system_logger, symbol, state, min_dt, max_dt):
     if not system_logger or not state:
@@ -332,6 +441,7 @@ def log_jump(system_logger, symbol, state, min_dt, max_dt):
         system_logger.info(f"({symbol}) 📈 급등 감지! (Δ {min_dt:.3f}~{max_dt:.3f}s)")
     elif state == "DOWN":
         system_logger.info(f"({symbol}) 📉 급락 감지! (Δ {min_dt:.3f}~{max_dt:.3f}s)")
+
 
 def refresh_indicators_for_symbol(
     candle_engine,
@@ -346,18 +456,25 @@ def refresh_indicators_for_symbol(
     prev_close_map: Dict[str, Optional[float]],
     system_logger=None,
     redis_client=None,
+    namespace: Optional[str] = None,
 ) -> None:
+    """
+    한 심볼에 대해:
+    - 인디케이터 계산
+    - MA threshold / momentum threshold / prev_close_3 반영
+    - MA threshold 변경시 xadd_pct_log 로 로그 남김 (네임스페이스 포함 가능)
+    """
     res = compute_indicators_for_symbol(candle_engine, indicator_engine, symbol)
 
     prev_q = thr_quantized_map.get(symbol)
 
     # 상태 반영
-    ma100s[symbol]          = res["ma100s"]
-    now_ma100_map[symbol]   = ma100s[symbol][-1]
+    ma100s[symbol] = res["ma100s"]
+    now_ma100_map[symbol] = ma100s[symbol][-1]
     ma_threshold_map[symbol] = res["q_thr"]
     q, mom_thr, log = derive_thresholds_and_log(prev_q, res["q_thr"])
-    thr_quantized_map[symbol]     = q
-    momentum_threshold_map[symbol]= mom_thr
+    thr_quantized_map[symbol] = q
+    momentum_threshold_map[symbol] = mom_thr
 
     # 로깅(있을 때만)
     if log and redis_client is not None:
@@ -372,7 +489,8 @@ def refresh_indicators_for_symbol(
             log["new_q"],
             log["arrow"],
             msg,
-            cross_times=res["cross_times"],  # << 추가
+            namespace=namespace,
+            cross_times=res["cross_times"],
         )
 
     # prev(3틱 전)
@@ -380,7 +498,13 @@ def refresh_indicators_for_symbol(
         prev_close_map[symbol] = res["prev_close_3"]
 
 
-def log_threshold_change(system_logger, redis_client, symbol: str, log_payload: Optional[Dict[str, Any]]):
+def log_threshold_change(
+    system_logger,
+    redis_client,
+    symbol: str,
+    log_payload: Optional[Dict[str, Any]],
+    namespace: Optional[str] = None,
+):
     if not log_payload:
         return
     msg = f"[{symbol}] {log_payload['msg']}"
@@ -393,7 +517,8 @@ def log_threshold_change(system_logger, redis_client, symbol: str, log_payload: 
         log_payload["prev_q"],
         log_payload["new_q"],
         log_payload["arrow"],
-        msg
+        msg,
+        namespace=namespace,
     )
 
 
@@ -411,10 +536,13 @@ def ws_is_fresh(ws, symbol: str, stale_sec: float, global_stale_sec: float) -> b
             return True
     return False
 
-def should_log_update(old_summary: Optional[Dict[str, Any]],
-                      new_summary: Dict[str, Any],
-                      qty_thr: float = 0.0001,
-                      rate_thr: float = 1.0) -> Tuple[bool, Optional[str]]:
+
+def should_log_update(
+    old_summary: Optional[Dict[str, Any]],
+    new_summary: Dict[str, Any],
+    qty_thr: float = 0.0001,
+    rate_thr: float = 1.0,
+) -> Tuple[bool, Optional[str]]:
     if old_summary is None:
         return True, "initial snapshot"
 

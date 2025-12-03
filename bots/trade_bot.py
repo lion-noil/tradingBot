@@ -17,11 +17,12 @@ from .trade_functions import (
     upload_signal,
     log_jump,
     extract_status_summary,
-    bootstrap_all_symbols,
+    bootstrap_candles_for_symbol,
     should_log_update,
     ws_is_fresh,
     build_full_status_log,
     refresh_indicators_for_symbol,
+bootstrap_all_symbols
 )
 
 _TZ = ZoneInfo("Asia/Seoul")
@@ -29,8 +30,18 @@ KST = timezone(timedelta(hours=9))
 
 
 class TradeBot:
-    def __init__(self, bybit_websocket_controller, bybit_rest_controller, manual_queue,
-                 system_logger=None, trading_logger=None, symbols=("BTCUSDT",)):
+    def __init__(
+            self,
+            bybit_websocket_controller,
+            bybit_rest_controller,
+            manual_queue,
+            system_logger=None,
+            trading_logger=None,
+            symbols=("BTCUSDT",),
+            signal_only: bool = False,          # 시그널만 생성할지 여부 (fallback)
+            config: TradeConfig | None = None,  # ✅ 외부에서 주입되는 설정
+    ):
+
 
         # 0) 구성요소(외부 핸들)
         self.ws = bybit_websocket_controller
@@ -40,9 +51,19 @@ class TradeBot:
         self.trading_logger = trading_logger
         self.symbols: List[str] = list(symbols)
 
-        # 1) 설정: 로컬 기본값 사용 → Redis에는 올리기만
-        self.config = TradeConfig().normalized()
+        # 1) 설정: 외부 config가 있으면 그걸 우선 사용
+        if config is None:
+            # 기존 기본값
+            self.config = TradeConfig().normalized()
+        else:
+            # main.py 에서 넘겨준 config (bybit/mt5 각각 다름)
+            self.config = config.normalized()
+
+        # Redis에는 항상 현재 config 올려두기
         self.config.to_redis(redis_client, publish=True)  # 브로드캐스트 원치 않으면 publish=False
+
+        # signal_only는 config 값이 우선, 없으면 인자로 받은 값 사용
+        self.signal_only = bool(getattr(self.config, "signal_only", signal_only))
 
         # 2) 엔진/파라미터 주입
         self.target_cross = self.config.target_cross
@@ -55,12 +76,9 @@ class TradeBot:
         self.jump = JumpDetector(history_num=10, polling_interval=0.5)
         self.exec = ExecutionEngine(self.rest, system_logger, trading_logger, taker_fee_rate=0.00055)
 
-        # 3) 런타임 파라미터 (config 반영)
-        self.ws_stale_sec = self.config.ws_stale_sec
-        self.ws_global_stale_sec = self.config.ws_global_stale_sec
-        self.leverage = self.config.leverage
-        self.entry_percent = self.config.entry_percent
-        self.max_effective_leverage = self.config.max_effective_leverage
+        # 3) 런타임 파라미터 (config 반영) 🔥
+        #    아래 _apply_config 가 ws_stale_sec/leverage 등 다 세팅해줌
+        self._apply_config(self.config)
 
         # 4) 상태
         self.asset: Dict[str, Any] = {
@@ -95,11 +113,8 @@ class TradeBot:
             except Exception:
                 pass
 
-        # 5) 초기 세팅(부트스트랩)
-        self.asset = bootstrap_all_symbols(
-            rest_client=self.rest,
-            candle_engine=self.candle,
-            refresh_indicators=lambda sym: refresh_indicators_for_symbol(
+        def _refresh_one(sym: str) -> None:
+            refresh_indicators_for_symbol(
                 self.candle, self.indicator, sym,
                 ma100s=self.ma100s,
                 now_ma100_map=self.now_ma100,
@@ -109,13 +124,36 @@ class TradeBot:
                 prev_close_map=self.prev,
                 system_logger=self.system_logger,
                 redis_client=redis_client,
-            ),
-            symbols=self.symbols,
-            leverage=self.leverage,
-            asset=self.asset,
-            candles_num=self.config.candles_num,
-            system_logger=self.system_logger,
-        )
+            namespace=getattr(self.config, "name", None),  # 🔹 추가
+            )
+
+        # 5) 초기 세팅(부트스트랩)
+        if self.signal_only:
+            # ✅ 시그널-only: 트레이딩 상태는 건드리지 않고,
+            #    과거 캔들 + MA100/threshold만 초기화
+            for sym in self.symbols:
+                bootstrap_candles_for_symbol(
+                    rest_client=self.rest,
+                    candle_engine=self.candle,
+                    refresh_indicators=_refresh_one,
+                    symbol=sym,
+                    candles_num=self.config.candles_num,
+                    system_logger=self.system_logger,
+                )
+            if self.system_logger:
+                self.system_logger.info("[TradeBot] signal_only 모드: 캔들/인디케이터만 부트스트랩")
+        else:
+            # ✅ 주문 모드: 기존 동작 유지 (자산/포지션 + 캔들/인디케이터 모두 부트스트랩)
+            self.asset = bootstrap_all_symbols(
+                rest_client=self.rest,
+                candle_engine=self.candle,
+                refresh_indicators=_refresh_one,
+                symbols=self.symbols,
+                leverage=self.leverage,
+                asset=self.asset,
+                candles_num=self.config.candles_num,
+                system_logger=self.system_logger,
+            )
 
         self._last_log_snapshot: Optional[str] = None
         self._last_log_summary: Optional[Dict[str, Any]] = None
@@ -129,11 +167,11 @@ class TradeBot:
             # 1) 실시간 가격 기록
             price = self._price_record(symbol)
 
-            # 2) kline(확정 봉) 반영 → 지표 업데이트
-            self._candle_record(symbol)  # ← 인자 추가
-
-            # 3) WS 상태에 따라 진행중 봉 누적 혹은 REST 백필
+            # 2) WS 상태에 따라 진행중 봉 누적 혹은 REST 백필
             self._candle_backfill(symbol, price, now)  # ← 인자 추가
+
+            # 3) kline(확정 봉) 반영 → 지표 업데이트
+            self._candle_record(symbol)  # ← 인자 추가
 
             # 4) 급등락 테스트
             self._updown_test(symbol)  # ← 인자 추가
@@ -150,14 +188,6 @@ class TradeBot:
 
         # 8) 상태 로그 스냅샷/변화 감지
         self._finalize_status_log()
-
-
-
-
-
-
-
-
 
     def _finalize_status_log(self) -> None:
         new_status = build_full_status_log(
@@ -303,7 +333,7 @@ class TradeBot:
                 sig_dict = self._build_signal_dict(sig_s, symbol)
                 self._log_and_upload_signal(sig_dict)
                 self.entry_store.set(symbol, "SHORT", now_ms)
-                await self._open_position(symbol, "short", price)
+                await self._open_position(symbol, "SHORT", price)
 
         # --- Long 진입 ---
         recent_long_signal_time = self.entry_store.get(symbol, "LONG")
@@ -323,7 +353,7 @@ class TradeBot:
                 sig_dict = self._build_signal_dict(sig_l, symbol)
                 self._log_and_upload_signal(sig_dict)
                 self.entry_store.set(symbol, "LONG", now_ms)
-                await self._open_position(symbol, "long", price)
+                await self._open_position(symbol, "LONG", price)
 
     def _build_signal_dict(self, sig, symbol: str) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -344,7 +374,11 @@ class TradeBot:
     def _log_and_upload_signal(self, sig_dict: Dict[str, Any]) -> None:
         if self.trading_logger:
             self.trading_logger.info('SIG ' + json.dumps(sig_dict, ensure_ascii=False))
-        upload_signal(redis_client, sig_dict)
+        upload_signal(
+            redis_client,
+            sig_dict,
+            namespace=getattr(self.config, "name", None),  # 🔹 여기
+        )
 
     async def _close_position(self, symbol: str, side: str, qty: float) -> None:
         await self.exec.execute_and_sync(
@@ -354,7 +388,7 @@ class TradeBot:
         self.asset = self.rest.getNsav_asset(asset=self.asset, symbol=symbol, save_redis=True)
 
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
-        # side: "long" | "short"
+        # side: "LONG" | "SHORT"
         await self.exec.execute_and_sync(
             self.rest.open_market, self.asset['positions'][symbol][side.upper()], symbol,
             symbol, side, price, self.entry_percent, self.asset['wallet']
