@@ -124,7 +124,7 @@ class TradeBot:
                 prev_close_map=self.prev,
                 system_logger=self.system_logger,
                 redis_client=redis_client,
-            namespace=getattr(self.config, "name", None),  # 🔹 추가
+                namespace=getattr(self.config, "name", None),  # 🔹 추가
             )
 
         # 5) 초기 세팅(부트스트랩)
@@ -226,6 +226,7 @@ class TradeBot:
             if k_start_minute is None or k_start_minute != self._last_closed_minute[symbol]:
                 self.candle.apply_confirmed_kline(symbol, k)
                 # 지표 갱신 유틸 호출
+
                 refresh_indicators_for_symbol(
                     self.candle, self.indicator, symbol,
                     ma100s=self.ma100s,
@@ -236,6 +237,7 @@ class TradeBot:
                     prev_close_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
+                    namespace=getattr(self.config, "name", None)
                 )
                 self._last_closed_minute[symbol] = k_start_minute
 
@@ -268,6 +270,7 @@ class TradeBot:
                     prev_close_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
+                    namespace=getattr(self.config, "name", None)
                 )
 
     def _updown_test(self, symbol: str) -> None:

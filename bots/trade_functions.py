@@ -475,7 +475,6 @@ def refresh_indicators_for_symbol(
     q, mom_thr, log = derive_thresholds_and_log(prev_q, res["q_thr"])
     thr_quantized_map[symbol] = q
     momentum_threshold_map[symbol] = mom_thr
-
     # 로깅(있을 때만)
     if log and redis_client is not None:
         msg = f"[{symbol}] {log['msg']}"

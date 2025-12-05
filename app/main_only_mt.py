@@ -14,13 +14,18 @@ if sys.platform.startswith("win"):
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from bots.trade_bot import TradeBot
-
 from asyncio import Queue
+
+from bots.trade_bot import TradeBot
+from bots.trade_config import make_mt5_signal_config
 from utils.logger import setup_logger
 
+# ── MT5 컨트롤러들만 사용 ───────────────────────────────────
 from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
 from controllers.mt5.mt5_rest_controller import Mt5RestController
+
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
 class ManualOrderRequest(BaseModel):
@@ -31,9 +36,6 @@ class ManualOrderRequest(BaseModel):
 class ManualCloseRequest(BaseModel):
     side: Literal["LONG", "SHORT"]
     symbol: str | None = None
-
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
 class BurstWarningTerminator(logging.Handler):
@@ -120,13 +122,16 @@ trading_logger = setup_logger(
 app = FastAPI()
 manual_queue: Queue = Queue()
 
-# MT5용 봇 & 컨트롤러
+# MT5용 봇 & 컨트롤러만 사용
 bot_mt5: TradeBot | None = None
 mt5_ws_controller: Mt5WebSocketController | None = None
 mt5_rest_controller: Mt5RestController | None = None
 
 
 async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
+    """
+    워밍업 동안 WS에서 직접 가격을 읽어 JumpDetector에 채운다.
+    """
     MIN_TICKS = bot.jump.history_num
 
     while True:
@@ -154,7 +159,7 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
 
 
 async def bot_loop(bot: TradeBot, ws, name: str):
-    # 1) 워밍업: 가격 샘플이 충분히 쌓일 때까지 대기
+    # 1) 워밍업
     await warmup_with_ws_prices(bot, ws, name)
 
     # 2) 메인 루프
@@ -171,11 +176,14 @@ async def bot_loop(bot: TradeBot, ws, name: str):
 async def startup_event():
     global bot_mt5, mt5_ws_controller, mt5_rest_controller
 
-    system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
+    system_logger.debug("🚀 FastAPI 기반 MT5 시그널 서버 시작")
 
     # ── MT5 설정 ────────────────────────────────
+    cfg_mt5 = make_mt5_signal_config()  # TradeConfig(name="mt5_signal", signal_only=True, ...)
+
+    # 심볼은 일단 하드코딩 (테스트용)
     symbols_mt5 = ("US100", "XAUUSD")
-    system_logger.debug(f"🔧 MT5 symbols={symbols_mt5}")
+    system_logger.debug(f"🔧 MT5 symbols={symbols_mt5}, config={cfg_mt5.as_dict()}")
 
     mt5_ws_controller = Mt5WebSocketController(
         symbols=symbols_mt5,
@@ -190,11 +198,12 @@ async def startup_event():
         system_logger=system_logger,
         trading_logger=trading_logger,
         symbols=symbols_mt5,
-        signal_only=True
+        signal_only=True,  # ✅ MT5는 시그널 전용
     )
 
-    # ── 각 봇 루프를 백그라운드로 실행 ─────────────────────
+    # ── MT5 봇 루프만 실행 ─────────────────────
     asyncio.create_task(bot_loop(bot_mt5, mt5_ws_controller, "MT5"))
+
 
 if __name__ == "__main__":
     import uvicorn
