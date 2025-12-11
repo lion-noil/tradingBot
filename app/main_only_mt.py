@@ -1,4 +1,4 @@
-# app/main.py
+# app/main_only_mt.py
 
 import sys
 from typing import Literal
@@ -179,7 +179,7 @@ async def startup_event():
     system_logger.debug("🚀 FastAPI 기반 MT5 시그널 서버 시작")
 
     # ── MT5 설정 ────────────────────────────────
-    cfg_mt5 = make_mt5_signal_config()  # TradeConfig(name="mt5_signal", signal_only=True, ...)
+    cfg_mt5 = make_mt5_signal_config()
 
     # 심볼은 일단 하드코딩 (테스트용)
     symbols_mt5 = ("US100", "XAUUSD")
@@ -199,6 +199,7 @@ async def startup_event():
         trading_logger=trading_logger,
         symbols=symbols_mt5,
         signal_only=True,  # ✅ MT5는 시그널 전용
+        config=cfg_mt5
     )
 
     # ── MT5 봇 루프만 실행 ─────────────────────

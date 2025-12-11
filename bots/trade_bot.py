@@ -53,11 +53,13 @@ class TradeBot:
 
         # 1) 설정: 외부 config가 있으면 그걸 우선 사용
         if config is None:
-            # 기존 기본값
             self.config = TradeConfig().normalized()
         else:
-            # main.py 에서 넘겨준 config (bybit/mt5 각각 다름)
             self.config = config.normalized()
+
+        # 🔹 네임스페이스 (bybit / mt5_signal 등)
+        #    TradeConfig.name 가 없거나 비어있으면 bybit 를 기본값으로 사용
+        self.namespace: str = getattr(self.config, "name", None) or "bybit"
 
         # Redis에는 항상 현재 config 올려두기
         self.config.to_redis(redis_client, publish=True)  # 브로드캐스트 원치 않으면 publish=False
@@ -76,8 +78,6 @@ class TradeBot:
         self.jump = JumpDetector(history_num=10, polling_interval=0.5)
         self.exec = ExecutionEngine(self.rest, system_logger, trading_logger, taker_fee_rate=0.00055)
 
-        # 3) 런타임 파라미터 (config 반영) 🔥
-        #    아래 _apply_config 가 ws_stale_sec/leverage 등 다 세팅해줌
         self._apply_config(self.config)
 
         # 4) 상태
@@ -103,7 +103,12 @@ class TradeBot:
         }
 
         # 엔트리 시그널 저장소
-        self.entry_store = EntrySignalStore(redis_client, self.symbols)
+
+        self.entry_store = EntrySignalStore(
+            redis_client,
+            self.symbols,
+            name=self.namespace,   # ★ 여기만 바꿔주면 됨
+        )
 
         # 구독 시작
         subscribe = getattr(self.ws, "subscribe_symbols", None)
@@ -124,7 +129,7 @@ class TradeBot:
                 prev_close_map=self.prev,
                 system_logger=self.system_logger,
                 redis_client=redis_client,
-                namespace=getattr(self.config, "name", None),  # 🔹 추가
+                namespace=self.namespace,
             )
 
         # 5) 초기 세팅(부트스트랩)
@@ -141,7 +146,7 @@ class TradeBot:
                     system_logger=self.system_logger,
                 )
             if self.system_logger:
-                self.system_logger.info("[TradeBot] signal_only 모드: 캔들/인디케이터만 부트스트랩")
+                self.system_logger.debug("[TradeBot] signal_only 모드: 캔들/인디케이터만 부트스트랩")
         else:
             # ✅ 주문 모드: 기존 동작 유지 (자산/포지션 + 캔들/인디케이터 모두 부트스트랩)
             self.asset = bootstrap_all_symbols(
@@ -237,7 +242,7 @@ class TradeBot:
                     prev_close_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
-                    namespace=getattr(self.config, "name", None)
+                    namespace=self.namespace
                 )
                 self._last_closed_minute[symbol] = k_start_minute
 
@@ -270,7 +275,7 @@ class TradeBot:
                     prev_close_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
-                    namespace=getattr(self.config, "name", None)
+                    namespace=self.namespace
                 )
 
     def _updown_test(self, symbol: str) -> None:
@@ -380,7 +385,7 @@ class TradeBot:
         upload_signal(
             redis_client,
             sig_dict,
-            namespace=getattr(self.config, "name", None),  # 🔹 여기
+            namespace=self.namespace,
         )
 
     async def _close_position(self, symbol: str, side: str, qty: float) -> None:

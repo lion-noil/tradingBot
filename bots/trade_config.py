@@ -158,7 +158,7 @@ def make_bybit_config(
     - 기존 TradeConfig 기본값을 그대로 사용하면서, 필요시 인자만 살짝 바꿔서 재사용.
     """
     if symbols is None:
-        symbols = ("BTCUSDT", "ETHUSDT", "XAUTUSDT")
+        symbols = ("BTCUSDT", "ETHUSDT")
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스

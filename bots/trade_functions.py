@@ -113,7 +113,6 @@ def upload_signal(redis_client, sig: Dict[str, Any], namespace: Optional[str] = 
 
     value = json.dumps(sig, ensure_ascii=False, separators=(",", ":"))
 
-    # 1) 기존 글로벌 키(그대로 유지)
     redis_client.hset("trading:signal", field, value)
 
     # 2) 네임스페이스별 키(플랫폼별 분리용)
