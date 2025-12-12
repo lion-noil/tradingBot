@@ -1,4 +1,4 @@
-# app/main.py
+# app/main_only_bybit.py
 
 import sys
 from typing import Literal
@@ -13,20 +13,15 @@ if sys.platform.startswith("win"):
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-
 from asyncio import Queue
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_bybit_config, make_mt5_signal_config
+from bots.trade_config import make_bybit_config
 from utils.logger import setup_logger
 
-# ── 거래소 컨트롤러들 ───────────────────────────────────
+# ── Bybit 컨트롤러들 ───────────────────────────────────
 from controllers.bybit.bybit_ws_controller import BybitWebSocketController
 from controllers.bybit.bybit_rest_controller import BybitRestController
-
-from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
-from controllers.mt5.mt5_rest_controller import Mt5RestController
-
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -54,7 +49,7 @@ class BurstWarningTerminator(logging.Handler):
         self._ts = deque()
         self._lock = threading.Lock()
         self._armed = True
-        logging.captureWarnings(True)  # warnings.warn 도 logging으로 보냄
+        logging.captureWarnings(True)
 
     def emit(self, record: logging.LogRecord):
         if record.levelno < logging.WARNING or not self._armed:
@@ -75,7 +70,6 @@ class BurstWarningTerminator(logging.Handler):
                 self._shutdown()
 
     def _shutdown(self):
-        # uvicorn 그레이스풀 셧다운 유도 (SIGINT)
         def _kill():
             try:
                 os.kill(os.getpid(), signal.SIGINT)
@@ -93,7 +87,6 @@ class BurstWarningTerminator(logging.Handler):
 
 
 # ── 로거 설정 ───────────────────────────────────
-
 system_logger = setup_logger(
     "system",
     logger_level=logging.DEBUG,
@@ -130,16 +123,10 @@ bot_bybit: TradeBot | None = None
 bybit_ws_controller: BybitWebSocketController | None = None
 bybit_rest_controller: BybitRestController | None = None
 
-# MT5용 봇 & 컨트롤러
-bot_mt5: TradeBot | None = None
-mt5_ws_controller: Mt5WebSocketController | None = None
-mt5_rest_controller: Mt5RestController | None = None
-
 
 async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
     """
     워밍업 동안 WS에서 직접 가격을 읽어 JumpDetector에 채운다.
-    bot / ws / 이름을 파라미터로 받아서 공용으로 사용.
     """
     MIN_TICKS = bot.jump.history_num
 
@@ -168,10 +155,8 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
 
 
 async def bot_loop(bot: TradeBot, ws, name: str):
-    # 1) 워밍업: 가격 샘플이 충분히 쌓일 때까지 대기
     await warmup_with_ws_prices(bot, ws, name)
 
-    # 2) 메인 루프
     while True:
         try:
             await bot.run_once()
@@ -184,15 +169,17 @@ async def bot_loop(bot: TradeBot, ws, name: str):
 @app.on_event("startup")
 async def startup_event():
     global bot_bybit, bybit_ws_controller, bybit_rest_controller
-    global bot_mt5, mt5_ws_controller, mt5_rest_controller
 
-    system_logger.debug("🚀 FastAPI 기반 봇 서버 시작")
+    system_logger.debug("🚀 FastAPI 기반 봇 서버 시작 (BYBIT ONLY)")
 
     # ── Bybit 설정 ───────────────────────────────
     cfg_bybit = make_bybit_config()  # TradeConfig(name="bybit", ...)
 
-    # TradeConfig에 symbols 필드가 있으면 우선 사용, 없으면 기본값
-    symbols_bybit = tuple(getattr(cfg_bybit, "symbols", None))
+    # TradeConfig에 symbols 필드가 있으면 우선 사용, 없으면 기본값(빈 튜플 방지)
+    symbols_bybit = getattr(cfg_bybit, "symbols", None)
+    if symbols_bybit is None:
+        symbols_bybit = ()
+    symbols_bybit = tuple(symbols_bybit)
 
     system_logger.debug(f"🔧 Bybit symbols={symbols_bybit}, config={cfg_bybit.as_dict()}")
 
@@ -209,43 +196,15 @@ async def startup_event():
         system_logger=system_logger,
         trading_logger=trading_logger,
         symbols=symbols_bybit,
-        # Bybit는 기본적으로 주문 모드 → config.signal_only 없으면 False
         signal_only=getattr(cfg_bybit, "signal_only", False),
         config=cfg_bybit,
     )
 
-    # ── MT5 설정 ────────────────────────────────
-    cfg_mt5 = make_mt5_signal_config()  # TradeConfig(name="mt5_signal", signal_only=True, ...)
-
-    # config 안에 symbols 있으면 사용, 없으면 테스트용 기본값
-    symbols_mt5 = tuple(getattr(cfg_mt5, "symbols", None) or ("US100", "XAUUSD"))
-
-    system_logger.debug(f"🔧 MT5 symbols={symbols_mt5}, config={cfg_mt5.as_dict()}")
-
-    mt5_ws_controller = Mt5WebSocketController(
-        symbols=symbols_mt5,
-        system_logger=system_logger,
-    )
-    mt5_rest_controller = Mt5RestController(system_logger=system_logger)
-
-    bot_mt5 = TradeBot(
-        mt5_ws_controller,
-        mt5_rest_controller,
-        manual_queue,
-        system_logger=system_logger,
-        trading_logger=trading_logger,
-        symbols=symbols_mt5,
-        # MT5는 기본 시그널-only → config.signal_only 없으면 True
-        signal_only=getattr(cfg_mt5, "signal_only", True),
-        config=cfg_mt5,
-    )
-
-    # ── 봇 루프 실행 (Bybit + MT5 둘 다) ─────────────────
+    # ── 봇 루프 실행 (Bybit만) ─────────────────────
     asyncio.create_task(bot_loop(bot_bybit, bybit_ws_controller, "BYBIT"))
-    asyncio.create_task(bot_loop(bot_mt5, mt5_ws_controller, "MT5"))
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("app.main_only_bybit:app", host="127.0.0.1", port=8000, reload=False)
