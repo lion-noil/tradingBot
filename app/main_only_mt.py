@@ -182,7 +182,7 @@ async def startup_event():
     cfg_mt5 = make_mt5_signal_config()
 
     # 심볼은 일단 하드코딩 (테스트용)
-    symbols_mt5 = ("US100", "XAUUSD")
+    symbols_mt5 = getattr(cfg_mt5, "symbols", None)
     system_logger.debug(f"🔧 MT5 symbols={symbols_mt5}, config={cfg_mt5.as_dict()}")
 
     mt5_ws_controller = Mt5WebSocketController(
