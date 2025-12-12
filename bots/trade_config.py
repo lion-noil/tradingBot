@@ -90,7 +90,7 @@ def make_mt5_signal_config(
     *,
     indicator_min_thr: float = 0.004,
     indicator_max_thr: float = 0.04,
-    target_cross: int = 10,
+    target_cross: int = 5,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
 ) -> "TradeConfig":

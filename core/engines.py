@@ -69,29 +69,51 @@ class CandleEngine:
             st.c = price
 
     def apply_confirmed_kline(self, symbol: str, k: Dict[str, Any]):
-        """
-        Bybit/MT5 kline 확정 봉을 candle deque에 반영.
-        (MT5에서 쉬는 시간에는 high/low/close None일 수 있음)
-        """
         self.ensure_symbol(symbol)
         minute = int(int(k["start"]) // 1000) // 60
 
-        # MT5 쪽에서 쉬는 시간 캔들은 high/low/close 가 None일 수 있으므로 그대로 넣어둔다.
+        dq = self.candles[symbol]
+
+        # 직전 close 확보
+        prev_close = dq[-1].get("close") if dq else None
+        prev_minute = dq[-1].get("minute") if dq else None
+
+        # ✅ (1) minute 자체가 점프한 경우: 중간 분을 prev_close로 채움
+        if prev_close is not None and prev_minute is not None and minute > prev_minute + 1:
+            for m in range(prev_minute + 1, minute):
+                dq.append({
+                    "open": float(prev_close),
+                    "high": float(prev_close),
+                    "low": float(prev_close),
+                    "close": float(prev_close),
+                    "minute": int(m),
+                })
+
+        o = k.get("open");
+        h = k.get("high");
+        l = k.get("low");
+        c = k.get("close")
+
+        # ✅ (2) 값이 None인 쉬는시간 캔들: prev_close로 평평하게 채움
+        if (h is None or l is None or c is None) and prev_close is not None:
+            o = prev_close
+            h = prev_close
+            l = prev_close
+            c = prev_close
+
         item = {
-            "open": float(k["open"]) if k.get("open") is not None else None,
-            "high": float(k["high"]) if k.get("high") is not None else None,
-            "low": float(k["low"]) if k.get("low") is not None else None,
-            "close": float(k["close"]) if k.get("close") is not None else None,
+            "open": float(o) if o is not None else None,
+            "high": float(h) if h is not None else None,
+            "low": float(l) if l is not None else None,
+            "close": float(c) if c is not None else None,
             "minute": minute,
         }
 
-        dq = self.candles[symbol]
-        if dq and isinstance(dq[-1], dict) and dq[-1].get("minute") == minute:
+        if dq and dq[-1].get("minute") == minute:
             dq[-1] = item
         else:
             dq.append(item)
 
-        # 진행중 state가 같은 minute이면 무효화
         st = self._state.get(symbol)
         if st and st.minute == minute:
             self._state[symbol] = None
@@ -165,16 +187,18 @@ class IndicatorEngine:
 
         # hlc3: 거래 있는 구간만 값, 쉬는 시간은 None
         hlc3: List[Optional[float]] = []
+        last = None
         for c in candles_list:
             h = c.get("high")
             l = c.get("low")
             cl = c.get("close")
-
             if h is None or l is None or cl is None:
-                # 장 쉬는 시간 → 이 구간은 지표 계산 대상에서 제외하기 위해 None
-                hlc3.append(None)
+                # ✅ None이면 직전 값으로 채움(있을 때만)
+                hlc3.append(last)
             else:
-                hlc3.append((float(h) + float(l) + float(cl)) / 3.0)
+                v = (float(h) + float(l) + float(cl)) / 3.0
+                hlc3.append(v)
+                last = v
 
         ma100s = self.ma100_list(hlc3)
         if not ma100s:

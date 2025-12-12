@@ -322,14 +322,21 @@ class TradeBot:
 
     async def _process_entries(self, symbol: str, price: float) -> None:
         """6) 진입 시그널(숏/롱) 처리"""
-        total_balance = self.asset['wallet'].get('USDT', 0) or 0
+
+        wallet = (self.asset.get("wallet") or {})
+        positions_by_symbol = (self.asset.get("positions") or {})
+        pos = (positions_by_symbol.get(symbol) or {})
+
+        # ✅ signal_only면 레버리지 제한 무시(무조건 통과)
+        allow_entry = True
+        total_balance = float(wallet.get("USDT") or 0.0)
 
         # --- Short 진입 ---
         recent_short_signal_time = self.entry_store.get(symbol, "SHORT")
-        short_amt = abs(float((self.asset['positions'][symbol].get('SHORT') or {}).get('qty') or 0))
-        short_notional = short_amt * price
-        short_eff_x = (short_notional / total_balance) if total_balance else 0.0
-        if short_eff_x < self.max_effective_leverage :
+        short_amt = abs(float(((pos.get("SHORT") or {}).get("qty")) or 0.0))
+        short_eff_x = (short_amt * price / total_balance) if (total_balance and not self.signal_only) else 0.0
+
+        if allow_entry and (self.signal_only or short_eff_x < self.max_effective_leverage):
             sig_s = get_short_entry_signal(
                 price=price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
                 ma_threshold=self.ma_threshold[symbol],
@@ -341,15 +348,14 @@ class TradeBot:
                 sig_dict = self._build_signal_dict(sig_s, symbol)
                 self._log_and_upload_signal(sig_dict)
                 self.entry_store.set(symbol, "SHORT", now_ms)
-                await self._open_position(symbol, "SHORT", price)
+                await self._open_position(symbol, "SHORT", price)  # open은 내부 가드로 막기
 
         # --- Long 진입 ---
         recent_long_signal_time = self.entry_store.get(symbol, "LONG")
-        long_amt = abs(float((self.asset['positions'][symbol].get('LONG') or {}).get('qty') or 0))
-        long_notional = long_amt * price
-        long_eff_x = (long_notional / total_balance) if total_balance else 0.0
+        long_amt = abs(float(((pos.get("LONG") or {}).get("qty")) or 0.0))
+        long_eff_x = (long_amt * price / total_balance) if (total_balance and not self.signal_only) else 0.0
 
-        if long_eff_x  < self.max_effective_leverage :
+        if allow_entry and (self.signal_only or long_eff_x < self.max_effective_leverage):
             sig_l = get_long_entry_signal(
                 price=price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
                 ma_threshold=self.ma_threshold[symbol],
@@ -389,6 +395,11 @@ class TradeBot:
         )
 
     async def _close_position(self, symbol: str, side: str, qty: float) -> None:
+        if self.signal_only:
+            if self.system_logger:
+                self.system_logger.info(f"[signal_only] CLOSE 스킵 ({symbol} {side} qty={qty})")
+            return
+
         await self.exec.execute_and_sync(
             self.rest.close_market, self.asset['positions'][symbol][side], symbol,
             symbol, side=side, qty=qty
@@ -396,7 +407,11 @@ class TradeBot:
         self.asset = self.rest.getNsav_asset(asset=self.asset, symbol=symbol, save_redis=True)
 
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
-        # side: "LONG" | "SHORT"
+        if self.signal_only:
+            if self.system_logger:
+                self.system_logger.info(f"[signal_only] OPEN 스킵 ({symbol} {side} price={price})")
+            return
+
         await self.exec.execute_and_sync(
             self.rest.open_market, self.asset['positions'][symbol][side.upper()], symbol,
             symbol, side, price, self.entry_percent, self.asset['wallet']
