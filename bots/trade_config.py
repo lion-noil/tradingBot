@@ -100,7 +100,7 @@ def make_mt5_signal_config(
     - signal_only=True 로 고정
     """
     if symbols is None:
-        symbols = ("US100", "XAUUSD")
+        symbols = ("US100", "JP225","GER40","CHINA50","XAUUSD","WTI","XNGUSD")
 
     cfg = TradeConfig(
         name="mt5_signal",           # 🔹 MT5 시그널용 네임스페이스
