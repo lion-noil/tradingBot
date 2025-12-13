@@ -126,7 +126,7 @@ class TradeBot:
                 ma_threshold_map=self.ma_threshold,
                 thr_quantized_map=self._thr_quantized,
                 momentum_threshold_map=self.momentum_threshold,
-                prev_close_map=self.prev,
+                prev3_candle_map=self.prev,
                 system_logger=self.system_logger,
                 redis_client=redis_client,
                 namespace=self.namespace,
@@ -239,7 +239,7 @@ class TradeBot:
                     ma_threshold_map=self.ma_threshold,
                     thr_quantized_map=self._thr_quantized,
                     momentum_threshold_map=self.momentum_threshold,
-                    prev_close_map=self.prev,
+                    prev3_candle_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
                     namespace=self.namespace
@@ -272,7 +272,7 @@ class TradeBot:
                     ma_threshold_map=self.ma_threshold,
                     thr_quantized_map=self._thr_quantized,
                     momentum_threshold_map=self.momentum_threshold,
-                    prev_close_map=self.prev,
+                    prev3_candle_map=self.prev,
                     system_logger=self.system_logger,
                     redis_client=redis_client,
                     namespace=self.namespace
@@ -338,7 +338,7 @@ class TradeBot:
 
         if allow_entry and (self.signal_only or short_eff_x < self.max_effective_leverage):
             sig_s = get_short_entry_signal(
-                price=price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
+                price=price, ma100=self.now_ma100[symbol], prev3_candle=self.prev[symbol],
                 ma_threshold=self.ma_threshold[symbol],
                 momentum_threshold=self.momentum_threshold[symbol],
                 recent_entry_time=recent_short_signal_time, reentry_cooldown_sec=60 * 60
@@ -357,7 +357,7 @@ class TradeBot:
 
         if allow_entry and (self.signal_only or long_eff_x < self.max_effective_leverage):
             sig_l = get_long_entry_signal(
-                price=price, ma100=self.now_ma100[symbol], prev=self.prev[symbol],
+                price=price, ma100=self.now_ma100[symbol], prev3_candle=self.prev[symbol],
                 ma_threshold=self.ma_threshold[symbol],
                 momentum_threshold=self.momentum_threshold[symbol],
                 recent_entry_time=recent_long_signal_time, reentry_cooldown_sec=60 * 60

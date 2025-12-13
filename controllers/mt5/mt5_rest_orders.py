@@ -1,0 +1,431 @@
+# controllers/mt5/mt5_rest_orders.py
+import os
+import json
+import time
+from datetime import datetime, timezone, timedelta
+
+import MetaTrader5 as mt5
+
+KST = timezone(timedelta(hours=9))
+
+
+class Mt5RestOrdersMixin:
+    """
+    MT5 터미널(로컬 MetaTrader5) 기반 주문/체결 기록 관리
+
+    ✅ 현실적인 운영 전략(중요):
+    - 브로커/심볼에 따라 MT5 Python API의 history_deals_get/history_orders_get 결과가
+      0이거나 symbol이 비는 경우가 있음(너 지금 케이스).
+    - 그래서 "주문 성공 시점에 로컬 파일 기록(=mt5_rest_trade.py에서 기록)"을 진실로 두고,
+      sync는 MT5 히스토리가 잡히면 보강하는 형태로 동작하도록 한다.
+    """
+
+    # -------------------------
+    # 내부: MT5 연결 보장
+    # -------------------------
+    def _ensure_mt5(self) -> bool:
+        if mt5.initialize():
+            return True
+        if getattr(self, "system_logger", None):
+            self.system_logger.error(f"[ERROR] MT5 initialize failed: {mt5.last_error()}")
+        return False
+
+    # -------------------------
+    # Path helpers
+    # -------------------------
+    def _fp_orders(self, symbol: str) -> str:
+        return f"{symbol}_orders.json"
+
+    # -------------------------
+    # 로컬 주문 기록 로드/저장
+    # -------------------------
+    def load_orders(self, symbol: str):
+        path = self._fp_orders(symbol)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else []
+        except Exception as e:
+            if getattr(self, "system_logger", None):
+                self.system_logger.error(f"[MT5] 거래기록 로드 실패: {e}")
+            return []
+
+    def save_orders(self, symbol: str, trades):
+        path = self._fp_orders(symbol)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(trades, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            if getattr(self, "system_logger", None):
+                self.system_logger.error(f"[MT5][ERROR] 거래기록 저장 실패: {e}")
+
+    def append_order(self, symbol: str, trade: dict):
+        """
+        trade 하나를 로컬 파일에 append (중복 방지)
+        """
+        try:
+            local_orders = self.load_orders(symbol)
+            existing_ids = {str(o.get("id")) for o in local_orders}
+            if str(trade.get("id")) in existing_ids:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.debug(
+                        f"⏩ [MT5] 이미 존재 trade id={trade.get('id')} ({symbol}), 스킵"
+                    )
+                return local_orders
+
+            local_orders.append(trade)
+            self.save_orders(symbol, local_orders)
+            if getattr(self, "system_logger", None):
+                self.system_logger.debug(f"📥 [MT5] ({symbol}) 신규 trade {trade.get('id')} 저장됨")
+            return local_orders
+        except Exception as e:
+            if getattr(self, "system_logger", None):
+                self.system_logger.error(f"[MT5][ERROR] 거래기록 append 실패: {e}")
+            return self.load_orders(symbol)
+
+    # -------------------------
+    # 내부: 심볼 매칭(브로커 suffix 대응)  ✅ 더 널널하게
+    # -------------------------
+    def _match_symbol(self, deal_symbol: str, target_symbol: str) -> bool:
+        ds = (deal_symbol or "").upper()
+        ts = (target_symbol or "").upper()
+        if not ds or not ts:
+            return False
+
+        # 완전 동일
+        if ds == ts:
+            return True
+        # 접두/접미/포함 (BTCUSDm, BTCUSD.r, BTCUSD-ECN, XBTCUSD 같은 케이스까지)
+        if ds.startswith(ts) or ds.endswith(ts) or (ts in ds):
+            return True
+        return False
+
+    # -------------------------
+    # deal -> trade dict 변환
+    # -------------------------
+    def _deal_to_trade(self, d) -> dict | None:
+        """
+        MT5 deal(namedtuple) -> 공통 trade dict로 변환
+        """
+        try:
+            dtype = int(getattr(d, "type", -1))
+            entry = int(getattr(d, "entry", -1))
+            volume = float(getattr(d, "volume", 0.0) or 0.0)
+
+            # ✅ volume 0인 deal은 보통 balance/credit/commission 성격 -> trade로 취급하지 않음
+            if volume <= 0:
+                return None
+
+            # 방향
+            if dtype == mt5.DEAL_TYPE_BUY:
+                position_side = "LONG"
+            elif dtype == mt5.DEAL_TYPE_SELL:
+                position_side = "SHORT"
+            else:
+                return None
+
+            # OPEN/CLOSE 판정
+            if entry in (mt5.DEAL_ENTRY_IN, mt5.DEAL_ENTRY_INOUT):
+                trade_type = "OPEN"
+            elif entry == mt5.DEAL_ENTRY_OUT:
+                trade_type = "CLOSE"
+            else:
+                trade_type = "OPEN"
+
+            t_msc = getattr(d, "time_msc", None)
+            if t_msc is None:
+                ts_ms = int(getattr(d, "time", 0) or 0) * 1000
+            else:
+                ts_ms = int(t_msc)
+
+            price = float(getattr(d, "price", 0.0) or 0.0)
+            commission = float(getattr(d, "commission", 0.0) or 0.0)
+            swap = float(getattr(d, "swap", 0.0) or 0.0)
+            fee = commission + swap
+
+            return {
+                "id": str(getattr(d, "ticket", "")),          # deal ticket
+                "symbol": str(getattr(d, "symbol", "")),
+                "side": position_side,
+                "type": trade_type,
+                "qty": volume,
+                "price": price,
+                "time": ts_ms,
+                "time_str": datetime.fromtimestamp(ts_ms / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S"),
+                "fee": float(fee),
+                "order_id": str(getattr(d, "order", "")),     # order ticket
+                "position_id": str(getattr(d, "position_id", "")),
+                "profit": float(getattr(d, "profit", 0.0) or 0.0),
+            }
+        except Exception:
+            return None
+
+    # -------------------------
+    # history_deals_get/orders_get 안전 호출 ✅ 네 콘솔 테스트 방식과 동일하게 naive로만
+    # -------------------------
+    def _history_deals_get_safe(self, date_from: datetime, date_to: datetime):
+        deals = mt5.history_deals_get(date_from, date_to)
+        if deals is None:
+            return []
+        return list(deals)
+
+    def _history_orders_get_safe(self, date_from: datetime, date_to: datetime):
+        orders = mt5.history_orders_get(date_from, date_to)
+        if orders is None:
+            return []
+        return list(orders)
+
+    # -------------------------
+    # MT5에서 체결내역 동기화
+    # -------------------------
+    def sync_orders_from_mt5(self, symbol: str = "EURUSD", lookback_days: int = 30, debug: bool = True):
+        """
+        ✅ 동작 원칙
+        - 로컬 파일이 기본(진실)
+        - MT5 history_deals_get에서 '실거래 deal(volume>0, BUY/SELL)'이 잡히면 로컬에 병합
+        - MT5에서 아무것도 안 잡히면 로컬을 그대로 반환 (0으로 덮어쓰지 않음)
+        """
+        sym = (symbol or "").upper()
+        if not sym:
+            return []
+
+        local_orders = self.load_orders(sym)
+        existing_ids = {str(o.get("id")) for o in local_orders}
+
+        if not self._ensure_mt5():
+            return local_orders
+
+        # ✅ naive(local) datetime 사용 (너 콘솔 테스트와 동일)
+        date_to = datetime.now()
+        date_from = date_to - timedelta(days=int(lookback_days))
+
+        deals = self._history_deals_get_safe(date_from, date_to)
+
+        if debug:
+            print(f"[DEBUG] history_deals_get total={len(deals)} range={date_from.isoformat()} ~ {date_to.isoformat()}")
+            # 최근 10개 원본 스냅샷(필터 전) - 실제로 symbol이 뭔지 확인용
+            if deals:
+                ds = sorted(deals, key=lambda d: int(getattr(d, "time_msc", 0) or 0), reverse=True)[:10]
+                for d in ds:
+                    print(
+                        "[DEBUG] raw_deal:",
+                        "ticket=", getattr(d, "ticket", None),
+                        "symbol=", repr(getattr(d, "symbol", None)),
+                        "type=", getattr(d, "type", None),
+                        "entry=", getattr(d, "entry", None),
+                        "volume=", getattr(d, "volume", None),
+                        "price=", getattr(d, "price", None),
+                        "order=", getattr(d, "order", None),
+                        "time_msc=", getattr(d, "time_msc", None),
+                    )
+
+        # ✅ 심볼 필터
+        deals_sym = [d for d in deals if self._match_symbol(getattr(d, "symbol", ""), sym)]
+        if debug:
+            print(f"[DEBUG] filtered deals for {sym} => {len(deals_sym)}")
+
+        appended = 0
+
+        if deals_sym:
+            deals_sym.sort(key=lambda d: int(getattr(d, "time_msc", 0) or int(getattr(d, "time", 0) or 0) * 1000))
+            for d in deals_sym:
+                trade = self._deal_to_trade(d)
+                if not trade:
+                    continue
+                if str(trade["id"]) in existing_ids:
+                    continue
+                local_orders.append(trade)
+                existing_ids.add(str(trade["id"]))
+                appended += 1
+
+        # ✅ MT5에서 아무것도 못 건지면: 로컬 그대로(덮어쓰기 금지)
+        if appended > 0:
+            local_orders.sort(key=lambda x: x.get("time", 0))
+            self.save_orders(sym, local_orders)
+            if getattr(self, "system_logger", None):
+                self.system_logger.debug(f"📥 [MT5] ({sym}) 신규 deal {appended}건 저장됨")
+        else:
+            if debug:
+                print("[DEBUG] no new mt5 deals appended. keep local_orders as-is.")
+
+        return local_orders
+
+    # -------------------------
+    # 특정 orderId(ticket)로 체결 조회
+    # -------------------------
+    def get_trade_w_order_id(self, symbol: str = "EURUSD", order_id=None, debug: bool = True):
+        """
+        ✅ 우선순위:
+        1) 로컬 파일에서 order_id 매칭 찾아서 반환
+        2) MT5 history_deals_get에서 deal.order == order_id 찾아서 반환
+        """
+        sym = (symbol or "").upper()
+        oid = str(order_id) if order_id is not None else ""
+
+        if not oid:
+            if getattr(self, "system_logger", None):
+                self.system_logger.error("[MT5] ❌ order_id가 필요합니다.")
+            return []
+
+        # 1) local 먼저
+        try:
+            local_orders = self.load_orders(sym)
+            for x in reversed(local_orders):
+                if str(x.get("order_id", "")) == oid:
+                    return x
+        except Exception:
+            pass
+
+        if not self._ensure_mt5():
+            return []
+
+        # 2) MT5 deals에서 찾기 (naive 범위)
+        t1 = time.time()
+        exec_timeout_sec = 10
+        poll_interval_sec = 1
+
+        while True:
+            date_to = datetime.now()
+            date_from = date_to - timedelta(days=30)
+
+            deals = self._history_deals_get_safe(date_from, date_to)
+            matched = []
+
+            for d in deals:
+                if not self._match_symbol(getattr(d, "symbol", ""), sym):
+                    continue
+                if str(getattr(d, "order", "")) != oid:
+                    continue
+                trade = self._deal_to_trade(d)
+                if trade:
+                    matched.append(trade)
+
+            if matched:
+                matched.sort(key=lambda x: x.get("time", 0))
+                return matched[0]
+
+            if time.time() - t1 > exec_timeout_sec:
+                if debug:
+                    print(f"[DEBUG] get_trade_w_order_id timeout. sym={sym} oid={oid} deals_total={len(deals)}")
+                break
+
+            time.sleep(poll_interval_sec)
+
+        return []
+
+    # -------------------------
+    # 엔트리 빌드 (포지션 구성용)
+    # -------------------------
+    def _build_entries_from_orders(self, local_orders: list, symbol: str, direction: str, target_qty: float):
+        if not target_qty or target_qty <= 0:
+            return []
+
+        sym = (symbol or "").upper()
+        if not sym:
+            return []
+
+        open_orders = [
+            o for o in (local_orders or [])
+            if self._match_symbol(o.get("symbol", ""), sym)
+            and o.get("side") == direction
+            and o.get("type") == "OPEN"
+        ]
+        open_orders.sort(key=lambda x: x.get("time", 0), reverse=True)
+
+        remaining = float(target_qty)
+        picked = []
+        for o in open_orders:
+            if remaining <= 1e-12:
+                break
+
+            this_qty = float(o.get("qty", 0.0) or 0.0)
+            use_qty = min(this_qty, remaining)
+
+            ts_ms = int(o.get("time", 0) or 0)
+            picked.append(
+                {
+                    "ts": ts_ms,
+                    "qty": use_qty,
+                    "price": float(o.get("price", 0.0) or 0.0),
+                    "ts_str": datetime.fromtimestamp(ts_ms / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+            remaining -= use_qty
+
+        picked.sort(key=lambda x: x["ts"])
+        return picked
+
+
+if __name__ == "__main__":
+    from pprint import pprint
+
+    try:
+        from app import config as cfg  # noqa: F401
+    except Exception:
+        cfg = None
+
+    TEST_SYMBOL = os.getenv("MT5_TEST_SYMBOL", "BTCUSD").upper()
+    LOOKBACK_DAYS = int(os.getenv("MT5_LOOKBACK_DAYS", "30"))
+    DEBUG = os.getenv("MT5_DEBUG", "1").strip().lower() in ("1", "true", "yes", "y", "on")
+
+    class _Tester(Mt5RestOrdersMixin):
+        system_logger = None
+
+    t = _Tester()
+
+    print("\n[0] SETTINGS")
+    print("TEST_SYMBOL:", TEST_SYMBOL)
+    print("LOOKBACK_DAYS:", LOOKBACK_DAYS)
+    print("DEBUG:", DEBUG)
+
+    print("\n[1] MT5 init check")
+    ok = t._ensure_mt5()
+    print("mt5 initialized:", ok)
+    if not ok:
+        raise SystemExit(1)
+
+    acc = mt5.account_info()
+    if acc:
+        print(
+            "LOGIN:", getattr(acc, "login", None),
+            "SERVER:", getattr(acc, "server", None),
+            "NAME:", getattr(acc, "name", None),
+        )
+
+    print("\n[2] load_orders (local file)")
+    local_before = t.load_orders(TEST_SYMBOL)
+    print("local count:", len(local_before))
+    if local_before:
+        print("local last:")
+        pprint(local_before[-1])
+
+    print("\n[3] sync_orders_from_mt5")
+    synced = t.sync_orders_from_mt5(TEST_SYMBOL, lookback_days=LOOKBACK_DAYS, debug=DEBUG)
+    print("synced(local merged) count:", len(synced))
+    if synced:
+        print("synced first:")
+        pprint(synced[0])
+        print("synced last:")
+        pprint(synced[-1])
+
+    print("\n[4] get_trade_w_order_id (pick one order_id from synced if possible)")
+    picked_order_id = None
+    for item in reversed(synced or []):
+        oid = item.get("order_id")
+        if oid and str(oid) != "0":
+            picked_order_id = str(oid)
+            break
+
+    if not picked_order_id:
+        print("No order_id found in synced trades.")
+        print("→ 로컬 파일에 order_id가 들어있는 OPEN 기록이 있어야 테스트가 의미 있어요.")
+        print("→ (지금은 mt5_rest_trade.py가 성공 시 order_id를 넣어주니, 그걸로 저장된 기록이면 OK)")
+    else:
+        print("picked order_id:", picked_order_id)
+        trade = t.get_trade_w_order_id(TEST_SYMBOL, order_id=picked_order_id, debug=DEBUG)
+        print("trade from order_id:")
+        pprint(trade)
+
+    print("\nDONE")

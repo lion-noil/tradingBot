@@ -1,7 +1,8 @@
 # controllers/mt5/mt5_rest_market.py
-from typing import Any, Dict, List
+from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional
+from datetime import timezone, timedelta
 
 KST = timezone(timedelta(hours=9))
 
@@ -15,21 +16,13 @@ def _safe_int(x):
 
 class Mt5RestMarketMixin:
     """
-    시세/캔들/시장 관련 기능 (BybitRestMarketMixin 포지션)
-    현재는 캔들(update_candles)만 구현.
+    시세/캔들/시장 관련 기능 (가격은 URL 서버로 계속 받는 버전)
+    - update_candles: ONLINE(price) 서버 사용
     """
 
     def update_candles(self, candles: list, symbol: str | None = None, count: int | None = None):
         """
-        BybitRestMarketMixin.update_candles 와 같은 스타일로 만든 MT5 버전.
-
         - 서버 엔드포인트: GET /v5/market/candles/with-gaps
-        - 쿼리:
-            symbol: 심볼 (예: US100)
-            interval: "1" (1분봉) 또는 "D"
-            limit: 요청 개수
-            end: end_ms (가장 최근 바의 끝 기준)
-
         - 응답:
             {
               "retCode": 0,
@@ -40,20 +33,7 @@ class Mt5RestMarketMixin:
                 "nextCursor": 1710000000000
               }
             }
-
-        candles 리스트는 아래 형태의 dict 들로 채워진다:
-            {
-                "start": ms,
-                "open": float 또는 None,
-                "high": float 또는 None,
-                "low":  float 또는 None,
-                "close": float 또는 None,
-                "volume": float
-            }
-
-        ※ 1분봉 with-gaps 특성상 OHLC 가 None 인 "빈 캔들"도 포함될 수 있음.
         """
-
         try:
             symbol = symbol or "US100"
             sym = symbol.upper()
@@ -61,21 +41,23 @@ class Mt5RestMarketMixin:
 
             target = count if (isinstance(count, int) and count > 0) else 1000
             all_candles: List[Dict[str, Any]] = []
-            end_ms: int | None = None  # 페이징용 end 파라미터 (ms)
+            end_ms: Optional[int] = None
+
+            seen_starts: set[int] = set()  # 중복 제거용
 
             while len(all_candles) < target:
                 req_limit = min(1000, target - len(all_candles))
 
                 params: Dict[str, Any] = {
                     "symbol": sym,
-                    "interval": "1",  # 기본은 1분봉 (필요하면 파라미터로 빼도 됨)
+                    "interval": "1",
                     "limit": req_limit,
                 }
                 if end_ms is not None:
                     params["end"] = int(end_ms)
 
-                # Base 에서 제공하는 공통 요청 사용
-                data = self._request("GET", endpoint, params=params)
+                # ✅ ONLINE(price) 서버로 호출 (Mixin을 쓰는 상위 클래스가 _request 제공해야 함)
+                data = self._request("GET", endpoint, params=params, use="price")
 
                 if not isinstance(data, dict):
                     raise RuntimeError(f"unexpected JSON root: {type(data).__name__}")
@@ -92,11 +74,9 @@ class Mt5RestMarketMixin:
                     raise RuntimeError(f"'list' is {type(rows).__name__}, not list")
 
                 if not rows:
-                    # 더 이상 페이징할 데이터 없음
                     break
 
-                # rows 는 [[ms,o,h,l,c,vol], ...] 형태
-                # 안전하게 정렬
+                # 안전 정렬
                 rows.sort(key=lambda x: x[0])
 
                 chunk: List[Dict[str, Any]] = []
@@ -104,13 +84,12 @@ class Mt5RestMarketMixin:
                     try:
                         if not isinstance(c, (list, tuple)) or len(c) < 6:
                             continue
-                        ts_ms = _safe_int(c[0])
 
-                        o = c[1]
-                        h = c[2]
-                        l = c[3]
-                        close = c[4]
-                        vol = c[5]
+                        ts_ms = _safe_int(c[0])
+                        if ts_ms in seen_starts:
+                            continue
+
+                        o, h, l, close, vol = c[1], c[2], c[3], c[4], c[5]
 
                         item = {
                             "start": ts_ms,
@@ -121,12 +100,12 @@ class Mt5RestMarketMixin:
                             "volume": float(vol or 0.0),
                         }
                         chunk.append(item)
+                        seen_starts.add(ts_ms)
                     except Exception:
                         continue
 
                 if chunk:
-                    # Bybit 버전처럼 "옛날 → 최신" 순서 유지:
-                    # 새로 가져온 chunk(과거 구간)를 앞에 붙인다.
+                    # 과거 chunk를 앞에 붙여 "옛날→최신" 유지
                     all_candles = chunk + all_candles
                 else:
                     break
@@ -140,11 +119,9 @@ class Mt5RestMarketMixin:
                 except Exception:
                     break
 
-                # 서버가 limit 보다 적게 주면 마지막 페이지일 가능성 있음
                 if len(rows) < req_limit:
                     break
 
-            # count 지정 시, 최신 기준으로 잘라내기
             if isinstance(count, int) and count > 0:
                 all_candles = all_candles[-count:]
 
@@ -165,3 +142,65 @@ class Mt5RestMarketMixin:
         except Exception as e:
             if getattr(self, "system_logger", None):
                 self.system_logger.warning(f"❌ [MT5] ({symbol}) 캔들 요청 실패: {e}")
+
+
+# -------------------------
+# __main__ 테스트 러너
+# -------------------------
+if __name__ == "__main__":
+    import os
+    import requests
+    from pprint import pprint
+
+    # ✅ 프로젝트 환경 로드 (.env 가드 포함)
+    from app import config as cfg
+
+    TEST_SYMBOL = os.getenv("MT5_TEST_SYMBOL", getattr(cfg, "MT5_TEST_SYMBOL", "US100"))
+    TEST_COUNT = int(os.getenv("MT5_TEST_COUNT", "200"))
+
+    class _Tester(Mt5RestMarketMixin):
+        system_logger = None  # 필요하면 logger 붙이기
+
+        def _request(self, method: str, endpoint: str, params: dict | None = None, use: str = "price"):
+            """
+            이 파일 단독 테스트를 위한 최소 구현.
+            실제 프로젝트에선 공통 베이스/믹스인이 제공하는 _request를 쓰면 됨.
+            """
+            if use != "price":
+                raise RuntimeError("이 테스트는 price(use='price')만 지원")
+
+            base = getattr(cfg, "MT5_PRICE_REST_URL", None)
+            if not base:
+                raise RuntimeError("MT5_PRICE_REST_URL이 config/.env에 없습니다.")
+            url = base.rstrip("/") + endpoint
+
+            r = requests.request(method, url, params=params, timeout=10)
+            r.raise_for_status()
+            return r.json()
+
+    t = _Tester()
+
+    print("\n[0] CONFIG")
+    print("MT5_PRICE_REST_URL:", getattr(cfg, "MT5_PRICE_REST_URL", None))
+    print("TEST_SYMBOL:", TEST_SYMBOL)
+    print("TEST_COUNT:", TEST_COUNT)
+
+    candles: list = []
+    print("\n[1] update_candles()")
+    t.update_candles(candles, symbol=TEST_SYMBOL, count=TEST_COUNT)
+
+    print("\n[2] RESULT CHECK")
+    print("candles len:", len(candles))
+    if candles:
+        print("first:")
+        pprint(candles[0])
+        print("last:")
+        pprint(candles[-1])
+
+        # 간단 무결성 체크
+        bad = [c for c in candles if c.get("start") is None or c.get("close") is None]
+        if bad:
+            print(f"[WARN] invalid rows: {len(bad)} (showing 1)")
+            pprint(bad[0])
+
+    print("\nDONE")

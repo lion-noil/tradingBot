@@ -77,7 +77,8 @@ class BybitRestOrdersMixin:
             "limit": limit,
         }
         params_str = "&".join([f"{k}={params_dict[k]}" for k in sorted(params_dict)])
-        url = f"{self.base_url}{endpoint}?{params_str}"
+        url = f"{self.trade_base_url}{endpoint}?{params_str}"
+
 
         def _fetch_once():
             # 매 호출마다 재서명(타임스탬프 최신화)
@@ -202,7 +203,7 @@ class BybitRestOrdersMixin:
         # 공통 GET 유틸
         def _fetch_once() -> list | None:
             params_str = "&".join([f"{k}={params_dict[k]}" for k in sorted(params_dict)])
-            url = f"{self.base_url}{endpoint}?{params_str}"
+            url = f"{self.trade_base_url}{endpoint}?{params_str}"
             headers = self._get_headers(method, endpoint, params=params_str, body="")
             try:
                 resp = requests.get(url, headers=headers, timeout=5)

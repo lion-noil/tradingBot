@@ -1,33 +1,34 @@
 # controllers/bybit/bybit_ws_controller.py
+
 import threading
 import time
 import json
 from websocket import WebSocketApp
+from app.config import BYBIT_PRICE_WS_URL
 
 
 class BybitWebSocketController:
     def __init__(self, symbols=("BTCUSDT",), system_logger=None):
+        if not BYBIT_PRICE_WS_URL:
+            raise RuntimeError("BYBIT_PRICE_WS_URL is missing (.env)")
+
         self.kline_interval = "1"  # "1" = 1분봉
-        self._last_kline: dict[tuple[str, str], dict] = {}  # {(symbol, interval): kline dict}
-        self._last_kline_confirmed: dict[tuple[str, str], dict] = {}  # 마지막으로 마감된 봉
+        self._last_kline: dict[tuple[str, str], dict] = {}
+        self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
 
         self.symbols = list(symbols)
         self.system_logger = system_logger
-        self.ws_url = "wss://stream.bybit.com/v5/public/linear"
+        self.ws_url = BYBIT_PRICE_WS_URL
 
-        # 공유 상태
         self._lock = threading.Lock()
         self.ws: WebSocketApp | None = None
         self._last_frame_monotonic = 0.0
 
-        # 시세/타임스탬프(스레드 안전)
         self._prices: dict[str, float] = {}
-        self._last_tick_monotonic: dict[str, float] = {}   # WS 신선도 판단용 (monotonic)
-        self._last_exchange_ts: dict[str, float] = {}      # 거래소가 준 ts(초) 기반 분캔들 경계용
+        self._last_tick_monotonic: dict[str, float] = {}
+        self._last_exchange_ts: dict[str, float] = {}
 
-        # 재연결 backoff
         self._reconnect_delay = 5
-
         self._start_public_websocket()
 
     # ──────────────────────────────────────────────
@@ -41,12 +42,10 @@ class BybitWebSocketController:
             return dict(self._prices)
 
     def get_last_tick_time(self, symbol: str) -> float | None:
-        """마지막 틱 수신 시각(monotonic) → 신선도 체크에 사용"""
         with self._lock:
             return self._last_tick_monotonic.get(symbol)
 
     def get_last_exchange_ts(self, symbol: str) -> float | None:
-        """거래소가 제공한 마지막 업데이트 시각(초) → 분 경계 정확도 향상"""
         with self._lock:
             return self._last_exchange_ts.get(symbol)
 
@@ -56,13 +55,15 @@ class BybitWebSocketController:
         to_add = [s for s in new_symbols if s not in self.symbols]
         if not to_add:
             return
+
         with self._lock:
             self.symbols.extend(to_add)
+            ws = self.ws  # ✅ lock 안에서 ws 핸들 확보
 
-        ws = self.ws
         if ws:
-            # ✅ ticker + kline.1 동시 구독
-            args = [f"tickers.{s}" for s in to_add] + [f"kline.{self.kline_interval}.{s}" for s in to_add]
+            args = [f"tickers.{s}" for s in to_add] + [
+                f"kline.{self.kline_interval}.{s}" for s in to_add
+            ]
             msg = {"op": "subscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
@@ -73,13 +74,15 @@ class BybitWebSocketController:
         to_remove = [s for s in symbols_to_remove if s in self.symbols]
         if not to_remove:
             return
+
         with self._lock:
             self.symbols = [s for s in self.symbols if s not in to_remove]
+            ws = self.ws  # ✅ lock 안에서 ws 핸들 확보
 
-        ws = self.ws
         if ws:
-            # ✅ ticker + kline.1 동시 해제
-            args = [f"tickers.{s}" for s in to_remove] + [f"kline.{self.kline_interval}.{s}" for s in to_remove]
+            args = [f"tickers.{s}" for s in to_remove] + [
+                f"kline.{self.kline_interval}.{s}" for s in to_remove
+            ]
             msg = {"op": "unsubscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
@@ -94,30 +97,31 @@ class BybitWebSocketController:
         with self._lock:
             return self._last_kline.get((symbol, interval))
 
-    # 최근 '마감된' kline (confirm=True)
     def get_last_confirmed_kline(self, symbol: str, interval: str | None = None) -> dict | None:
         interval = interval or self.kline_interval
         with self._lock:
             return self._last_kline_confirmed.get((symbol, interval))
 
     # ──────────────────────────────────────────────
-    # 내부: WS 수명주기
     def _start_public_websocket(self):
         def on_open(ws):
-            self.ws = ws
-            self._reconnect_delay = 5
-            self._last_frame_monotonic = time.monotonic()
+            with self._lock:
+                self.ws = ws
+                self._reconnect_delay = 5
+                self._last_frame_monotonic = time.monotonic()
+
             if self.system_logger:
                 self.system_logger.debug("✅ Public WebSocket 연결됨")
 
-            # ✅ ticker + kline.1 두 토픽 모두 재구독
             args = [f"tickers.{sym}" for sym in self.symbols] + [
                 f"kline.{self.kline_interval}.{sym}" for sym in self.symbols
             ]
-            ws.send(json.dumps({"op": "subscribe", "args": args}))
+            try:
+                ws.send(json.dumps({"op": "subscribe", "args": args}))
+            except Exception:
+                pass
 
         def on_pong(ws, data):
-            # ✅ 핑/퐁만 와도 연결은 살아있음
             self._last_frame_monotonic = time.monotonic()
 
         def on_message(ws, message: str):
@@ -135,7 +139,6 @@ class BybitWebSocketController:
 
                 with self._lock:
                     for item in items:
-                        # ── 1) ticker 처리 ─────────────────────────────
                         if topic.startswith("tickers."):
                             sym = item.get("symbol") or topic.split(".")[1]
                             price_str = (
@@ -164,15 +167,12 @@ class BybitWebSocketController:
                             self._last_exchange_ts[sym] = exch_ts
                             continue
 
-                        # ── 2) kline 처리 ──────────────────────────────
                         if topic.startswith("kline."):
-                            # topic 예: "kline.1.BTCUSDT"
                             parts = topic.split(".")
                             if len(parts) < 3:
                                 continue
                             interval, sym = parts[1], parts[2]
 
-                            # item 필드: start/end/confirm/open/high/low/close/volume/turnover 등(문자열/숫자 혼재)
                             try:
                                 k = {
                                     "symbol": sym,
@@ -189,7 +189,6 @@ class BybitWebSocketController:
                                     "ts": int(item.get("timestamp") or frame_ts_ms or 0),
                                 }
                             except Exception:
-                                # 필수 필드가 없거나 타입 변환 실패 시 skip
                                 continue
 
                             key = (sym, interval)
@@ -208,14 +207,14 @@ class BybitWebSocketController:
         def on_close(ws, *args):
             if self.system_logger:
                 self.system_logger.debug("🔌 WebSocket closed.")
-            # 끊길 때 핸들 비움
-            self.ws = None
-            # 재연결
+
+            with self._lock:
+                self.ws = None
+
             delay = self._reconnect_delay
             if self.system_logger:
                 self.system_logger.debug(f"⏳ {delay}s 후 재연결 시도…")
             time.sleep(delay)
-            # 점진적 backoff 최대 60초
             self._reconnect_delay = min(self._reconnect_delay * 2, 60)
             self._start_public_websocket()
 
@@ -230,12 +229,10 @@ class BybitWebSocketController:
                         on_close=on_close,
                         on_pong=on_pong,
                     )
-                    # ping을 주기적으로 보내 연결 유지
                     ws_app.run_forever(ping_interval=20, ping_timeout=10)
                 except Exception as e:
                     if self.system_logger:
                         self.system_logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
-                    # 치명적 예외 시에도 재시도
                     time.sleep(self._reconnect_delay)
                     self._reconnect_delay = min(self._reconnect_delay * 2, 60)
 

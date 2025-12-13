@@ -97,13 +97,13 @@ def make_mt5_signal_config(
     """
     MT5 시그널 전용 기본 설정 팩토리.
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
-    - signal_only=True 로 고정
     """
     if symbols is None:
-        symbols = ("US100", "JP225","GER40","CHINA50","XAUUSD","WTI","XNGUSD")
+        symbols = ("US100", "JP225","KS200","BTCUSD","ETHUSD","XAUUSD","WTI","XNGUSD")
+        symbols = ("BTCUSD", )
 
     cfg = TradeConfig(
-        name="mt5_signal",           # 🔹 MT5 시그널용 네임스페이스
+        name="mt5_signal",
         symbols=list(symbols),
 
         ws_stale_sec=30.0,
@@ -122,7 +122,7 @@ def make_mt5_signal_config(
         candles_num=candles_num,
         default_exit_ma_threshold=-0.0005,
 
-        signal_only=True,
+        signal_only=False,
     )
     return cfg.normalized()
 

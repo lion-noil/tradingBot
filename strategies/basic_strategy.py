@@ -17,6 +17,32 @@ class Signal:
     thresholds: Dict[str, float]
     extra: Dict[str, Any] = None
 
+def momentum_vs_prev_candle_ohlc(price: float, prev_candle: Optional[Dict[str, Any]]) -> Optional[float]:
+    """
+    현재가(price)와 '3분 전 봉'(prev_candle)의 OHLC 중
+    변화율 절대값(|pct|)이 가장 큰 값을 반환.
+    """
+    if price is None or prev_candle is None:
+        return None
+
+    vals = []
+    for k in ("open", "high", "low", "close"):
+        v = prev_candle.get(k)
+        if v is None:
+            continue
+        try:
+            v = float(v)
+        except Exception:
+            continue
+        if v <= 0:
+            continue
+        vals.append((price - v) / v)
+
+    if not vals:
+        return None
+    return max(vals, key=lambda x: abs(x))
+
+
 def _fmt_edge(seconds: int) -> str:
     if seconds % 3600 == 0:
         return f"{seconds//3600}h"
@@ -36,72 +62,93 @@ def _fmt_dur(sec: int | None) -> str:
 def get_long_entry_signal(
     price: float,
     ma100: float,
-    prev: float,
-    ma_threshold: float = 0.002,        # 0.2%
-    momentum_threshold: float = 0.001,  # 0.1%
-    recent_entry_time: Optional[int] = None,   # ms 단위: 마지막 진입 시각
-    reentry_cooldown_sec: int = 3600           # 1시간
+    prev3_candle: Optional[Dict[str, Any]],  # ✅ 바뀜
+    ma_threshold: float = 0.002,
+    momentum_threshold: float = 0.001,
+    recent_entry_time: Optional[int] = None,
+    reentry_cooldown_sec: int = 3600
 ) -> Optional["Signal"]:
-    # 재진입 쿨다운 체크
+
+    # ✅ 데이터 없으면(휴장/결측) 신호 없음
+    if price is None or ma100 is None or prev3_candle is None:
+        return None
+
+    # 재진입 쿨다운
     if recent_entry_time is not None:
         now_ms = int(time.time() * 1000)
         held_sec = max(0, (now_ms - recent_entry_time) // 1000)
         if held_sec < reentry_cooldown_sec:
-            # 쿨다운 중엔 신호 차단
             return None
+
+    # ✅ 3분전 OHLC 기반 모멘텀
+    mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
+    if mom is None:
+        return None
 
     reasons: List[str] = []
     if price < ma100 * (1 - ma_threshold):
         reasons.append(f"MA100 -{ma_threshold*100:.2f}%")
-    if (prev - price) / max(prev, 1e-12) > momentum_threshold:
+
+    # LONG은 "3분전 대비 하락"이 조건이었으니 mom이 음수일 때만 체크
+    if (-mom) > momentum_threshold:
         reasons.append(f"3m -{momentum_threshold*100:.2f}%")
+
     if len(reasons) < 2:
         return None
 
     ma_delta = (price - ma100) / max(ma100, 1e-12)
-    momentum = (price - prev) / max(prev, 1e-12)
     return Signal(
         ok=True, kind="ENTRY", side="LONG", reasons=reasons,
         price=price, ma100=ma100, ma_delta_pct=ma_delta,
-        momentum_pct=momentum,
+        momentum_pct=mom,  # ✅ OHLC 기준 모멘텀 저장
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
         extra={"reentry_cooldown_sec": reentry_cooldown_sec}
     )
 
-
 def get_short_entry_signal(
     price: float,
     ma100: float,
-    prev: float,
-    ma_threshold: float = 0.002,        # 0.2%
-    momentum_threshold: float = 0.001,  # 0.1%
-    recent_entry_time: Optional[int] = None,   # ms 단위: 마지막 진입 시각
-    reentry_cooldown_sec: int = 3600           # 1시간
+    prev3_candle: Optional[Dict[str, Any]],  # ✅ 바뀜
+    ma_threshold: float = 0.002,
+    momentum_threshold: float = 0.001,
+    recent_entry_time: Optional[int] = None,
+    reentry_cooldown_sec: int = 3600
 ) -> Optional["Signal"]:
-    # 재진입 쿨다운 체크
+
+    if price is None or ma100 is None or prev3_candle is None:
+        return None
+
     if recent_entry_time is not None:
         now_ms = int(time.time() * 1000)
         held_sec = max(0, (now_ms - recent_entry_time) // 1000)
         if held_sec < reentry_cooldown_sec:
             return None
 
+    mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
+    if mom is None:
+        return None
+
     reasons: List[str] = []
     if price > ma100 * (1 + ma_threshold):
         reasons.append(f"MA100 +{ma_threshold*100:.2f}%")
-    if (price - prev) / max(prev, 1e-12) > momentum_threshold:
+
+    # SHORT은 "3분전 대비 상승"이 조건이었으니 mom이 양수일 때만 체크
+    if mom > momentum_threshold:
         reasons.append(f"3m +{momentum_threshold*100:.2f}%")
+
     if len(reasons) < 2:
         return None
 
     ma_delta = (price - ma100) / max(ma100, 1e-12)
-    momentum = (price - prev) / max(prev, 1e-12)
     return Signal(
         ok=True, kind="ENTRY", side="SHORT", reasons=reasons,
         price=price, ma100=ma100, ma_delta_pct=ma_delta,
-        momentum_pct=momentum,
+        momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
         extra={"reentry_cooldown_sec": reentry_cooldown_sec}
     )
+
+
 
 def get_exit_signal(
     position: str,

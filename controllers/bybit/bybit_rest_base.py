@@ -1,5 +1,4 @@
 # controllers/bybit/bybit_rest_base.py
-import os
 import time
 import hmac
 import hashlib
@@ -7,23 +6,47 @@ import json
 from urllib.parse import urlencode
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
+from app.config import (
+    BYBIT_TRADE_REST_URL,
+    BYBIT_TRADE_API_KEY,
+    BYBIT_TRADE_API_SECRET,
+    BYBIT_PRICE_REST_URL,
+)
 
 
 class BybitRestBase:
     def __init__(self, system_logger=None, base_url: str | None = None):
         self.system_logger = system_logger
-        self.base_url = base_url or "https://api-demo.bybit.com"
-        self.api_key = os.getenv("BYBIT_TEST_API_KEY")
-        self.api_secret = os.getenv("BYBIT_TEST_API_SECRET").encode()  # HMAC 서명용
+
+        # ✅ 역할 분리
+        self.trade_base_url = (base_url or BYBIT_TRADE_REST_URL).rstrip("/")
+        self.price_base_url = (BYBIT_PRICE_REST_URL or "").rstrip("/")
+
+        # ✅ 기존 코드 호환: base_url = trade
+        self.base_url = self.trade_base_url
+
+        # ✅ 키/시크릿 (trade only)
+        self.api_key = BYBIT_TRADE_API_KEY
+        if not BYBIT_TRADE_API_SECRET:
+            raise RuntimeError("BYBIT_TRADE_API_SECRET is missing")
+        self.api_secret = (
+            BYBIT_TRADE_API_SECRET.encode()
+            if BYBIT_TRADE_API_SECRET
+            else None
+        )
+
+        if not self.api_key:
+            raise RuntimeError("BYBIT_TRADE_API_KEY is missing")
+        if not self.trade_base_url:
+            raise RuntimeError("BYBIT_TRADE_REST_URL is missing")
+        if not self.price_base_url:
+            raise RuntimeError("BYBIT_PRICE_REST_URL is missing")
+
         self.recv_window = "15000"
         self._time_offset_ms = 0
-
         self._symbol_rules: dict[str, dict] = {}
 
-        # ⏱ 서버-로컬 시간 동기화
+        # ⏱ 서명 검증은 trade 서버가 하므로 trade 기준으로 동기화
         self.sync_time()
 
     # -------------------------
@@ -35,11 +58,11 @@ class BybitRestBase:
         return urlencode(params_pairs, doseq=False)
 
     # -------------------------
-    # 시간 동기화
+    # 시간 동기화 (trade 서버 기준)
     # -------------------------
     def sync_time(self):
         t0 = time.time()
-        r = requests.get(f"{self.base_url}/v5/market/time", timeout=5)
+        r = requests.get(f"{self.trade_base_url}/v5/market/time", timeout=5)
         t1 = time.time()
         server_ms = int((r.json() or {}).get("time"))
         rtt_ms = (t1 - t0) * 1000.0
@@ -47,19 +70,20 @@ class BybitRestBase:
         self._time_offset_ms = server_ms - local_est_ms
 
     def _now_ms(self) -> str:
-        # 미래 금지 마진으로 10ms 빼기
         return str(int(time.time() * 1000 + self._time_offset_ms - 10))
 
     # -------------------------
-    # 서명/헤더
+    # 서명/헤더 (trade only)
     # -------------------------
     def _generate_signature(self, timestamp: str, method: str, params: str = "", body: str = "") -> str:
         query_string = params if method == "GET" else body
         payload = f"{timestamp}{self.api_key}{self.recv_window}{query_string}"
+        if not self.api_secret:
+            raise RuntimeError("Trade API secret is not configured")
         return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
 
     def _get_headers(self, method: str, endpoint: str, params: str = "", body: str = "") -> dict:
-        timestamp = self._now_ms()  # ✅ 오프셋 반영 & 미래 방지
+        timestamp = self._now_ms()
         sign = self._generate_signature(timestamp, method, params=params, body=body)
         return {
             "X-BAPI-API-KEY": self.api_key,
@@ -69,7 +93,7 @@ class BybitRestBase:
         }
 
     # -------------------------
-    # 공통 요청 with 재동기화
+    # 공통 요청 with 재동기화 (trade only)
     # -------------------------
     def _request_with_resync(
         self,
@@ -79,7 +103,7 @@ class BybitRestBase:
         body_dict: dict | None = None,
         timeout: float = 5.0,
     ):
-        base = self.base_url + endpoint
+        base = self.trade_base_url + endpoint
         query_string = self._build_query(params_pairs)
         url = f"{base}?{query_string}" if query_string else base
 
@@ -87,30 +111,23 @@ class BybitRestBase:
 
         def _make_headers():
             nonlocal body_str
-            if body_dict is not None:
-                body_str = json.dumps(body_dict, separators=(",", ":"), sort_keys=True)
-            else:
-                body_str = ""
+            body_str = json.dumps(body_dict, separators=(",", ":"), sort_keys=True) if body_dict is not None else ""
             return self._get_headers(method, endpoint, params=query_string, body=body_str)
 
         def _send():
             hdrs = _make_headers()
             if method == "GET":
                 return requests.get(url, headers=hdrs, timeout=timeout)
-            else:
-                hdrs = {**hdrs, "Content-Type": "application/json"}
-                return requests.post(url, headers=hdrs, data=body_str, timeout=timeout)
+            hdrs = {**hdrs, "Content-Type": "application/json"}
+            return requests.post(url, headers=hdrs, data=body_str, timeout=timeout)
 
-        # 1차 시도
         resp = _send()
-        j = None
+
         try:
             j = resp.json()
         except Exception:
-            # JSON이 아니면 그대로 리턴
             return resp
 
-        # 타임스탬프/윈도우 오류 감지
         ret_code = j.get("retCode")
         ret_msg = (j.get("retMsg") or "").lower()
         needs_resync = (
@@ -127,14 +144,10 @@ class BybitRestBase:
         return resp
 
     # -------------------------
-    # 심볼 규칙
+    # 심볼 규칙 (public market) -> price 서버로
     # -------------------------
     def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
-        """
-        v5/market/instruments-info에서 lotSizeFilter/priceFilter를 읽어 규칙 반환.
-        네트워크/응답 이슈시 예외를 올림.
-        """
-        url = f"{self.base_url}/v5/market/instruments-info"
+        url = f"{self.price_base_url}/v5/market/instruments-info"
         params = {"category": category, "symbol": symbol}
         r = requests.get(url, params=params, timeout=5)
         r.raise_for_status()
@@ -156,9 +169,8 @@ class BybitRestBase:
             "minPrice": float(price.get("minPrice", 0) or 0),
             "maxPrice": float(price.get("maxPrice", 0) or 0),
         }
-        # 방어: 기본값 보정
         if rules["qtyStep"] <= 0:
-            rules["qtyStep"] = 0.001  # 안전 폴백
+            rules["qtyStep"] = 0.001
         if rules["minOrderQty"] <= 0:
             rules["minOrderQty"] = rules["qtyStep"]
 

@@ -1,63 +1,37 @@
 # controllers/mt5/mt5_rest_controller.py
+
+from __future__ import annotations
+
+from app.config import MT5_PRICE_REST_URL
+
 from .mt5_rest_base import Mt5RestBase
 from .mt5_rest_market import Mt5RestMarketMixin
+
+# ✅ 터미널 기반 기능들(REST 아님)
+from .mt5_rest_account import Mt5RestAccountMixin
+from .mt5_rest_orders import Mt5RestOrdersMixin
+from .mt5_rest_trade import Mt5RestTradeMixin
 
 
 class Mt5RestController(
     Mt5RestBase,
-    Mt5RestMarketMixin,
+    Mt5RestMarketMixin,    # ✅ price REST 사용 (use="price")
+    Mt5RestAccountMixin,   # ✅ MT5 터미널 API
+    Mt5RestOrdersMixin,    # ✅ 로컬 파일 + (필요시) 히스토리 동기화
+    Mt5RestTradeMixin,     # ✅ MT5 터미널 API로 주문
 ):
     """
-    BybitRestController 와 같은 역할의 최종 MT5 REST 컨트롤러.
+    MT5 최종 컨트롤러 (가격=REST, 거래=터미널)
 
-    - Mt5RestBase: 공통 HTTP 요청/헤더/베이스 URL
-    - Mt5RestMarketMixin: 캔들/시장 관련 기능 (현재는 update_candles)
-    - 나중에 자산/포지션/주문 관련 기능이 생기면
-      Mt5RestAccountMixin, Mt5RestOrdersMixin 같은 걸 추가로 만들어
-      여기 상속 목록에 붙이면 됨.
+    - Mt5RestBase: price_base_url만 필수로 유지
+    - Mt5RestMarketMixin: 캔들/시세는 REST(ONLINE)로 호출 (_request(use="price"))
+    - Mt5RestAccount/Orders/Trade: MT5 터미널 API로 처리 (MetaTrader5)
     """
 
-    def __init__(self, system_logger=None, base_url: str | None = None):
-        super().__init__(system_logger=system_logger, base_url=base_url)
-
-        # 추후 공통 트레이딩 설정(리스크, 레버리지 등)을 여기에 둘 수 있음
-        # 예: self.default_risk_percent = 1.0
-
-
-if __name__ == "__main__":
-    import logging
-    import time
-
-    # 간단 로거 설정
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-    logger = logging.getLogger("mt5_rest_test")
-
-    # 이 파일 안에 정의된 Mt5RestController 사용
-    rest = Mt5RestController(system_logger=logger)
-
-    candles: list[dict] = []
-
-    try:
-        while True:
-            # US100 1분봉 최신 100개 가져오기
-            rest.update_candles(candles, symbol="US100", count=100)
-
-            if candles:
-                last = candles[-1]
-                logger.info(
-                    f"US100 candles: total={len(candles)} | "
-                    f"last start={last['start']} "
-                    f"OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']}) "
-                    f"vol={last['volume']}"
-                )
-            else:
-                logger.info("US100 candles: 결과 없음")
-
-            time.sleep(5)
-
-    except KeyboardInterrupt:
-        logger.info("MT5 REST 테스트 종료 (Ctrl+C)")
-
+    def __init__(self, system_logger=None, price_base_url: str | None = None):
+        super().__init__(
+            system_logger=system_logger,
+            price_base_url=(price_base_url or MT5_PRICE_REST_URL),
+            # trade_base_url / api_key는 이제 옵션이므로 여기서 안 넣어도 됨
+            base_url=(price_base_url or MT5_PRICE_REST_URL),  # 호환용 base_url도 price로
+        )

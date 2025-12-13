@@ -267,20 +267,19 @@ def extract_status_summary(
 # 2-1) 지표 계산 (순수)
 def compute_indicators_for_symbol(candle_engine, indicator_engine, symbol: str):
     candles = candle_engine.get_candles(symbol)
-
     cross_times, q_thr, ma100s = indicator_engine.compute_all(candles)
 
-    # prev_close_3도 candles에서 뽑으면 됨
-    if len(candles) >= 3:
-        prev_close_3 = candles[-3]["close"]
-    else:
-        prev_close_3 = None
+    prev3_candle = None
+    if len(candles) >= 4:  # 3분 전 봉을 확실히 잡으려면 보통 최소 4개 필요(아래 설명)
+        c = candles[-4]
+        if all(c.get(k) is not None for k in ("open", "high", "low", "close")):
+            prev3_candle = {k: float(c[k]) for k in ("open", "high", "low", "close")}
 
     return {
         "cross_times": cross_times,
         "q_thr": q_thr,
         "ma100s": ma100s,
-        "prev_close_3": prev_close_3,
+        "prev3_candle": prev3_candle,
     }
 
 
@@ -441,6 +440,19 @@ def log_jump(system_logger, symbol, state, min_dt, max_dt):
     elif state == "DOWN":
         system_logger.info(f"({symbol}) 📉 급락 감지! (Δ {min_dt:.3f}~{max_dt:.3f}s)")
 
+def momentum_vs_ohlc(price: float, candle: dict) -> Optional[float]:
+    if price is None or candle is None:
+        return None
+    vals = []
+    for k in ("open", "high", "low", "close"):
+        v = candle.get(k)
+        if v is None:
+            continue
+        v = float(v)
+        if v <= 0:
+            continue
+        vals.append((price - v) / v)
+    return max(vals, key=lambda x: abs(x)) if vals else None
 
 def refresh_indicators_for_symbol(
     candle_engine,
@@ -452,7 +464,7 @@ def refresh_indicators_for_symbol(
     ma_threshold_map: Dict[str, Optional[float]],
     thr_quantized_map: Dict[str, Optional[float]],
     momentum_threshold_map: Dict[str, Optional[float]],
-    prev_close_map: Dict[str, Optional[float]],
+    prev3_candle_map: Dict[str, Optional[float]],
     system_logger=None,
     redis_client=None,
     namespace: Optional[str] = None,
@@ -468,8 +480,8 @@ def refresh_indicators_for_symbol(
     prev_q = thr_quantized_map.get(symbol)
 
     # 상태 반영
-    ma100s[symbol] = res["ma100s"]
-    now_ma100_map[symbol] = ma100s[symbol][-1]
+    ma100s[symbol] = res.get("ma100s") or []
+    now_ma100_map[symbol] = ma100s[symbol][-1] if ma100s[symbol] else None
     ma_threshold_map[symbol] = res["q_thr"]
     q, mom_thr, log = derive_thresholds_and_log(prev_q, res["q_thr"])
     thr_quantized_map[symbol] = q
@@ -491,9 +503,7 @@ def refresh_indicators_for_symbol(
             cross_times=res["cross_times"],
         )
 
-    # prev(3틱 전)
-    if res["prev_close_3"] is not None:
-        prev_close_map[symbol] = res["prev_close_3"]
+    prev3_candle_map[symbol] = res.get("prev3_candle")  # None도 포함
 
 
 def log_threshold_change(
