@@ -198,7 +198,6 @@ async def startup_event():
         system_logger=system_logger,
         trading_logger=trading_logger,
         symbols=symbols_mt5,
-        signal_only=True,  # ✅ MT5는 시그널 전용
         config=cfg_mt5
     )
 

@@ -100,7 +100,6 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","KS200","BTCUSD","ETHUSD","XAUUSD","WTI","XNGUSD")
-        symbols = ("BTCUSD", )
 
     cfg = TradeConfig(
         name="mt5_signal",
@@ -110,9 +109,9 @@ def make_mt5_signal_config(
         ws_global_stale_sec=60.0,
 
         # 주문 관련 값은 의미 없으므로 안전하게 최소로
-        leverage=1,
-        entry_percent=0.01,
-        max_effective_leverage=0.0,
+        leverage=50,
+        entry_percent=3.0,
+        max_effective_leverage=30.0,
 
         # 인디케이터 관련
         indicator_min_thr=indicator_min_thr,

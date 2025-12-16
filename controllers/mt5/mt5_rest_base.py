@@ -41,15 +41,8 @@ class Mt5RestBase:
         # ✅ API KEY도 trade REST에서만 필요 (없어도 OK)
         self.api_key = (MT5_TRADE_API_KEY or "").strip()
 
-        # ✅ 호환용 base_url: 기본은 price로 (캔들이 더 자주 호출되고 실수 방지)
-        #    만약 기존 코드가 base_url로 'trade'를 호출하는 케이스가 남아있으면,
-        #    해당 호출부를 use="trade"로 바꾸는 게 정답.
         self.base_url = (base_url or self.price_base_url).strip()
 
-        if self.system_logger:
-            self.system_logger.info(
-                f"[MT5 REST] price={self.price_base_url} trade={self.trade_base_url or '(disabled)'} base={self.base_url}"
-            )
 
     # -------------------------
     # URL / 헤더 빌더

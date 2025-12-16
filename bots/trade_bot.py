@@ -320,6 +320,10 @@ class TradeBot:
 
             await self._close_position(symbol, side, pos_amt)
 
+    def _get_total_balance_usd(self, wallet: dict) -> float:
+        # USDT 우선, 없으면 USD
+        return float(wallet.get("USDT") or wallet.get("USD") or 0.0)
+
     async def _process_entries(self, symbol: str, price: float) -> None:
         """6) 진입 시그널(숏/롱) 처리"""
 
@@ -329,7 +333,7 @@ class TradeBot:
 
         # ✅ signal_only면 레버리지 제한 무시(무조건 통과)
         allow_entry = True
-        total_balance = float(wallet.get("USDT") or 0.0)
+        total_balance = self._get_total_balance_usd(wallet)
 
         # --- Short 진입 ---
         recent_short_signal_time = self.entry_store.get(symbol, "SHORT")
