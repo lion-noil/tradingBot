@@ -56,10 +56,9 @@ class ExecutionEngine:
                 }
                 self._log_fill(filled_like, position_detail)
 
-                # MT5는 get_trade_w_order_id가 항상 안 잡힐 수 있으니
                 # 이미 _record_trade_if_possible로 로컬 저장까지 하고 있다면 생략 가능
                 if self.system_logger:
-                    self.system_logger.debug(f"🧾 [MT5] 즉시체결 처리: deal={filled_like['deal']}")
+                    self.system_logger.info(f"🧾 [MT5] 즉시체결 처리: deal={filled_like['deal']}")
                 self._just_traded_until = time.monotonic() + 0.8
                 return result
             # 3) orderId 확보 (Bybit/MT5 호환)
