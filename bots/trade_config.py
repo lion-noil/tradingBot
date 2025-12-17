@@ -100,6 +100,7 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","KS200","BTCUSD","ETHUSD","XAUUSD","WTI","XNGUSD")
+        symbols = ("US100", )
 
     cfg = TradeConfig(
         name="mt5_signal",

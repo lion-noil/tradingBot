@@ -195,8 +195,11 @@ class TradeBot:
         self._finalize_status_log()
 
     def _finalize_status_log(self) -> None:
+        wallet = (self.asset.get("wallet") or {})
+        total_balance, ccy = self._get_total_balance_and_ccy(wallet)
         new_status = build_full_status_log(
-            total_usdt=float(self.asset['wallet'].get('USDT', 0.0) or 0.0),
+            total_usdt=float(total_balance),
+            currency=ccy,
             symbols=self.symbols,
             jump_state=self.jump_state,
             ma_threshold=self.ma_threshold,
@@ -326,6 +329,17 @@ class TradeBot:
     def _get_total_balance_usd(self, wallet: dict) -> float:
         # USDT 우선, 없으면 USD
         return float(wallet.get("USDT") or wallet.get("USD") or 0.0)
+
+    def _get_total_balance_and_ccy(self, wallet: dict) -> tuple[float, str]:
+        if wallet is None:
+            return 0.0, "USD"
+        if wallet.get("USDT") not in (None, 0, "0", 0.0):
+            return float(wallet.get("USDT") or 0.0), "USDT"
+        if wallet.get("USD") not in (None, 0, "0", 0.0):
+            return float(wallet.get("USD") or 0.0), "USD"
+        # 둘 다 없으면 기본
+        return 0.0, "USD"
+
 
     async def _process_entries(self, symbol: str, price: float) -> None:
         """6) 진입 시그널(숏/롱) 처리"""

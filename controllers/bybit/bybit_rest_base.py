@@ -143,39 +143,3 @@ class BybitRestBase:
 
         return resp
 
-    # -------------------------
-    # 심볼 규칙 (public market) -> price 서버로
-    # -------------------------
-    def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
-        url = f"{self.price_base_url}/v5/market/instruments-info"
-        params = {"category": category, "symbol": symbol}
-        r = requests.get(url, params=params, timeout=5)
-        r.raise_for_status()
-        j = r.json()
-        if j.get("retCode") != 0:
-            raise RuntimeError(f"retCode={j.get('retCode')}, retMsg={j.get('retMsg')}")
-        lst = (j.get("result") or {}).get("list") or []
-        if not lst:
-            raise RuntimeError("empty instruments list")
-        info = lst[0]
-        lot = info.get("lotSizeFilter", {}) or {}
-        price = info.get("priceFilter", {}) or {}
-
-        rules = {
-            "qtyStep": float(lot.get("qtyStep", 0) or 0),
-            "minOrderQty": float(lot.get("minOrderQty", 0) or 0),
-            "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0),
-            "tickSize": float(price.get("tickSize", 0) or 0),
-            "minPrice": float(price.get("minPrice", 0) or 0),
-            "maxPrice": float(price.get("maxPrice", 0) or 0),
-        }
-        if rules["qtyStep"] <= 0:
-            rules["qtyStep"] = 0.001
-        if rules["minOrderQty"] <= 0:
-            rules["minOrderQty"] = rules["qtyStep"]
-
-        self._symbol_rules[symbol] = rules
-        return rules
-
-    def get_symbol_rules(self, symbol: str) -> dict:
-        return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)

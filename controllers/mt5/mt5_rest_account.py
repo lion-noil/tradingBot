@@ -90,35 +90,6 @@ class Mt5RestAccountMixin:
             return []
 
     # -------------------------
-    # (선택) 심볼 규칙 조회: 최소랏/스텝/최대랏 등
-    # -------------------------
-    def get_symbol_rules(self, symbol: str):
-        try:
-            if not self._ensure_mt5():
-                return None
-
-            info = mt5.symbol_info(symbol)
-            if info is None:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[ERROR] symbol_info({symbol}) failed: {mt5.last_error()}")
-                return None
-
-            return {
-                "symbol": symbol,
-                "volume_min": float(getattr(info, "volume_min", 0.0) or 0.0),
-                "volume_step": float(getattr(info, "volume_step", 0.0) or 0.0),
-                "volume_max": float(getattr(info, "volume_max", 0.0) or 0.0),
-                "trade_contract_size": float(getattr(info, "trade_contract_size", 0.0) or 0.0),
-                "trade_tick_size": float(getattr(info, "trade_tick_size", 0.0) or 0.0),
-                "trade_tick_value": float(getattr(info, "trade_tick_value", 0.0) or 0.0),
-            }
-
-        except Exception as e:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] 심볼 룰 조회 실패({symbol}): {e}")
-            return None
-
-    # -------------------------
     # 자산 + 포지션 구성 & Redis 저장
     # -------------------------
     def getNsav_asset(self, asset, symbol: str = None, save_redis: bool = True):

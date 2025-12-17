@@ -42,6 +42,7 @@ class Mt5RestBase:
         self.api_key = (MT5_TRADE_API_KEY or "").strip()
 
         self.base_url = (base_url or self.price_base_url).strip()
+        self._symbol_rules: dict[str, dict] = {}
 
 
     # -------------------------

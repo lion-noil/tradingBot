@@ -1,7 +1,7 @@
 # controllers/bybit/bybit_rest_trade.py
 import math
 import requests
-
+import time
 
 class BybitRestTradeMixin:
     """
@@ -17,6 +17,42 @@ class BybitRestTradeMixin:
     - (선택) self.leverage
     """
 
+    # -------------------------
+    # 심볼 규칙 (public market) -> price 서버로
+    # -------------------------
+    def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
+        url = f"{self.price_base_url}/v5/market/instruments-info"
+        params = {"category": category, "symbol": symbol}
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("retCode") != 0:
+            raise RuntimeError(f"retCode={j.get('retCode')}, retMsg={j.get('retMsg')}")
+        lst = (j.get("result") or {}).get("list") or []
+        if not lst:
+            raise RuntimeError("empty instruments list")
+        info = lst[0]
+        lot = info.get("lotSizeFilter", {}) or {}
+        price = info.get("priceFilter", {}) or {}
+
+        rules = {
+            "qtyStep": float(lot.get("qtyStep", 0) or 0),
+            "minOrderQty": float(lot.get("minOrderQty", 0) or 0),
+            "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0),
+            "tickSize": float(price.get("tickSize", 0) or 0),
+            "minPrice": float(price.get("minPrice", 0) or 0),
+            "maxPrice": float(price.get("maxPrice", 0) or 0),
+        }
+        if rules["qtyStep"] <= 0:
+            rules["qtyStep"] = 0.001
+        if rules["minOrderQty"] <= 0:
+            rules["minOrderQty"] = rules["qtyStep"]
+
+        self._symbol_rules[symbol] = rules
+        return rules
+
+    def get_symbol_rules(self, symbol: str) -> dict:
+        return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)
     # -------------------------
     # 주문 생성/청산 래퍼
     # -------------------------
@@ -94,7 +130,6 @@ class BybitRestTradeMixin:
             )
 
         return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
-
     def close_market(self, symbol, side, qty):
         """
         보유 포지션 청산(시장가 reduceOnly).
@@ -172,3 +207,46 @@ class BybitRestTradeMixin:
         if q < min_qty:
             return 0.0
         return q
+
+    # -------------------------
+    # 주문 체결 대기 (거래용)
+    # -------------------------
+    def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1):
+        endpoint = "/v5/order/realtime"
+        base = self.trade_base_url + endpoint
+
+        from urllib.parse import urlencode
+
+        params_pairs = [
+            ("category", "linear"),
+            ("symbol", symbol),
+            ("orderId", order_id),
+        ]
+        query_string = urlencode(params_pairs, doseq=False)
+        url = f"{base}?{query_string}"
+
+        for i in range(max_retries):
+            headers = self._get_headers("GET", endpoint, params=query_string, body="")
+            r = requests.get(url, headers=headers, timeout=5)
+
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+
+            orders = data.get("result", {}).get("list", [])
+            if orders:
+                o = orders[0]
+                status = (o.get("orderStatus") or "").upper()
+                if status == "FILLED":
+                    return o
+                if status in ("CANCELLED", "REJECTED"):
+                    return o
+
+            if getattr(self, "system_logger", None):
+                self.system_logger.debug(
+                    f"⌛ 주문 체결 대기중... ({i+1}/{max_retries}) | {symbol}"
+                )
+            time.sleep(sleep_sec)
+
+        return {"orderId": order_id, "orderStatus": "TIMEOUT"}

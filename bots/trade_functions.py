@@ -174,20 +174,21 @@ def format_position_lines(
     short_line = _fmt_one("SHORT", pos.get("SHORT"))
 
     if not long_line and not short_line:
-        return "  - 포지션 없음\n"
-    return "\n".join([x for x in (long_line, short_line) if x]) + "\n"
+        return "  - 포지션 없음"
+    return "\n".join([x for x in (long_line, short_line) if x])
 
 
 # ── 상태 로그(점프/MA/괴리율) 빌더 ────────────────────
 def make_status_log_msg(
     total_usdt: float,
+    currency: str,
     symbols: List[str],
     jump_state: Dict[str, Dict[str, Any]],
     ma_threshold: Dict[str, Optional[float]],
     now_ma100: Dict[str, Optional[float]],
     get_price: Callable[[str], Optional[float]],
 ) -> str:
-    log_msg = f"\n💰 총 자산: {total_usdt:.2f} USDT\n"
+    log_msg = f"\n💰 총 자산: {total_usdt:.2f} {currency}\n"
     for symbol in symbols:
         js = (jump_state or {}).get(symbol, {})
         state = js.get("state")
@@ -299,9 +300,44 @@ def derive_thresholds_and_log(prev_q: Optional[float], thr_raw: Optional[float])
         }
     return q, mom_thr, log
 
+def make_status_line(
+    symbol: str,
+    jump_state: Dict[str, Dict[str, Any]],
+    ma_threshold: Dict[str, Optional[float]],
+    now_ma100: Dict[str, Optional[float]],
+    get_price: Callable[[str], Optional[float]],
+) -> str:
+    js = (jump_state or {}).get(symbol, {})
+    state = js.get("state")
+    min_dt = js.get("min_dt")
+    max_dt = js.get("max_dt")
+    thr_pct = (ma_threshold.get(symbol) or 0) * 100
+
+    price = get_price(symbol)
+    ma = now_ma100.get(symbol)
+    diff_pct = (
+        (price - ma) / ma * 100.0
+        if (price is not None and ma not in (None, 0))
+        else None
+    )
+    emoji = "📈" if state == "UP" else ("📉" if state == "DOWN" else "👀")
+
+    parts = [f"{emoji} ma_thr({thr_pct:.2f}%)"]
+    if price is not None:
+        parts.append(f"P={price:.2f}")
+    if ma is not None:
+        parts.append(f"MA100={ma:.2f}")
+    if diff_pct is not None:
+        parts.append(f"ΔP/MA={diff_pct:+.2f}%")
+    if min_dt is not None and max_dt is not None:
+        parts.append(f"Δt={min_dt:.3f}~{max_dt:.3f}s")
+
+    return f"[{symbol}] " + " ".join(parts)
+
 
 def build_full_status_log(
     total_usdt: float,
+    currency: str,   # ✅ 추가
     symbols: List[str],
     jump_state: Dict[str, Dict[str, Any]],
     ma_threshold: Dict[str, Optional[float]],
@@ -310,25 +346,29 @@ def build_full_status_log(
     positions_by_symbol: Dict[str, Dict[str, Any]],
     taker_fee_rate: float,
 ) -> str:
-    head = make_status_log_msg(
-        total_usdt=total_usdt,
-        symbols=symbols,
-        jump_state=jump_state,
-        ma_threshold=ma_threshold,
-        now_ma100=now_ma100,
-        get_price=get_price,
-    )
-    tails: List[str] = []
+    lines: List[str] = [f"\n💰 총 자산: {total_usdt:.2f} USDT\n"]
+
     for sym in symbols:
-        tails.append(
-            format_position_lines(
-                get_price=get_price,
-                taker_fee_rate=taker_fee_rate,
-                positions_for_symbol=(positions_by_symbol or {}).get(sym, {}),
-                symbol=sym,
+        # 1) 심볼 상태 한 줄
+        lines.append(
+            make_status_line(
+                sym, jump_state, ma_threshold, now_ma100, get_price
             )
         )
-    return (head + "\n" + "".join(tails)).rstrip()
+
+        # 2) 그 심볼 포지션 라인(바로 아래)
+        pos_lines = format_position_lines(
+            get_price=get_price,
+            taker_fee_rate=taker_fee_rate,
+            positions_for_symbol=(positions_by_symbol or {}).get(sym, {}),
+            symbol=sym,
+        ).rstrip("\n")  # 끝 개행 정리
+
+        # 보기 좋게 들여쓰기/하이픈 형식 맞추려면 format_position_lines 출력도 조정 가능
+        lines.append(pos_lines)
+
+    return "\n".join(lines).rstrip()
+
 
 
 def bootstrap_trading_state_for_symbol(

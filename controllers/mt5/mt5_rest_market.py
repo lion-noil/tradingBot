@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from datetime import timezone, timedelta
-
+import time
 KST = timezone(timedelta(hours=9))
 
 
@@ -142,65 +142,3 @@ class Mt5RestMarketMixin:
         except Exception as e:
             if getattr(self, "system_logger", None):
                 self.system_logger.warning(f"❌ [MT5] ({symbol}) 캔들 요청 실패: {e}")
-
-
-# -------------------------
-# __main__ 테스트 러너
-# -------------------------
-if __name__ == "__main__":
-    import os
-    import requests
-    from pprint import pprint
-
-    # ✅ 프로젝트 환경 로드 (.env 가드 포함)
-    from app import config as cfg
-
-    TEST_SYMBOL = os.getenv("MT5_TEST_SYMBOL", getattr(cfg, "MT5_TEST_SYMBOL", "US100"))
-    TEST_COUNT = int(os.getenv("MT5_TEST_COUNT", "200"))
-
-    class _Tester(Mt5RestMarketMixin):
-        system_logger = None  # 필요하면 logger 붙이기
-
-        def _request(self, method: str, endpoint: str, params: dict | None = None, use: str = "price"):
-            """
-            이 파일 단독 테스트를 위한 최소 구현.
-            실제 프로젝트에선 공통 베이스/믹스인이 제공하는 _request를 쓰면 됨.
-            """
-            if use != "price":
-                raise RuntimeError("이 테스트는 price(use='price')만 지원")
-
-            base = getattr(cfg, "MT5_PRICE_REST_URL", None)
-            if not base:
-                raise RuntimeError("MT5_PRICE_REST_URL이 config/.env에 없습니다.")
-            url = base.rstrip("/") + endpoint
-
-            r = requests.request(method, url, params=params, timeout=10)
-            r.raise_for_status()
-            return r.json()
-
-    t = _Tester()
-
-    print("\n[0] CONFIG")
-    print("MT5_PRICE_REST_URL:", getattr(cfg, "MT5_PRICE_REST_URL", None))
-    print("TEST_SYMBOL:", TEST_SYMBOL)
-    print("TEST_COUNT:", TEST_COUNT)
-
-    candles: list = []
-    print("\n[1] update_candles()")
-    t.update_candles(candles, symbol=TEST_SYMBOL, count=TEST_COUNT)
-
-    print("\n[2] RESULT CHECK")
-    print("candles len:", len(candles))
-    if candles:
-        print("first:")
-        pprint(candles[0])
-        print("last:")
-        pprint(candles[-1])
-
-        # 간단 무결성 체크
-        bad = [c for c in candles if c.get("start") is None or c.get("close") is None]
-        if bad:
-            print(f"[WARN] invalid rows: {len(bad)} (showing 1)")
-            pprint(bad[0])
-
-    print("\nDONE")

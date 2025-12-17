@@ -35,3 +35,7 @@ class Mt5RestController(
             # trade_base_url / api_key는 이제 옵션이므로 여기서 안 넣어도 됨
             base_url=(price_base_url or MT5_PRICE_REST_URL),  # 호환용 base_url도 price로
         )
+
+        # 트레이딩 공통 설정
+        self.leverage = 50
+        self.TAKER_FEE_RATE = 0.00055  # 0.055%

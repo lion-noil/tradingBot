@@ -14,10 +14,8 @@ class EntrySignalStore:
     def __init__(self, redis_client, symbols, name: str = "bybit"):
         self.redis = redis_client
         self.name = name
-        # 🔹 플랫폼별 네임스페이스 분리
         self.redis_key = f"trading:{self.name}:last_entry_signal_ts"
 
-        # 메모리 캐시: { "BTCUSDT": {"LONG": ts_ms | None, "SHORT": ts_ms | None}, ... }
         self._cache: Dict[str, Dict[str, Optional[int]]] = {
             s: {"LONG": None, "SHORT": None} for s in symbols
         }

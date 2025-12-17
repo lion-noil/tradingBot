@@ -5,7 +5,7 @@ import math
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
-
+from datetime import datetime, timedelta, timezone
 import MetaTrader5 as mt5
 
 KST = timezone(timedelta(hours=9))
@@ -15,6 +15,36 @@ class Mt5RestTradeMixin:
     # -------------------------
     # 내부: MT5 연결 보장
     # -------------------------
+
+    def _get_position_qty(self, symbol: str, side: str | None = None) -> float:
+        """
+        side:
+          - None: 심볼 전체 포지션 수량 합(절대값 합)
+          - "LONG"/"SHORT": 방향별 합
+        """
+        sym = (symbol or "").upper()
+        s = (side or "").upper()
+
+        poss = mt5.positions_get(symbol=sym) or []
+        total = 0.0
+        for p in poss:
+            try:
+                vol = float(getattr(p, "volume", 0.0) or 0.0)
+                ptype = int(getattr(p, "type", -1))  # 0=BUY, 1=SELL (MT5)
+            except Exception:
+                continue
+
+            if s == "LONG":
+                if ptype == mt5.POSITION_TYPE_BUY:
+                    total += vol
+            elif s == "SHORT":
+                if ptype == mt5.POSITION_TYPE_SELL:
+                    total += vol
+            else:
+                total += abs(vol)
+        return float(total)
+
+
     def _ensure_mt5(self) -> bool:
         if mt5.initialize():
             return True
@@ -81,27 +111,69 @@ class Mt5RestTradeMixin:
             if getattr(self, "system_logger", None):
                 self.system_logger.error(f"[MT5] record_trade failed: {e}")
 
+
     # -------------------------
     # 심볼 룰(랏 규칙) 조회
     # -------------------------
-    def get_symbol_rules(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Bybit의 get_symbol_rules 유사: volume_min/step/max 반환
-        """
+    def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
         if not self._ensure_mt5():
-            return None
+            raise RuntimeError("mt5 initialize failed")
+
         sym = symbol.upper()
         info = mt5.symbol_info(sym)
         if info is None:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] symbol_info({sym}) failed: {mt5.last_error()}")
-            return None
-        return {
-            "symbol": sym,
-            "volume_min": float(getattr(info, "volume_min", 0.0) or 0.0),
-            "volume_step": float(getattr(info, "volume_step", 0.0) or 0.0),
-            "volume_max": float(getattr(info, "volume_max", 0.0) or 0.0),
+            raise RuntimeError(f"symbol_info({sym}) failed: {mt5.last_error()}")
+
+        if not info.visible:
+            mt5.symbol_select(sym, True)
+
+        # tickSize
+        tick_size = float(getattr(info, "point", 0.0) or 0.0)
+        if tick_size <= 0:
+            digits = int(getattr(info, "digits", 0) or 0)
+            tick_size = 10 ** (-digits) if digits > 0 else 0.0
+
+        # contractSize (fallback)
+        contract_size = float(getattr(info, "trade_contract_size", 0.0) or 0.0)
+        if contract_size <= 0:
+            contract_size = 1.0
+
+        # tick (optional but useful)
+        tick = mt5.symbol_info_tick(sym)
+        bid = float(getattr(tick, "bid", 0.0) or 0.0) if tick else 0.0
+        ask = float(getattr(tick, "ask", 0.0) or 0.0) if tick else 0.0
+        last = float(getattr(tick, "last", 0.0) or 0.0) if tick else 0.0
+
+        rules = {
+            "qtyStep": float(getattr(info, "volume_step", 0.0) or 0.0),
+            "minOrderQty": float(getattr(info, "volume_min", 0.0) or 0.0),
+            "maxOrderQty": float(getattr(info, "volume_max", 0.0) or 0.0),
+
+            "tickSize": tick_size,
+            "minPrice": 0.0,
+            "maxPrice": 0.0,
+
+            "digits": int(getattr(info, "digits", 0) or 0),
+            "contractSize": contract_size,
+            "currencyProfit": str(getattr(info, "currency_profit", "") or ""),
+            "currencyMargin": str(getattr(info, "currency_margin", "") or ""),
+
+            # optional
+            "bid": bid,
+            "ask": ask,
+            "last": last,
         }
+
+        if rules["qtyStep"] <= 0:
+            rules["qtyStep"] = 0.01
+        if rules["minOrderQty"] <= 0:
+            rules["minOrderQty"] = rules["qtyStep"]
+
+        self._symbol_rules[sym] = rules
+        return rules
+
+    def get_symbol_rules(self, symbol: str) -> dict:
+        return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)
 
     # -------------------------
     # 수량(랏) 정규화
@@ -125,14 +197,11 @@ class Mt5RestTradeMixin:
         rules = self.get_symbol_rules(symbol) or {}
         step = float(rules.get("volume_step") or 0.01) or 0.01
         min_qty = float(rules.get("volume_min") or step) or step
-        max_qty = float(rules.get("volume_max") or 0.0) or 0.0
 
         q = max(0.0, float(qty))
         q = self._round_step(q, step, mode=mode)
         if q < min_qty:
             return 0.0
-        if max_qty > 0 and q > max_qty:
-            q = self._round_step(max_qty, step, mode="floor")
         return q
 
     # -------------------------
@@ -243,6 +312,13 @@ class Mt5RestTradeMixin:
             "time_ms": int(time.time() * 1000),
         }
 
+        order_id = int(out.get("deal") or out.get("order") or 0)
+        if order_id <= 0:
+            order_id = int(out.get("time_ms") or int(time.time() * 1000))
+
+        out["orderId"] = str(order_id)  # ✅ 엔진이 바로 찾게
+        out["result"] = {"orderId": str(order_id)}  # ✅ Bybit 스타일 호환(엔진이 result를 볼 수도 있어서)
+
         if not ok and getattr(self, "system_logger", None):
             self.system_logger.error(f"[ERROR] mt5 order failed: {out}")
 
@@ -261,16 +337,14 @@ class Mt5RestTradeMixin:
             return None
 
         total_balance = wallet.get("USD") or wallet.get("USDT") or next(iter(wallet.values()), 0) or 0
+        leverage = getattr(self, "leverage", 1)
 
-        rules = self.get_symbol_rules(symbol) or {}
-        vmin = float(rules.get("volume_min") or 0.01) or 0.01
-
-        raw_lot = vmin * max(1.0, float(percent) / 1.0)
-        qty = self.normalize_qty(symbol, raw_lot, mode="floor")
+        raw_qty = total_balance * leverage / price * percent / 100.0
+        qty = self.normalize_qty(symbol, raw_qty, mode="floor")
 
         if qty <= 0:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"❗ 주문 수량이 최소단위 미만입니다. raw={raw_lot} norm={qty} ({symbol})")
+                self.system_logger.error(f"❗ 주문 수량이 최소단위 미만입니다. raw={raw_qty} norm={qty} ({symbol})")
             return None
 
         if side.lower() == "long":
@@ -318,83 +392,151 @@ class Mt5RestTradeMixin:
         return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
 
 
-if __name__ == "__main__":
-    """
-    단독 테스트:
-    - MT5 터미널 실행 중이어야 함
-    - 모의계좌에서 BTCUSD로 테스트 권장
+    # -------------------------
+    # 주문 취소
+    # -------------------------
+    def cancel_order(self, symbol: str, order_id: str | int):
+        """
+        MT5용 주문 취소.
+        - MT5에서는 'pending order'만 취소 가능(지정가/스탑 등).
+        - 시장가 DEAL은 취소 개념이 거의 없음(이미 체결 시도).
+        Bybit 스타일 유사 응답을 리턴한다.
+        """
+        if not self._ensure_mt5():
+            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED",
+                    "comment": "mt5 initialize failed"}
 
-    실행 예:
-      MT5_TEST_SYMBOL=BTCUSD MT5_TEST_SIDE=long MT5_TEST_LOT=0.01 python -m controllers.mt5.mt5_rest_trade
-      MT5_TEST_CLOSE=1 MT5_TEST_SYMBOL=BTCUSD MT5_TEST_SIDE=long MT5_TEST_LOT=0.01 python -m controllers.mt5.mt5_rest_trade
-    """
-    import os
-    from pprint import pprint
+        sym = (symbol or "").upper()
+        oid = int(order_id) if str(order_id).isdigit() else 0
+        if oid <= 0:
+            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED", "comment": "invalid order_id"}
 
-    try:
-        from app import config as cfg  # noqa: F401
-    except Exception:
-        cfg = None
-
-    SYMBOL = os.getenv("MT5_TEST_SYMBOL", "BTCUSD").upper()
-    SIDE = os.getenv("MT5_TEST_SIDE", "long").lower()
-    LOT = float(os.getenv("MT5_TEST_LOT", "0.01"))
-    DO_CLOSE = os.getenv("MT5_TEST_CLOSE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
-
-    # ✅ Orders mixin이 함께 있어야 append_order가 실제로 동작함
-    try:
-        from controllers.mt5.mt5_rest_orders import Mt5RestOrdersMixin
-    except Exception:
-        Mt5RestOrdersMixin = object  # fallback
-
-    class _Tester(Mt5RestTradeMixin, Mt5RestOrdersMixin):
-        system_logger = None
-
-    t = _Tester()
-
-    print("\n[0] SETTINGS")
-    print("SYMBOL:", SYMBOL, "SIDE:", SIDE, "LOT:", LOT, "DO_CLOSE:", DO_CLOSE)
-
-    print("\n[1] symbol rules")
-    pprint(t.get_symbol_rules(SYMBOL))
-
-    print("\n[2] submit_market_order (OPEN)")
-    if SIDE == "long":
-        r = t.submit_market_order(SYMBOL, "Buy", LOT, position_idx=1, reduce_only=False, comment="py-test-open")
-    else:
-        r = t.submit_market_order(SYMBOL, "Sell", LOT, position_idx=2, reduce_only=False, comment="py-test-open")
-    pprint(r)
-
-    time.sleep(1.0)
-
-    print("\n[3] positions_get")
-    poss = mt5.positions_get(symbol=SYMBOL) or []
-    print("positions:", len(poss))
-    if poss:
+        # 1) pending order 존재 확인
         try:
-            pprint(poss[0]._asdict())
+            # MT5 python은 orders_get(ticket=...) 지원
+            orders = mt5.orders_get(ticket=oid) or []
         except Exception:
-            pprint(poss[0])
+            orders = []
 
-    if DO_CLOSE:
-        print("\n[4] submit_market_order (CLOSE via reduce_only)")
-        if SIDE == "long":
-            rc = t.submit_market_order(SYMBOL, "Sell", LOT, position_idx=1, reduce_only=True, comment="py-test-close")
-        else:
-            rc = t.submit_market_order(SYMBOL, "Buy", LOT, position_idx=2, reduce_only=True, comment="py-test-close")
-        pprint(rc)
+        if not orders:
+            # 이미 체결됐거나(딜), 존재하지 않거나, 다른 심볼일 수 있음
+            return {
+                "ok": True,
+                "orderId": str(order_id),
+                "orderStatus": "NOT_FOUND",
+                "comment": "no pending order found (maybe filled/canceled/already dealt)",
+                "symbol": sym,
+            }
 
-        time.sleep(1.0)
-        poss2 = mt5.positions_get(symbol=SYMBOL) or []
-        print("\n[5] positions after close:", len(poss2))
+        # 2) pending 취소 시도 (TRADE_ACTION_REMOVE)
+        req = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": oid,
+            "symbol": sym,
+            "comment": "mt5-cancel",
+        }
 
-    # 로컬 기록 확인
-    if hasattr(t, "load_orders"):
-        print("\n[6] local orders file check")
-        saved = t.load_orders(SYMBOL)
-        print("saved count:", len(saved))
-        if saved:
-            print("last saved:")
-            pprint(saved[-1])
+        res = mt5.order_send(req)
+        if res is None:
+            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED",
+                    "comment": f"order_send None: {mt5.last_error()}"}
 
-    print("\nDONE")
+        retcode = int(getattr(res, "retcode", -1))
+        ok = retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
+
+        return {
+            "ok": bool(ok),
+            "orderId": str(order_id),
+            "orderStatus": "CANCELLED" if ok else "REJECTED",
+            "retcode": retcode,
+            "comment": str(getattr(res, "comment", "")),
+            "symbol": sym,
+        }
+
+    def wait_order_fill(
+            self,
+            symbol: str,
+            order_id: str | int,
+            *,
+            expected: str = "OPEN",  # ✅ "OPEN" or "CLOSE"
+            side: str | None = None,  # ✅ "LONG"/"SHORT" (가능하면 넘겨라)
+            before_qty: float | None = None,  # ✅ CLOSE에서 핵심
+            max_retries: int = 10,
+            sleep_sec: float = 1.0,
+    ):
+        if not self._ensure_mt5():
+            return {"orderId": str(order_id), "orderStatus": "REJECTED", "comment": "mt5 initialize failed"}
+
+        sym = (symbol or "").upper()
+        oid = str(order_id)
+
+        exp = (expected or "OPEN").upper()
+        s = (side or "").upper() if side else None
+
+        # order_id가 MT5 ticket일 수도 있으니 int로도 들고 있음
+        oid_int = 0
+        try:
+            oid_int = int(float(oid))
+        except Exception:
+            oid_int = 0
+
+        # ✅ BEFORE가 안 들어오면 현재 값을 기준으로 잡아버림(최소 방어)
+        if before_qty is None:
+            before_qty = self._get_position_qty(sym, s)
+
+        for i in range(max_retries):
+            # 1) ✅ 딜 히스토리로 체결 확인 (UTC 추천)
+            try:
+                dt_to = datetime.now(timezone.utc)
+                dt_from = dt_to - timedelta(minutes=5)
+                try:
+                    deals = mt5.history_deals_get(dt_from, dt_to, group=sym) or []
+                except TypeError:
+                    deals = mt5.history_deals_get(dt_from, dt_to) or []
+            except Exception:
+                deals = []
+
+            for d in reversed(deals):
+                try:
+                    dsym = str(getattr(d, "symbol", "") or "").upper()
+                    if dsym != sym:
+                        continue
+                    deal_ticket = int(getattr(d, "ticket", 0) or 0)
+                    deal_order = int(getattr(d, "order", 0) or 0)
+                    if oid_int and (deal_ticket == oid_int or deal_order == oid_int):
+                        return {
+                            "orderId": oid,
+                            "orderStatus": "FILLED",
+                            "symbol": sym,
+                            "deal": deal_ticket,
+                            "order": deal_order,
+                        }
+                except Exception:
+                    continue
+
+            # 2) ✅ 포지션 변화로 판정
+            cur_qty = self._get_position_qty(sym, s)
+
+            if exp == "OPEN":
+                # OPEN은 증가/생성되면 체결로 본다
+                if cur_qty > (before_qty + 1e-12):
+                    return {"orderId": oid, "orderStatus": "FILLED", "symbol": sym, "beforeQty": before_qty,
+                            "afterQty": cur_qty}
+
+            else:  # CLOSE
+                # CLOSE는 감소/소멸되면 체결로 본다
+                if cur_qty < (before_qty - 1e-12):
+                    return {"orderId": oid, "orderStatus": "FILLED", "symbol": sym, "beforeQty": before_qty,
+                            "afterQty": cur_qty}
+                # 완전 청산 기대면 0 근처도 인정
+                if before_qty > 0 and cur_qty <= 1e-12:
+                    return {"orderId": oid, "orderStatus": "FILLED", "symbol": sym, "beforeQty": before_qty,
+                            "afterQty": cur_qty}
+
+            if getattr(self, "system_logger", None):
+                self.system_logger.debug(
+                    f"⌛ [MT5] 체결 대기중... ({i + 1}/{max_retries}) | {sym} exp={exp} {before_qty:.4f}->{cur_qty:.4f}"
+                )
+            time.sleep(sleep_sec)
+
+        return {"orderId": oid, "orderStatus": "TIMEOUT", "symbol": sym, "expected": exp, "beforeQty": before_qty}
