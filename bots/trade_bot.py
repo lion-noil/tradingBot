@@ -225,26 +225,29 @@ class TradeBot:
         get_ck = getattr(self.ws, "get_last_confirmed_kline", None)
         if not callable(get_ck):
             return
-        k = get_ck(symbol, "1")
-        if k and k.get("confirm"):
-            k_start_minute = int(k["start"] // 60000)
-            if k_start_minute is None or k_start_minute != self._last_closed_minute[symbol]:
-                self.candle.apply_confirmed_kline(symbol, k)
-                # 지표 갱신 유틸 호출
 
-                refresh_indicators_for_symbol(
-                    self.candle, self.indicator, symbol,
-                    ma100s=self.ma100s,
-                    now_ma100_map=self.now_ma100,
-                    ma_threshold_map=self.ma_threshold,
-                    thr_quantized_map=self._thr_quantized,
-                    momentum_threshold_map=self.momentum_threshold,
-                    prev3_candle_map=self.prev,
-                    system_logger=self.system_logger,
-                    redis_client=redis_client,
-                    namespace=self.namespace
-                )
-                self._last_closed_minute[symbol] = k_start_minute
+        k = get_ck(symbol, "1")
+        if not (k and k.get("confirm")):
+            return
+
+        k_start_minute = int(k["start"] // 60000)
+
+        if k_start_minute is None or k_start_minute != self._last_closed_minute[symbol]:
+            self.candle.apply_confirmed_kline(symbol, k)
+            # 지표 갱신
+            refresh_indicators_for_symbol(
+                self.candle, self.indicator, symbol,
+                ma100s=self.ma100s,
+                now_ma100_map=self.now_ma100,
+                ma_threshold_map=self.ma_threshold,
+                thr_quantized_map=self._thr_quantized,
+                momentum_threshold_map=self.momentum_threshold,
+                prev3_candle_map=self.prev,
+                system_logger=self.system_logger,
+                redis_client=redis_client,
+                namespace=self.namespace
+            )
+            self._last_closed_minute[symbol] = k_start_minute
 
     def _candle_backfill(self, symbol: str, price: Optional[float], now_ts: float) -> None:
         use_ws = ws_is_fresh(self.ws, symbol, self.ws_stale_sec, self.ws_global_stale_sec)

@@ -87,9 +87,9 @@ class CandleEngine:
                     "minute": int(m),
                 })
 
-        o = k.get("open");
-        h = k.get("high");
-        l = k.get("low");
+        o = k.get("open")
+        h = k.get("high")
+        l = k.get("low")
         c = k.get("close")
 
         # ✅ (2) 값이 None인 쉬는시간 캔들: prev_close로 평평하게 채움
@@ -263,8 +263,11 @@ class IndicatorEngine:
             down_cross = last_state in ("above", "in") and low < lower
 
             # 현재 캔들 시점(KST 기준) 추정
-            cross_time_base = now_kst - timedelta(minutes=total_len - i)
-
+            m = candle.get("minute")
+            if m is not None:
+                cross_time_base = datetime.fromtimestamp(int(m) * 60, tz=KST)
+            else:
+                cross_time_base = now_kst - timedelta(minutes=total_len - i)  # fallback
             if up_cross:
                 cross_time = cross_time_base
                 if (

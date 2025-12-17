@@ -481,10 +481,21 @@ def refresh_indicators_for_symbol(
 
     # 상태 반영
     ma100s[symbol] = res.get("ma100s") or []
-    now_ma100_map[symbol] = ma100s[symbol][-1] if ma100s[symbol] else None
-    ma_threshold_map[symbol] = res["q_thr"]
-    q, mom_thr, log = derive_thresholds_and_log(prev_q, res["q_thr"])
+
+    arr = ma100s[symbol]
+    now = None
+    for v in reversed(arr):
+        if v is not None:
+            now = float(v)
+            break
+    now_ma100_map[symbol] = now
+
+    raw_thr = res["q_thr"]
+    q, mom_thr, log = derive_thresholds_and_log(prev_q, raw_thr)
+
     thr_quantized_map[symbol] = q
+    ma_threshold_map[symbol] = q
+
     momentum_threshold_map[symbol] = mom_thr
     # 로깅(있을 때만)
     if log and redis_client is not None:
