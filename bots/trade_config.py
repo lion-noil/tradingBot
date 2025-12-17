@@ -99,8 +99,7 @@ def make_mt5_signal_config(
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-#        symbols = ("US100", "JP225","KS200","BTCUSD","ETHUSD","XAUUSD","WTI","XNGUSD")
-        symbols = ("WTI",)
+        symbols = ("US100", "JP225","KS200","BTCUSD","ETHUSD","XAUUSD","WTI","XNGUSD")
 
     cfg = TradeConfig(
         name="mt5_signal",
