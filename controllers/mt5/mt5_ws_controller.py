@@ -179,11 +179,12 @@ class Mt5WebSocketController:
                 except (TypeError, ValueError):
                     return
 
-                exch_ts = item.get("ts") or item.get("timestamp")
-                try:
-                    exch_ts = float(exch_ts) if exch_ts is not None else time.time()
-                except Exception:
-                    exch_ts = time.time()
+                exch_ts_sec = item.get("tsSec")
+                if exch_ts_sec is not None:
+                    exch_ts = float(exch_ts_sec)
+                else:
+                    exch_ts_ms = item.get("ts") or item.get("timestamp")
+                    exch_ts = float(exch_ts_ms) / 1000.0 if exch_ts_ms is not None else time.time()
 
                 with self._lock:
                     self._prices[sym] = price
@@ -204,38 +205,31 @@ class Mt5WebSocketController:
 
                 for bar in items:
                     try:
-                        t_sec = int(bar["time"])
-                        o = float(bar["open"])
-                        h = float(bar["high"])
-                        l = float(bar["low"])
-                        c = float(bar["close"])
-                        v = float(bar.get("volume", 0) or 0)
                         confirm = bool(bar.get("confirm", False))
                     except Exception:
                         continue
 
-                    step_ms = 60 * 1000 if interval == "1" else 24 * 60 * 60 * 1000
-                    start_ms = t_sec * 1000
-                    end_ms = start_ms + step_ms - 1
-
+                    start_ms = int(bar["start"])
+                    end_ms = int(bar.get("end") or (start_ms + 60_000))
                     k = {
                         "symbol": sym,
                         "interval": interval,
-                        "time": t_sec,
-                        "open": o,
-                        "high": h,
-                        "low": l,
-                        "close": c,
-                        "volume": v,
-                        "confirm": confirm,
                         "start": start_ms,
                         "end": end_ms,
+                        "confirm": confirm,
+                        "open": float(bar["open"]),
+                        "high": float(bar["high"]),
+                        "low": float(bar["low"]),
+                        "close": float(bar["close"]),
+                        "volume": float(bar.get("volume", 0) or 0),
+                        "turnover": float(bar.get("turnover", 0) or 0),  # 없으면 0
+                        "ts": int(bar.get("timestamp") or bar.get("ts") or 0),
                     }
 
                     key = (sym, interval)
                     with self._lock:
                         self._last_kline[key] = k
-                        if confirm:
+                        if k["confirm"]:
                             self._last_kline_confirmed[key] = k
 
         def on_error(ws: WebSocketApp, error):

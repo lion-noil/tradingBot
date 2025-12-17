@@ -30,8 +30,6 @@ class CandleState:
 
 
 class CandleEngine:
-    """ticker 기반 실시간 1분봉 누적 + kline(confirmed) 반영"""
-
     def __init__(self, candles_num: int = 10080):
         # symbol -> deque[{'open','high','low','close','minute'}]
         self.candles: Dict[str, Deque[Dict[str, Any]]] = {}

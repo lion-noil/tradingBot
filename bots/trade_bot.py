@@ -227,7 +227,7 @@ class TradeBot:
             return
         k = get_ck(symbol, "1")
         if k and k.get("confirm"):
-            k_start_minute = int(k["start"] // 60) if "start" in k else None
+            k_start_minute = int(k["start"] // 60000)
             if k_start_minute is None or k_start_minute != self._last_closed_minute[symbol]:
                 self.candle.apply_confirmed_kline(symbol, k)
                 # 지표 갱신 유틸 호출
