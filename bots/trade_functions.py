@@ -94,12 +94,10 @@ def xadd_pct_log(
 
 
 # ── 트레이딩 시그널 업로드 ─────────────────────────
-def upload_signal(redis_client, sig: Dict[str, Any], namespace: Optional[str] = None) -> None:
-    """
-    시그널은:
-    - 기존 글로벌 키 "trading:signal" 에는 계속 저장 (기존 프론트/툴 호환용)
-    - namespace 가 있으면 "trading:{namespace}:signal" 에도 추가로 저장
-    """
+def upload_signal(redis_client, sig: Dict[str, Any], namespace: str) -> None:
+    if not namespace:
+        raise ValueError("namespace is required (e.g. 'bybit', 'mt5')")
+
     symbol = sig["symbol"]
     ts_iso = sig["ts"]
     day = ts_iso[:10]
@@ -113,12 +111,9 @@ def upload_signal(redis_client, sig: Dict[str, Any], namespace: Optional[str] = 
 
     value = json.dumps(sig, ensure_ascii=False, separators=(",", ":"))
 
-    redis_client.hset("trading:signal", field, value)
+    key_ns = f"trading:{namespace}:signal"
+    redis_client.hset(key_ns, field, value)
 
-    # 2) 네임스페이스별 키(플랫폼별 분리용)
-    if namespace:
-        key_ns = f"trading:{namespace}:signal"
-        redis_client.hset(key_ns, field, value)
 
 
 # ── 자산/포지션 문자열 빌더(순수 함수) ────────────────
