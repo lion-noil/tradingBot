@@ -279,7 +279,7 @@ class IndicatorEngine:
                     cross_times.append(
                         (
                             "UP",
-                            cross_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            cross_time.isoformat(timespec="seconds"),
                             upper,
                             close,  # 로그에는 close 남김
                             ma,
@@ -298,7 +298,7 @@ class IndicatorEngine:
                     cross_times.append(
                         (
                             "DOWN",
-                            cross_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            cross_time.isoformat(timespec="seconds"),
                             lower,
                             close,
                             ma,
