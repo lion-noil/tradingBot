@@ -183,7 +183,7 @@ def make_status_log_msg(
     now_ma100: Dict[str, Optional[float]],
     get_price: Callable[[str], Optional[float]],
 ) -> str:
-    log_msg = f"\n💰 총 자산: {total_usdt:.2f} {currency}\n"
+    log_msg = f"\n💰 총 자산: {total_usdt:.2f} {currency}"
     for symbol in symbols:
         js = (jump_state or {}).get(symbol, {})
         state = js.get("state")
@@ -341,7 +341,7 @@ def build_full_status_log(
     positions_by_symbol: Dict[str, Dict[str, Any]],
     taker_fee_rate: float,
 ) -> str:
-    lines: List[str] = [f"\n💰 총 자산: {total_usdt:.2f} USDT\n"]
+    lines: List[str] = [f"\n💰 총 자산: {total_usdt:.2f} USDT"]
 
     for sym in symbols:
         # 1) 심볼 상태 한 줄
