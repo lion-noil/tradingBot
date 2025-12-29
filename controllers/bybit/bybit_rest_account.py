@@ -9,6 +9,13 @@ class BybitRestAccountMixin:
     # -------------------------
     # 지갑 잔고 조회 (거래용: private)
     # -------------------------
+
+    REDIS_ASSET_KEY = "trading:bybit:asset"
+
+    def _asset_key(self):
+        return self.REDIS_ASSET_KEY
+
+
     def get_usdt_balance(self):
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
@@ -75,7 +82,7 @@ class BybitRestAccountMixin:
                 newv = float(result.get("wallet_balance") or 0.0)
                 if prev != newv:
                     redis_client.hset(
-                        "asset",
+                        self._asset_key(),
                         f"wallet.{result['coin']}",
                         f"{newv:.10f}",
                     )
@@ -143,7 +150,7 @@ class BybitRestAccountMixin:
         if save_redis:
             try:
                 redis_client.hset(
-                    "asset",
+                    self._asset_key(),
                     f"positions.{symbol}",
                     self._json_or_empty_list(asset["positions"][symbol]),
                 )
@@ -152,3 +159,98 @@ class BybitRestAccountMixin:
                     self.system_logger.error(f"[WARN] Redis 저장 실패({symbol}): {e}")
 
         return asset
+
+
+if __name__ == "__main__":
+    from pprint import pprint
+
+    try:
+        from bots.trade_config import make_bybit_config
+        cfg_bybit = make_bybit_config()
+    except Exception:
+        cfg_bybit = None
+
+    print("\n[0-1] redis ping test")
+    try:
+        print("redis ping:", redis_client.ping())
+    except Exception as e:
+        print("redis ping failed:", e)
+
+    # symbols: 리스트/문자열 둘 다 지원
+    raw_symbols = None
+    if cfg_bybit is not None:
+        raw_symbols = getattr(cfg_bybit, "symbols", None)
+
+    if not raw_symbols:
+        raw_symbols = ["BTCUSDT"]
+
+    if isinstance(raw_symbols, str):
+        symbols = [raw_symbols]
+    else:
+        symbols = list(raw_symbols)
+
+    symbols = [str(s).strip().upper() for s in symbols if s and str(s).strip()]
+
+    try:
+        from controllers.bybit.bybit_rest_base import BybitRestBase
+    except Exception:
+        BybitRestBase = object
+
+    try:
+        from controllers.bybit.bybit_rest_market import BybitRestMarketMixin
+    except Exception:
+        BybitRestMarketMixin = object
+
+    try:
+        from controllers.bybit.bybit_rest_orders import BybitRestOrdersMixin
+    except Exception:
+        BybitRestOrdersMixin = object
+
+    class _Tester(BybitRestBase, BybitRestMarketMixin, BybitRestOrdersMixin, BybitRestAccountMixin):
+        system_logger = None
+
+    t = _Tester()
+
+    print("\n[0] CONFIG SNAPSHOT")
+    print("SYMBOLS:", symbols)
+    print("REDIS_ASSET_KEY:", t.REDIS_ASSET_KEY)
+
+    print("\n[1] wallet balance (USDT)")
+    wb = t.get_usdt_balance()
+    pprint(wb)
+
+    # positions는 심볼별로 조회
+    for sym in symbols:
+        print(f"\n[2] positions (symbol={sym})")
+        try:
+            resp = t.get_positions(symbol=sym)
+            rows = (resp.get("result") or {}).get("list") or []
+        except Exception as e:
+            print("get_positions failed:", e)
+            rows = []
+
+        print(f"positions count = {len(rows)}")
+        if rows:
+            pprint(rows[0])
+
+    # getNsav_asset도 심볼별로 저장(한 asset dict에 누적)
+    print("\n[3] getNsav_asset + redis save test (with entries)")
+    asset = {}
+    out = None
+    for sym in symbols:
+        out = t.getNsav_asset(asset, symbol=sym, save_redis=True)
+
+    pprint(out)
+
+    # entries 확인용 출력
+    for sym in symbols:
+        p = ((out.get("positions") or {}).get(sym) or {}) if out else {}
+        if p.get("LONG"):
+            print(f"\n[CHECK] {sym} LONG entries:")
+            pprint(p["LONG"].get("entries"))
+        if p.get("SHORT"):
+            print(f"\n[CHECK] {sym} SHORT entries:")
+            pprint(p["SHORT"].get("entries"))
+
+    print("\nDONE")
+

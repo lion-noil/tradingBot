@@ -6,34 +6,16 @@ import json
 from urllib.parse import urlencode
 
 import requests
-from app.config import (
-    BYBIT_TRADE_REST_URL,
-    BYBIT_TRADE_API_KEY,
-    BYBIT_TRADE_API_SECRET,
-    BYBIT_PRICE_REST_URL,
-)
-
+from bots.trade_config import SecretsConfig
 
 class BybitRestBase:
-    def __init__(self, system_logger=None, base_url: str | None = None):
+    def __init__(self, system_logger=None):
         self.system_logger = system_logger
-
-        # ✅ 역할 분리
-        self.trade_base_url = (base_url or BYBIT_TRADE_REST_URL).rstrip("/")
-        self.price_base_url = (BYBIT_PRICE_REST_URL or "").rstrip("/")
-
-        # ✅ 기존 코드 호환: base_url = trade
-        self.base_url = self.trade_base_url
-
-        # ✅ 키/시크릿 (trade only)
-        self.api_key = BYBIT_TRADE_API_KEY
-        if not BYBIT_TRADE_API_SECRET:
-            raise RuntimeError("BYBIT_TRADE_API_SECRET is missing")
-        self.api_secret = (
-            BYBIT_TRADE_API_SECRET.encode()
-            if BYBIT_TRADE_API_SECRET
-            else None
-        )
+        cfg_secret = SecretsConfig.from_env().require_bybit_trade()
+        self.trade_base_url = cfg_secret.bybit_trade_rest_url
+        self.price_base_url = cfg_secret.bybit_price_rest_url
+        self.api_key = cfg_secret.bybit_trade_api_key
+        self.api_secret = cfg_secret.bybit_trade_api_secret
 
         if not self.api_key:
             raise RuntimeError("BYBIT_TRADE_API_KEY is missing")
@@ -80,7 +62,8 @@ class BybitRestBase:
         payload = f"{timestamp}{self.api_key}{self.recv_window}{query_string}"
         if not self.api_secret:
             raise RuntimeError("Trade API secret is not configured")
-        return hmac.new(self.api_secret, payload.encode(), hashlib.sha256).hexdigest()
+        secret = self.api_secret.encode() if isinstance(self.api_secret, str) else self.api_secret
+        return hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
 
     def _get_headers(self, method: str, endpoint: str, params: str = "", body: str = "") -> dict:
         timestamp = self._now_ms()

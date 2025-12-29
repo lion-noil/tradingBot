@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from app.config import MT5_PRICE_REST_URL
-
 from .mt5_rest_base import Mt5RestBase
 from .mt5_rest_market import Mt5RestMarketMixin
 
@@ -28,12 +26,9 @@ class Mt5RestController(
     - Mt5RestAccount/Orders/Trade: MT5 터미널 API로 처리 (MetaTrader5)
     """
 
-    def __init__(self, system_logger=None, price_base_url: str | None = None):
+    def __init__(self, system_logger=None):
         super().__init__(
             system_logger=system_logger,
-            price_base_url=(price_base_url or MT5_PRICE_REST_URL),
-            # trade_base_url / api_key는 이제 옵션이므로 여기서 안 넣어도 됨
-            base_url=(price_base_url or MT5_PRICE_REST_URL),  # 호환용 base_url도 price로
         )
 
         # 트레이딩 공통 설정

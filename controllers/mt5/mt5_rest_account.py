@@ -204,12 +204,9 @@ class Mt5RestAccountMixin:
 
 if __name__ == "__main__":
     from pprint import pprint
+    from bots.trade_config import make_mt5_signal_config
 
-    # ✅ 프로젝트 환경(app/config.py)이 .env를 로드하고 가드도 실행하도록
-    from app import config as cfg
-
-    if not getattr(cfg, "ENABLE_MT5", True):
-        raise RuntimeError("ENABLE_MT5=0 입니다. .env에서 ENABLE_MT5=1로 켜주세요.")
+    cfg_mt5 = make_mt5_signal_config()
 
     print("\n[0-1] redis ping test")
     try:
@@ -217,7 +214,15 @@ if __name__ == "__main__":
     except Exception as e:
         print("redis ping failed:", e)
 
-    TEST_SYMBOL = getattr(cfg, "MT5_TEST_SYMBOL", None) or "BTCUSD"
+    # symbols: 리스트 or 단일 문자열 모두 처리
+    raw_symbols = getattr(cfg_mt5, "symbols", None) or ["BTCUSD"]
+    if isinstance(raw_symbols, str):
+        symbols = [raw_symbols]
+    else:
+        symbols = list(raw_symbols)
+
+    # 공백/None 제거 + 대문자 표준화
+    symbols = [str(s).strip().upper() for s in symbols if s and str(s).strip()]
 
     # ✅ Orders mixin까지 같이 붙여야 entries가 채워짐
     try:
@@ -231,39 +236,40 @@ if __name__ == "__main__":
     t = _Tester()
 
     print("\n[0] CONFIG SNAPSHOT")
-    print("ENABLE_MT5:", getattr(cfg, "ENABLE_MT5", None))
-    print("TEST_SYMBOL:", TEST_SYMBOL)
+    print("SYMBOLS:", symbols)
     print("REDIS_ASSET_KEY:", t.REDIS_ASSET_KEY)
 
     print("\n[1] MT5 initialize / account info")
     acc = t.get_account_balance()
     pprint(acc)
 
-    print("\n[2] symbol rules")
-    rules = t.get_symbol_rules(TEST_SYMBOL)
-    pprint(rules)
+    # positions는 심볼별로 조회
+    for sym in symbols:
+        print(f"\n[2] positions (symbol={sym})")
+        pos = t.get_positions(sym)
+        print(f"positions count = {len(pos)}")
+        if pos:
+            try:
+                pprint(pos[0]._asdict())
+            except Exception:
+                pprint(pos[0])
 
-    print("\n[3] positions (symbol)")
-    pos = t.get_positions(TEST_SYMBOL)
-    print(f"positions count = {len(pos)}")
-    if pos:
-        try:
-            pprint(pos[0]._asdict())
-        except Exception:
-            pprint(pos[0])
-
-    print("\n[4] getNsav_asset + redis save test (with entries)")
+    # getNsav_asset도 심볼별로 저장(한 asset dict에 누적)
+    print("\n[3] getNsav_asset + redis save test (with entries)")
     asset = {}
-    out = t.getNsav_asset(asset, symbol=TEST_SYMBOL, save_redis=True)
+    for sym in symbols:
+        out = t.getNsav_asset(asset, symbol=sym, save_redis=True)
+
     pprint(out)
 
     # entries 확인용 출력
-    p = ((out.get("positions") or {}).get(TEST_SYMBOL.upper()) or {})
-    if p.get("LONG"):
-        print("\n[CHECK] LONG entries:")
-        pprint(p["LONG"].get("entries"))
-    if p.get("SHORT"):
-        print("\n[CHECK] SHORT entries:")
-        pprint(p["SHORT"].get("entries"))
+    for sym in symbols:
+        p = ((out.get("positions") or {}).get(sym) or {})
+        if p.get("LONG"):
+            print(f"\n[CHECK] {sym} LONG entries:")
+            pprint(p["LONG"].get("entries"))
+        if p.get("SHORT"):
+            print(f"\n[CHECK] {sym} SHORT entries:")
+            pprint(p["SHORT"].get("entries"))
 
     print("\nDONE")

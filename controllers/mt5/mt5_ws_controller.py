@@ -3,10 +3,8 @@ import threading
 import time
 import json
 from typing import Optional
-
+from bots.trade_config import SecretsConfig
 from websocket import WebSocketApp
-
-from app.config import MT5_PRICE_WS_URL  # ✅ .env에서 관리
 
 
 class Mt5WebSocketController:
@@ -20,16 +18,18 @@ class Mt5WebSocketController:
         - kline 수신: {"topic": "kline.INTERVAL.SYMBOL", "data": [ {...}, ... ]}
     """
 
-    def __init__(self, symbols=("EURUSD",), system_logger=None, base_ws_url: str | None = None):
+    def __init__(self, symbols=("EURUSD",), system_logger=None):
         self.kline_interval = "1"
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
 
+        cfg_secret = SecretsConfig.from_env().require_mt5_public()
+
+
         self.symbols = list(symbols)
         self.system_logger = system_logger
 
-        # ✅ 하드코딩 제거: env 또는 인자 override
-        self.ws_url = base_ws_url or MT5_PRICE_WS_URL
+        self.ws_url = cfg_secret.mt5_price_ws_url
         if not self.ws_url:
             raise RuntimeError("MT5_PRICE_WS_URL is missing (.env)")
 
@@ -271,3 +271,61 @@ class Mt5WebSocketController:
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
+if __name__ == "__main__":
+    from pprint import pprint
+    import time
+
+    print("\n[0] SecretsConfig MT5 public env load test")
+    try:
+        sec = SecretsConfig.from_env()
+        pprint({
+            "enable_mt5": sec.enable_mt5,
+            "mt5_price_ws_url": sec.mt5_price_ws_url,
+            "mt5_price_rest_url": sec.mt5_price_rest_url,
+            "mt5_trade_rest_url": sec.mt5_trade_rest_url,
+            "mt5_trade_api_key_set": bool(sec.mt5_trade_api_key),
+        })
+
+        sec.require_mt5_public()
+        if not sec.mt5_price_ws_url:
+            raise RuntimeError("❌ Missing MT5_PRICE_WS_URL")
+        print("✅ require_mt5_public OK")
+    except Exception as e:
+        print("❌ MT5 env/config load failed:", e)
+        raise
+
+    print("\n[1] Mt5WebSocketController init test (starts background thread)")
+    try:
+        symbols = ("EURUSD", "XAUUSD")  # 필요하면 바꿔
+        ws = Mt5WebSocketController(symbols=symbols, system_logger=None)
+
+        print("ws_url:", ws.ws_url)
+        print("symbols:", ws.symbols)
+
+        # 연결/데이터 수신까지 잠깐 대기
+        time.sleep(3)
+
+        print("\n[2] runtime status check")
+        print("ws_connected:", ws.ws is not None)
+        print("last_frame_time_monotonic:", ws.get_last_frame_time())
+        print("all_prices_snapshot:", ws.get_all_prices())
+
+        # 조금 더 기다렸다가 가격 들어오는지 확인
+        time.sleep(5)
+        print("\n[3] prices after 5s more")
+        prices = ws.get_all_prices()
+        print("all_prices_snapshot:", prices)
+        for sym in symbols:
+            print(f"{sym} price:", ws.get_price(sym))
+
+        # kline도 구독했으니 마지막 kline 확인 (올 수도 있고 안 올 수도 있음)
+        for sym in symbols:
+            k = ws.get_last_kline(sym)
+            kc = ws.get_last_confirmed_kline(sym)
+            print(f"\n[{sym}] last_kline:", k)
+            print(f"[{sym}] last_confirmed_kline:", kc)
+
+        print("\nDONE ✅ (프로세스를 계속 켜두면 데이터가 더 들어옵니다)")
+    except Exception as e:
+        print("❌ Mt5WebSocketController test failed:", e)
+        raise

@@ -1,13 +1,151 @@
 # bots/trade_config.py
 from dataclasses import dataclass, asdict, field
-from typing import Any, Dict, List
 from datetime import datetime, timezone
 import json
 
+from typing import Any, Dict, List, Optional, Tuple
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 # 네임스페이스(name)에 따라 서로 다른 키를 쓰도록 템플릿으로 정의
 REDIS_KEY_CFG = "trading:{name}:config"                  # 전체 공용 설정 해시
 REDIS_KEY_CFG_EXIT_MA = "trading:{name}:config:exit_ma"  # 심볼별 청산 스레시홀드 해시
 REDIS_CH_CFG = "trading:{name}:config:update"            # 변경 브로드캐스트 채널(옵션)
+
+_ENV_LOADED = False
+
+def _load_dotenv_once(dotenv_path: str | None = None) -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+
+    if dotenv_path:
+        load_dotenv(dotenv_path, override=False)
+        _ENV_LOADED = True
+        return
+
+    # 기본: 프로젝트 루트(.git 있는 곳) 또는 현재 작업폴더 기준 상위에서 .env 탐색
+    # trade_config.py 위치: <root>/bots/trade_config.py 라는 전제
+    root = Path(__file__).resolve().parents[1]  # bots/ 의 상위 = 프로젝트 루트
+    load_dotenv(root / ".env", override=False)
+    _ENV_LOADED = True
+
+
+def _optional(name: str, default=None):
+    v = os.getenv(name)
+    return v if (v is not None and v != "") else default
+
+def _required(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"❌ Missing required env var: {name}")
+    return v
+
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+@dataclass(frozen=True)
+class RedisConfig:
+    url: Optional[str] = None
+    host: Optional[str] = None
+    port: int = 6379
+    password: Optional[str] = None
+
+    @staticmethod
+    def from_env() -> "RedisConfig":
+        _load_dotenv_once()
+
+
+        return RedisConfig(
+            url=_optional("REDIS_URL"),
+            host=_optional("REDIS_HOST"),
+            port=int(_optional("REDIS_PORT", "6379")),
+            password=_optional("REDIS_PASSWORD"),
+        )
+
+_SECRET_CACHE: "SecretsConfig | None" = None
+@dataclass(frozen=True)
+class SecretsConfig:
+    enable_bybit: bool = True
+    enable_mt5: bool = True
+
+    bybit_price_ws_url: Optional[str] = None
+    bybit_price_rest_url: Optional[str] = None
+    bybit_trade_rest_url: Optional[str] = None
+    bybit_trade_api_key: Optional[str] = None
+    bybit_trade_api_secret: Optional[str] = None
+
+    mt5_price_rest_url: Optional[str] = None
+    mt5_trade_rest_url: Optional[str] = None
+    mt5_price_ws_url: Optional[str] = None
+    mt5_trade_api_key: Optional[str] = None
+
+    @staticmethod
+    def from_env() -> "SecretsConfig":
+        """
+        .env / 환경변수에서 1회 로드 후 캐싱.
+        - 여기서는 'optional'로만 읽는다. (필요한 강제는 require_*에서 수행)
+        """
+        global _SECRET_CACHE
+        if _SECRET_CACHE is not None:
+            return _SECRET_CACHE
+
+        _load_dotenv_once()
+
+        cfg = SecretsConfig(
+            enable_bybit=_truthy(_optional("ENABLE_BYBIT", "1")),
+            enable_mt5=_truthy(_optional("ENABLE_MT5", "1")),
+
+            bybit_price_ws_url=_optional("BYBIT_PRICE_WS_URL"),
+            bybit_price_rest_url=_optional("BYBIT_PRICE_REST_URL"),
+            bybit_trade_rest_url=_optional("BYBIT_TRADE_REST_URL"),
+            bybit_trade_api_key=_optional("BYBIT_TRADE_API_KEY"),
+            bybit_trade_api_secret=_optional("BYBIT_TRADE_API_SECRET"),
+
+            mt5_price_rest_url=_optional("MT5_PRICE_REST_URL"),
+            mt5_trade_rest_url=_optional("MT5_TRADE_REST_URL"),
+            mt5_price_ws_url=_optional("MT5_PRICE_WS_URL"),
+            mt5_trade_api_key=_optional("MT5_TRADE_API_KEY"),
+        )
+
+        _SECRET_CACHE = cfg
+        return cfg
+
+    def require_bybit_public(self) -> "SecretsConfig":
+        if not self.enable_bybit:
+            raise RuntimeError("ENABLE_BYBIT=0 인데 Bybit public 설정을 요구했습니다.")
+        if not self.bybit_price_ws_url:
+            raise RuntimeError("❌ Missing BYBIT_PRICE_WS_URL")
+        if not self.bybit_price_rest_url:
+            raise RuntimeError("❌ Missing BYBIT_PRICE_REST_URL")
+        return self
+
+    def require_bybit_trade(self) -> "SecretsConfig":
+        self.require_bybit_public()
+        if not self.bybit_trade_rest_url:
+            raise RuntimeError("❌ Missing BYBIT_TRADE_REST_URL")
+        if not self.bybit_trade_api_key:
+            raise RuntimeError("❌ Missing BYBIT_TRADE_API_KEY")
+        if not self.bybit_trade_api_secret:
+            raise RuntimeError("❌ Missing BYBIT_TRADE_API_SECRET")
+        return self
+
+    def require_mt5_public(self) -> "SecretsConfig":
+        if not self.enable_mt5:
+            raise RuntimeError("ENABLE_MT5=0 인데 MT5 public 설정을 요구했습니다.")
+        if not self.mt5_price_rest_url:
+            raise RuntimeError("❌ Missing MT5_PRICE_REST_URL")
+        return self
+
+    def require_mt5_trade(self) -> "SecretsConfig":
+        self.require_mt5_public()
+        if not self.mt5_trade_rest_url:
+            raise RuntimeError("❌ Missing MT5_TRADE_REST_URL")
+        # trade api key를 필수로 만들고 싶으면 아래 주석 해제
+        # if not self.mt5_trade_api_key:
+        #     raise RuntimeError("❌ Missing MT5_TRADE_API_KEY")
+        return self
 
 
 @dataclass
@@ -180,3 +318,36 @@ def make_bybit_config(
         signal_only=signal_only,
     )
     return cfg.normalized()
+
+if __name__ == "__main__":
+    from pprint import pprint
+
+    print("[DEBUG] dotenv loaded:", _ENV_LOADED)
+    print("[DEBUG] cwd:", Path.cwd())
+    root = Path(__file__).resolve().parents[1]
+    print("[DEBUG] expected .env:", root / ".env")
+    print("[DEBUG] .env exists:", (root / ".env").exists())
+
+    s = SecretsConfig.from_env()
+    pprint({
+        "enable_bybit": s.enable_bybit,
+        "enable_mt5": s.enable_mt5,
+        "bybit_price_ws_url": s.bybit_price_ws_url,
+        "bybit_price_rest_url": s.bybit_price_rest_url,
+        "bybit_trade_rest_url": s.bybit_trade_rest_url,
+        "bybit_trade_api_key_set": bool(s.bybit_trade_api_key),
+        "bybit_trade_api_secret_set": bool(s.bybit_trade_api_secret),
+    })
+
+    # 역할별 검증(원하는 것만)
+    try:
+        s.require_bybit_public()
+        print("✅ require_bybit_public OK")
+    except Exception as e:
+        print("❌ require_bybit_public FAIL:", e)
+
+    try:
+        s.require_bybit_trade()
+        print("✅ require_bybit_trade OK")
+    except Exception as e:
+        print("❌ require_bybit_trade FAIL:", e)

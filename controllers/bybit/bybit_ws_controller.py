@@ -1,24 +1,22 @@
 # controllers/bybit/bybit_ws_controller.py
-
 import threading
 import time
 import json
 from websocket import WebSocketApp
-from app.config import BYBIT_PRICE_WS_URL
+from bots.trade_config import SecretsConfig
 
 
 class BybitWebSocketController:
     def __init__(self, symbols=("BTCUSDT",), system_logger=None):
-        if not BYBIT_PRICE_WS_URL:
-            raise RuntimeError("BYBIT_PRICE_WS_URL is missing (.env)")
 
         self.kline_interval = "1"  # "1" = 1분봉
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
+        cfg_secret = SecretsConfig.from_env().require_bybit_public()
 
         self.symbols = list(symbols)
         self.system_logger = system_logger
-        self.ws_url = BYBIT_PRICE_WS_URL
+        self.ws_url = cfg_secret.bybit_price_ws_url
 
         self._lock = threading.Lock()
         self.ws: WebSocketApp | None = None

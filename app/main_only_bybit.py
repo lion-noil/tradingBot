@@ -5,9 +5,6 @@ from typing import Literal
 import signal, os, asyncio, logging, threading, time
 from collections import deque
 
-from dotenv import load_dotenv
-load_dotenv()
-
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -16,14 +13,11 @@ from pydantic import BaseModel
 from asyncio import Queue
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_bybit_config
+from bots.trade_config import make_bybit_config, SecretsConfig
 from utils.logger import setup_logger
 
-# ── Bybit 컨트롤러들 ───────────────────────────────────
 from controllers.bybit.bybit_ws_controller import BybitWebSocketController
 from controllers.bybit.bybit_rest_controller import BybitRestController
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
 class ManualOrderRequest(BaseModel):
@@ -37,10 +31,6 @@ class ManualCloseRequest(BaseModel):
 
 
 class BurstWarningTerminator(logging.Handler):
-    """
-    window_sec 동안 WARNING(이상) 로그가 threshold회 이상 발생하면 프로세스를 종료.
-    """
-
     def __init__(self, threshold: int = 3, window_sec: float = 5.0, grace_sec: float = 0.2):
         super().__init__()
         self.threshold = threshold
@@ -97,9 +87,7 @@ system_logger = setup_logger(
     exclude_sig_in_file=False,
     telegram_mode="both",
 )
-
-_terminator = BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2)
-system_logger.addHandler(_terminator)
+system_logger.addHandler(BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2))
 
 trading_logger = setup_logger(
     "trading",
@@ -118,16 +106,12 @@ trading_logger = setup_logger(
 app = FastAPI()
 manual_queue: Queue = Queue()
 
-# Bybit용 봇 & 컨트롤러
 bot_bybit: TradeBot | None = None
 bybit_ws_controller: BybitWebSocketController | None = None
 bybit_rest_controller: BybitRestController | None = None
 
 
 async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
-    """
-    워밍업 동안 WS에서 직접 가격을 읽어 JumpDetector에 채운다.
-    """
     MIN_TICKS = bot.jump.history_num
 
     while True:
@@ -136,8 +120,10 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
             for sym in bot.symbols:
                 price = ws.get_price(sym)
                 exchange_ts = ws.get_last_exchange_ts(sym)
-                if price:
+
+                if price is not None:  # ✅ 여기 수정
                     bot.jump.record_price(sym, price, exchange_ts)
+
                 cur = len(bot.jump.price_history.get(sym, []))
                 if cur < MIN_TICKS:
                     missing[sym] = cur
@@ -156,7 +142,6 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
 
 async def bot_loop(bot: TradeBot, ws, name: str):
     await warmup_with_ws_prices(bot, ws, name)
-
     while True:
         try:
             await bot.run_once()
@@ -172,21 +157,16 @@ async def startup_event():
 
     system_logger.debug("🚀 FastAPI 기반 봇 서버 시작 (BYBIT ONLY)")
 
-    # ── Bybit 설정 ───────────────────────────────
-    cfg_bybit = make_bybit_config()  # TradeConfig(name="bybit", ...)
+    sec = SecretsConfig.from_env()
+    if not sec.enable_bybit:
+        system_logger.error("⛔ ENABLE_BYBIT=0 → Bybit 서버 시작 중단")
+        return
 
-    # TradeConfig에 symbols 필드가 있으면 우선 사용, 없으면 기본값(빈 튜플 방지)
-    symbols_bybit = getattr(cfg_bybit, "symbols", None)
-    if symbols_bybit is None:
-        symbols_bybit = ()
-    symbols_bybit = tuple(symbols_bybit)
-
+    cfg_bybit = make_bybit_config()
+    symbols_bybit = tuple(getattr(cfg_bybit, "symbols", []) or [])  # ✅ 단순/안전
     system_logger.debug(f"🔧 Bybit symbols={symbols_bybit}, config={cfg_bybit.as_dict()}")
 
-    bybit_ws_controller = BybitWebSocketController(
-        symbols=symbols_bybit,
-        system_logger=system_logger,
-    )
+    bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger)
     bybit_rest_controller = BybitRestController(system_logger=system_logger)
 
     bot_bybit = TradeBot(
@@ -200,11 +180,9 @@ async def startup_event():
         config=cfg_bybit,
     )
 
-    # ── 봇 루프 실행 (Bybit만) ─────────────────────
     asyncio.create_task(bot_loop(bot_bybit, bybit_ws_controller, "BYBIT"))
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("app.main_only_bybit:app", host="127.0.0.1", port=8000, reload=False)
