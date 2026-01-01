@@ -157,13 +157,23 @@ def get_exit_signal(
     recent_entry_time: Optional[int] = None,   # ms
     ma_threshold: float = 0.005,               # 0.5% (사용자 평소값)
     exit_ma_threshold: float = -0.0005,         # -0.05% (근접 직전)
-    time_limit_sec: int = 24 * 3600,           # 24시간 초과 시 무조건 EXIT
+    time_limit_sec: int = None,
     near_touch_window_sec: int = 60 * 60
 ) -> Optional["Signal"]:
     """
     position: "LONG" | "SHORT"
     recent_entry_time: 엔트리 시각(ms). 없으면 시간기반 로직 없이 MA 기준만 적용(일반 기준 사용).
     """
+
+    if ma_threshold is None:
+        raise ValueError("ma_threshold is required (got None)")
+    if exit_ma_threshold is None:
+        raise ValueError("exit_ma_threshold is required (got None)")
+    if time_limit_sec is None:
+        raise ValueError("time_limit_sec is required (got None)")
+    if near_touch_window_sec is None:
+        raise ValueError("near_touch_window_sec is required (got None)")
+
     now_ms = int(time.time() * 1000)
 
     # 1) 경과시간 계산(시그널 체인 기준)

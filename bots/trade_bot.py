@@ -306,8 +306,8 @@ class TradeBot:
                 recent_entry_time=recent_time,
                 ma_threshold=self.ma_threshold.get(symbol),
                 exit_ma_threshold=self.exit_ma_threshold.get(symbol),
-                time_limit_sec=24 * 3600,
-                near_touch_window_sec=60 * 60
+                time_limit_sec=self.config.position_max_hold_sec,
+                near_touch_window_sec=self.config.near_touch_window_sec
             )
             if not sig:
                 continue

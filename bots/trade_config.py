@@ -153,6 +153,10 @@ class TradeConfig:
     # 어떤 용도/엔진인지 구분용 (예: "bybit", "mt5_signal")
     name: str = "default"
 
+    # 청산(보유시간/근접윈도우)
+    position_max_hold_sec: int = 7 * 24 * 3600  # ✅ 7일 기본
+    near_touch_window_sec: int = 60 * 60  # ✅ 1시간 기본
+
     # 이 설정이 다루는 심볼 목록 (프론트/봇에서 공통으로 사용)
     symbols: List[str] = field(default_factory=list)
 
@@ -219,6 +223,10 @@ class TradeConfig:
         self.target_cross = max(1, int(self.target_cross))
         self.candles_num = max(1, int(self.candles_num))
         self.signal_only = bool(self.signal_only)
+        self.position_max_hold_sec = max(600, int(self.position_max_hold_sec))  # 최소 60초
+        self.near_touch_window_sec = max(0, int(self.near_touch_window_sec))  # 0 허용
+
+
         # symbols 는 항상 리스트로
         self.symbols = list(self.symbols)
         return self
@@ -237,7 +245,7 @@ def make_mt5_signal_config(
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-        symbols = ("US100", "JP225","KS200","XAUUSD","WTI","XNGUSD","USDKRW")
+        symbols = ("US100", "JP225","KS200","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD")
 
     cfg = TradeConfig(
         name="mt5_signal",
