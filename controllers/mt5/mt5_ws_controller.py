@@ -43,6 +43,11 @@ class Mt5WebSocketController:
         self._last_tick_monotonic: dict[str, float] = {}
         self._last_exchange_ts: dict[str, float] = {}
 
+        # ✅ 추가: 원천 틱 값 저장
+        self._last: dict[str, float] = {}
+        self._bid: dict[str, float] = {}
+        self._ask: dict[str, float] = {}
+
         # 재연결 backoff
         self._reconnect_delay = 5
 
@@ -53,7 +58,37 @@ class Mt5WebSocketController:
     # ──────────────────────────────────────────────
     def get_price(self, symbol: str) -> Optional[float]:
         with self._lock:
-            return self._prices.get(symbol)
+            last = float(self._last.get(symbol) or 0.0)
+            bid = float(self._bid.get(symbol) or 0.0)
+            ask = float(self._ask.get(symbol) or 0.0)
+
+        # 1) last가 유효하면 last
+        if last > 0:
+            return last
+
+        # 2) last가 없으면 mid
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+
+        # 3) fallback
+        if bid > 0:
+            return bid
+        if ask > 0:
+            return ask
+
+        return None
+
+    def get_bid(self, symbol: str) -> Optional[float]:
+        with self._lock:
+            return self._bid.get(symbol)
+
+    def get_ask(self, symbol: str) -> Optional[float]:
+        with self._lock:
+            return self._ask.get(symbol)
+
+    def get_last(self, symbol: str) -> Optional[float]:
+        with self._lock:
+            return self._last.get(symbol)
 
     def get_all_prices(self) -> dict[str, float]:
         with self._lock:
@@ -171,12 +206,23 @@ class Mt5WebSocketController:
                     return
 
                 sym = item.get("symbol") or topic.split(".")[1]
-                price_str = item.get("lastPrice") or item.get("ask1Price") or item.get("bid1Price")
-                if price_str is None:
-                    return
-                try:
-                    price = float(price_str)
-                except (TypeError, ValueError):
+
+                # ✅ 원천 값들
+                def _to_float(v):
+                    try:
+                        if v is None:
+                            return 0.0
+                        return float(v)
+                    except Exception:
+                        return 0.0
+
+                last = _to_float(item.get("lastPrice"))
+                bid = _to_float(item.get("bid1Price"))
+                ask = _to_float(item.get("ask1Price"))
+
+                # ✅ 대표 price 정책: last 우선 → 없으면 mid → fallback
+                price = last if last > 0 else ((bid + ask) / 2.0 if (bid > 0 and ask > 0) else (bid or ask))
+                if not price or price <= 0:
                     return
 
                 exch_ts_sec = item.get("tsSec")
@@ -187,11 +233,19 @@ class Mt5WebSocketController:
                     exch_ts = float(exch_ts_ms) / 1000.0 if exch_ts_ms is not None else time.time()
 
                 with self._lock:
+                    # ✅ 저장: 원천
+                    if last > 0:
+                        self._last[sym] = last
+                    if bid > 0:
+                        self._bid[sym] = bid
+                    if ask > 0:
+                        self._ask[sym] = ask
+
+                    # ✅ 저장: 대표
                     self._prices[sym] = price
                     self._last_tick_monotonic[sym] = time.monotonic()
                     self._last_exchange_ts[sym] = exch_ts
                 return
-
             # ─────────────────────
             # 2) Kline
             # ─────────────────────
