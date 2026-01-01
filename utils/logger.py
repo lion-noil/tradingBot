@@ -35,17 +35,44 @@ class TelegramLogHandler(logging.Handler):
             if isinstance(msg, str) and msg.lstrip().startswith("SIG "):
                 try:
                     obj = json.loads(msg.split(" ", 1)[1])
+
                     symbol = obj.get("symbol")
-                    kind = obj.get("kind"); side = obj.get("side")
+                    kind = obj.get("kind")
+                    side = obj.get("side")
+
                     price = obj.get("price")
                     ma100 = obj.get("ma100")
                     d_pct = obj.get("ma_delta_pct") or 0
+
+                    # ✅ 플랫폼/엔진(네임스페이스) 표시
+                    engine = (obj.get("engine") or obj.get("namespace") or obj.get("source") or "").upper()
+                    engine_tag = f"[{engine}]" if engine else ""
+
                     badge = "🟢" if side=="LONG" else "🔴"
                     title = "진입" if kind=="ENTRY" else "청산"
                     side_kr = "롱" if side=="LONG" else "숏"
+                    headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
+
+                    # 값 포맷 안전화
+                    def _fmt1(x):
+                        try:
+                            return f"{float(x):,.1f}"
+                        except Exception:
+                            return "N/A"
+
+                    pct_txt = "N/A"
+                    try:
+                        pct_txt = f"{float(d_pct) * 100:+.2f}%"
+                    except Exception:
+                        pass
+
                     text = (
-                        f"{badge} [{symbol}] {side_kr}{title} \np: <code>{price:,.1f}</code> M100: <code>{ma100:,.1f}</code> (<code>{d_pct*100:+.2f}%</code>)\n"
+                        f"{headline}\n"
+                        f"p: <code>{_fmt1(price)}</code> "
+                        f"M100: <code>{_fmt1(ma100)}</code> "
+                        f"(<code>{pct_txt}</code>)\n"
                     )
+
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return
                 except Exception:

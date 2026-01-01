@@ -211,7 +211,7 @@ class BybitRestTradeMixin:
     # -------------------------
     # 주문 체결 대기 (거래용)
     # -------------------------
-    def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1):
+    def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1, **kwargs):
         endpoint = "/v5/order/realtime"
         base = self.trade_base_url + endpoint
 

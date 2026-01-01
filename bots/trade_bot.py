@@ -76,7 +76,7 @@ class TradeBot:
             target_cross=self.target_cross
         )
         self.jump = JumpDetector(history_num=10, polling_interval=0.5)
-        self.exec = ExecutionEngine(self.rest, system_logger, trading_logger, taker_fee_rate=0.00055)
+        self.exec = ExecutionEngine(self.rest, system_logger, trading_logger, taker_fee_rate=0.00055, engine_name=self.namespace)
 
         self._apply_config(self.config)
 
@@ -401,6 +401,7 @@ class TradeBot:
             "ma_delta_pct": sig.ma_delta_pct,
             "thresholds": sig.thresholds,
             "reasons": sig.reasons,
+            "engine": self.namespace,   # ✅ 추가 (bybit / mt5_signal 등)
         }
         if getattr(sig, "extra", None):
             d["extra"] = sig.extra

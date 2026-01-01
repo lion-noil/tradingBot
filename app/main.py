@@ -232,6 +232,176 @@ async def startup_event():
         asyncio.create_task(bot_loop(bot_mt5, mt5_ws_controller, "MT5"))
 
 
+def _get_exec_engine(bot: TradeBot):
+    ex = getattr(bot, "exec", None)
+    if ex is None:
+        raise RuntimeError("ExecutionEngine not found on bot (expected bot.exec)")
+    return ex
+
+def _pos_idx_from_side(side_hint: str) -> int:
+    return 1 if side_hint.upper() == "LONG" else 2
+
+def _order_side_open(side_hint: str) -> str:
+    return "Buy" if side_hint.upper() == "LONG" else "Sell"
+
+def _order_side_close(side_hint: str) -> str:
+    return "Sell" if side_hint.upper() == "LONG" else "Buy"
+
+def _call_submit_market_order(rest, *, symbol: str, order_side: str, qty: float, position_idx: int, reduce_only: bool):
+    """
+    submit_market_order 시그니처가 프로젝트마다 조금 달라도 최대한 맞춰서 호출.
+    """
+    fn = getattr(rest, "submit_market_order", None)
+    if not callable(fn):
+        raise RuntimeError("rest.submit_market_order not found")
+
+    # 1) 가장 흔한: (symbol, order_side, qty, position_idx=..., reduce_only=...)
+    try:
+        return fn(symbol, order_side, qty, position_idx=position_idx, reduce_only=reduce_only)
+    except TypeError:
+        pass
+
+    # 2) (symbol, order_side, qty, position_idx, reduce_only)
+    try:
+        return fn(symbol, order_side, qty, position_idx, reduce_only)
+    except TypeError:
+        pass
+
+    # 3) (symbol, order_side, position_idx, qty, reduce_only)
+    try:
+        return fn(symbol, order_side, position_idx, qty, reduce_only)
+    except TypeError:
+        pass
+
+    # 4) 키워드 형태
+    try:
+        return fn(symbol=symbol, order_side=order_side, qty=qty, position_idx=position_idx, reduce_only=reduce_only)
+    except TypeError as e:
+        raise RuntimeError(f"submit_market_order call failed: {e}")
+
+@app.post("/test/run")
+async def test_run_once():
+    """
+    원샷 테스트:
+      - MT5: ETHUSD LONG OPEN -> 대기 -> LONG CLOSE
+      - BYBIT: ETHUSDT LONG OPEN -> 대기 -> LONG CLOSE
+    """
+    results = {}
+
+    side_hint = "LONG"
+    settle_wait_sec = 1.2
+
+    # ---- MT5 ----
+    if bot_mt5 is None or mt5_rest_controller is None:
+        results["MT5"] = {"ok": False, "error": "MT5 bot/rest not running (ENABLE_MT5=0?)"}
+    else:
+        try:
+            ex = _get_exec_engine(bot_mt5)
+            symbol = "ETHUSD"
+            pos_idx = _pos_idx_from_side(side_hint)
+
+            # OPEN
+            def mt5_open_fn(*_a, **_k):
+                return _call_submit_market_order(
+                    mt5_rest_controller,
+                    symbol=symbol,
+                    order_side=_order_side_open(side_hint),
+                    qty=0.01,
+                    position_idx=pos_idx,
+                    reduce_only=False,
+                )
+
+            open_res = await ex.execute_and_sync(
+                mt5_open_fn,
+                position_detail=None,
+                symbol=symbol,
+                side=side_hint,        # ✅ 엔진 힌트(팝됨)
+                expected="OPEN",       # ✅ 엔진 expected override(팝됨)
+            )
+
+            await asyncio.sleep(settle_wait_sec)
+
+            # CLOSE
+            def mt5_close_fn(*_a, **_k):
+                return _call_submit_market_order(
+                    mt5_rest_controller,
+                    symbol=symbol,
+                    order_side=_order_side_close(side_hint),
+                    qty=0.01,
+                    position_idx=pos_idx,
+                    reduce_only=True,
+                )
+
+            # 손익 로그용 avg_price는 실제 포지션 avg를 가져오는 게 베스트지만,
+            # 최소 테스트는 None이어도 "체결 완료" 로그는 찍힘.
+            close_res = await ex.execute_and_sync(
+                mt5_close_fn,
+                position_detail=None,
+                symbol=symbol,
+                side=side_hint,
+                expected="CLOSE",
+            )
+
+            results["MT5"] = {"ok": True, "symbol": symbol, "open": open_res, "close": close_res}
+        except Exception as e:
+            results["MT5"] = {"ok": False, "error": str(e)}
+
+    # ---- BYBIT ----
+    if bot_bybit is None or bybit_rest_controller is None:
+        results["BYBIT"] = {"ok": False, "error": "BYBIT bot/rest not running (ENABLE_BYBIT=0?)"}
+    else:
+        try:
+            ex = _get_exec_engine(bot_bybit)
+            symbol = "ETHUSDT"
+            pos_idx = _pos_idx_from_side(side_hint)
+
+            # OPEN
+            def bybit_open_fn(*_a, **_k):
+                return _call_submit_market_order(
+                    bybit_rest_controller,
+                    symbol=symbol,
+                    order_side=_order_side_open(side_hint),
+                    qty=0.01,
+                    position_idx=pos_idx,
+                    reduce_only=False,
+                )
+
+            open_res = await ex.execute_and_sync(
+                bybit_open_fn,
+                position_detail=None,
+                symbol=symbol,
+                side=side_hint,
+                expected="OPEN",
+            )
+
+            await asyncio.sleep(settle_wait_sec)
+
+            # CLOSE
+            def bybit_close_fn(*_a, **_k):
+                return _call_submit_market_order(
+                    bybit_rest_controller,
+                    symbol=symbol,
+                    order_side=_order_side_close(side_hint),
+                    qty=0.01,
+                    position_idx=pos_idx,
+                    reduce_only=True,
+                )
+
+            close_res = await ex.execute_and_sync(
+                bybit_close_fn,
+                position_detail=None,
+                symbol=symbol,
+                side=side_hint,
+                expected="CLOSE",
+            )
+
+            results["BYBIT"] = {"ok": True, "symbol": symbol, "open": open_res, "close": close_res}
+        except Exception as e:
+            results["BYBIT"] = {"ok": False, "error": str(e)}
+
+    return {"ok": True, "results": results}
+
+
 if __name__ == "__main__":
     import uvicorn
 

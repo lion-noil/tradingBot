@@ -240,7 +240,6 @@ class Mt5RestOrdersMixin:
                 existing_ids.add(str(trade["id"]))
                 appended += 1
 
-        # ✅ MT5에서 아무것도 못 건지면: 로컬 그대로(덮어쓰기 금지)
         if appended > 0:
             local_orders.sort(key=lambda x: x.get("time", 0))
             self.save_orders(sym, local_orders)
@@ -259,8 +258,13 @@ class Mt5RestOrdersMixin:
         """
         ✅ 우선순위:
         1) 로컬 파일에서 order_id 매칭 찾아서 반환
-        2) MT5 history_deals_get에서 deal.order == order_id 찾아서 반환
+        2) MT5 history_deals_get에서 (deal.order == oid) OR (deal.ticket == oid) 찾아서 반환
+           - 기본은 짧은 윈도우(60분) → 실패 시 확장
+           - naive local datetime 기준(네 환경에서 검증됨)
         """
+        import time
+        from datetime import datetime, timedelta
+
         sym = (symbol or "").upper()
         oid = str(order_id) if order_id is not None else ""
 
@@ -268,6 +272,12 @@ class Mt5RestOrdersMixin:
             if getattr(self, "system_logger", None):
                 self.system_logger.error("[MT5] ❌ order_id가 필요합니다.")
             return []
+
+        # ✅ int 변환(가능하면)
+        try:
+            oid_int = int(float(oid))
+        except Exception:
+            oid_int = None
 
         # 1) local 먼저
         try:
@@ -281,14 +291,23 @@ class Mt5RestOrdersMixin:
         if not self._ensure_mt5():
             return []
 
-        # 2) MT5 deals에서 찾기 (naive 범위)
-        t1 = time.time()
-        exec_timeout_sec = 10
-        poll_interval_sec = 1
+        # ✅ 서버 시간 기준 dt_to 만들기(tick 기반) - 안정화
+        def _get_dt_to():
+            now = datetime.now()
+            try:
+                tick = mt5.symbol_info_tick(sym)
+                if tick and getattr(tick, "time", 0):
+                    tick_dt = datetime.fromtimestamp(int(tick.time))
+                    if tick_dt >= now - timedelta(minutes=2):
+                        return tick_dt
+            except Exception:
+                pass
+            return now
 
-        while True:
-            date_to = datetime.now()
-            date_from = date_to - timedelta(days=30)
+        # ✅ deals에서 oid 매칭 (order/ticket 둘 다)
+        def _find_once(minutes: int):
+            date_to = _get_dt_to()
+            date_from = date_to - timedelta(minutes=minutes)
 
             deals = self._history_deals_get_safe(date_from, date_to)
             matched = []
@@ -296,8 +315,18 @@ class Mt5RestOrdersMixin:
             for d in deals:
                 if not self._match_symbol(getattr(d, "symbol", ""), sym):
                     continue
-                if str(getattr(d, "order", "")) != oid:
-                    continue
+
+                # ✅ 여기 핵심: order OR ticket 매칭
+                if oid_int is not None:
+                    d_order = int(getattr(d, "order", 0) or 0)
+                    d_ticket = int(getattr(d, "ticket", 0) or 0)
+                    if d_order != oid_int and d_ticket != oid_int:
+                        continue
+                else:
+                    # 숫자 아닌 oid면 문자열 비교(드문 케이스)
+                    if str(getattr(d, "order", "")) != oid and str(getattr(d, "ticket", "")) != oid:
+                        continue
+
                 trade = self._deal_to_trade(d)
                 if trade:
                     matched.append(trade)
@@ -305,10 +334,24 @@ class Mt5RestOrdersMixin:
             if matched:
                 matched.sort(key=lambda x: x.get("time", 0))
                 return matched[0]
+            return None
+
+        t1 = time.time()
+        exec_timeout_sec = 10
+        poll_interval_sec = 1
+
+        # ✅ 기본은 짧게, 필요 시 확장
+        windows = (60, 6 * 60, 24 * 60, 30 * 24 * 60)  # 1h → 6h → 1d → 30d
+
+        while True:
+            for w in windows:
+                got = _find_once(w)
+                if got:
+                    return got
 
             if time.time() - t1 > exec_timeout_sec:
                 if debug:
-                    print(f"[DEBUG] get_trade_w_order_id timeout. sym={sym} oid={oid} deals_total={len(deals)}")
+                    print(f"[DEBUG] get_trade_w_order_id timeout. sym={sym} oid={oid}")
                 break
 
             time.sleep(poll_interval_sec)
