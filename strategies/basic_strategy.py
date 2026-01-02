@@ -84,10 +84,12 @@ def get_long_entry_signal(
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
     if mom is None:
         return None
+    MA_EASING = 0.0001
+    eff_ma_th = ma_threshold - MA_EASING
 
     reasons: List[str] = []
-    if price < ma100 * (1 - ma_threshold):
-        reasons.append(f"MA100 -{ma_threshold*100:.2f}%")
+    if price < ma100 * (1 - eff_ma_th):
+        reasons.append(f"MA100 -{eff_ma_th*100:.2f}%")
 
     # LONG은 "3분전 대비 하락"이 조건이었으니 mom이 음수일 때만 체크
     if (-mom) > momentum_threshold:
@@ -128,11 +130,14 @@ def get_short_entry_signal(
     if mom is None:
         return None
 
-    reasons: List[str] = []
-    if price > ma100 * (1 + ma_threshold):
-        reasons.append(f"MA100 +{ma_threshold*100:.2f}%")
 
-    # SHORT은 "3분전 대비 상승"이 조건이었으니 mom이 양수일 때만 체크
+    MA_EASING = 0.0001
+    eff_ma_th = ma_threshold - MA_EASING
+
+    reasons: List[str] = []
+    if price > ma100 * (1 + eff_ma_th):
+        reasons.append(f"MA100 +{eff_ma_th*100:.2f}%")
+
     if mom > momentum_threshold:
         reasons.append(f"3m +{momentum_threshold*100:.2f}%")
 

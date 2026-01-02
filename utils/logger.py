@@ -1,6 +1,5 @@
 import logging, os, json, html, requests
 from pathlib import Path
-from datetime import datetime
 class OnlySIG(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -19,7 +18,11 @@ class ExcludeSIG(logging.Filter):
 
 def send_telegram_message(bot_token: str, chat_id: str, message: str):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10).raise_for_status()
+    requests.post(
+        url,
+        data={"chat_id": chat_id, "text": message},   # ✅ parse_mode 제거
+        timeout=10,
+    ).raise_for_status()
 
 
 class TelegramLogHandler(logging.Handler):
@@ -68,15 +71,16 @@ class TelegramLogHandler(logging.Handler):
 
                     text = (
                         f"{headline}\n"
-                        f"p: <code>{_fmt1(price)}</code> "
-                        f"M100: <code>{_fmt1(ma100)}</code> "
-                        f"(<code>{pct_txt}</code>)\n"
+                        f"p: {_fmt1(price)}  "
+                        f"M100: {_fmt1(ma100)}  "
+                        f"({pct_txt})"
                     )
 
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[Telegram prettify failed] {e} | raw={msg}")
+                    # 여기서 그냥 내려가면 아래 폴백(원문 전송) 실행됨
             # 일반 라인은 포맷 그대로
             send_telegram_message(self.bot_token, self.chat_id, self.format(record))
         except Exception as e:
