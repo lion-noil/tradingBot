@@ -241,6 +241,7 @@ class MarketSync:
                     count=self.cfg.candles_num,
                 )
                 self.refresh_indicators(symbol)
+                self._last_closed_minute[symbol] = now_min - 1   # ✅ 추가(권장)
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.error(f"[{symbol}] REST backfill failed: {e}")
