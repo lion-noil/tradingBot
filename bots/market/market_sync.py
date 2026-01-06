@@ -6,6 +6,7 @@ from typing import Optional, Callable, Any, Dict, List
 from .ws_freshness import ws_is_fresh
 from .bootstrap import bootstrap_candles_for_symbol, bootstrap_all_symbols  # ✅ 추가
 import uuid
+import time  # 파일 상단에 추가
 
 OnPriceFn = Callable[[str, float, Optional[float]], None]
 RefreshFn = Callable[[str], None]
@@ -55,6 +56,7 @@ class MarketSync:
         self.cfg = cfg
         self._subscribed = set()
         self._last_backfill_at = {}   # ✅ symbol -> time.time() (epoch sec)
+        self._started_at = time.time()   # ✅ 추가
 
 
 
@@ -144,15 +146,8 @@ class MarketSync:
             return None
 
         last = candles[-1] or {}
-        t_ms = last.get("start") or last.get("timestamp") or last.get("ts")
-        if t_ms is None:
-            return None
-
-        t_ms = float(t_ms)
-        if t_ms < 1e12:  # sec -> ms
-            t_ms *= 1000.0
-
-        return int(t_ms // 60000)
+        m = last.get("minute")
+        return int(m) if m is not None else None
 
     def get_price(self, symbol: str, now_ts: float) -> Optional[float]:
         get_p = getattr(self.ws, "get_price", None)
@@ -233,40 +228,29 @@ class MarketSync:
         self._last_closed_minute[symbol] = k_start_minute
         return True
 
+    def _sec_into_minute(self, now_ts: float) -> float:
+        # now_ts: epoch seconds
+        return now_ts - (int(now_ts) // 60) * 60
+
     def _backfill_if_candle_gap(self, symbol: str, now_ts: float) -> None:
         now_min = int((now_ts * 1000) // 60000)
-        last_closed = self._last_closed_minute.get(symbol)
 
-        if last_closed is None or (now_min - int(last_closed)) >= 2:
-            prev_bf = float(self._last_backfill_at.get(symbol, 0.0) or 0.0)   # ✅ 먼저 읽기
-            # ✅ 먼저 쿨다운 체크 (통과 못하면 조용히 return)
-            if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
-                return
+        GRACE_SEC = 8.0
+        if self._sec_into_minute(now_ts) < GRACE_SEC:
+            return
 
-            # ✅ 실제로 REST 칠 때만 로그
-            if self.system_logger:
-                self.system_logger.warning(
-                    f"[{symbol}]({self._id})  ⛏️ candle gap → REST backfill "
-                    f"(last_closed={last_closed}, now_min={now_min}, "
-                    f"since_last_backfill={now_ts - prev_bf:.1f}s)"
-                )
+        expected_closed = now_min - 1  # ✅ "지금 시점에서 닫혀 있어야 정상인 마지막 분"
+        engine_last = self._infer_last_closed_minute_from_engine(symbol)
 
-            try:
-                self.rest.update_candles(
-                    self.candle.get_candles(symbol),
-                    symbol=symbol,
-                    count=self.cfg.candles_num,
-                )
-                self.refresh_indicators(symbol)
-                # ✅ 여기 핵심: 실제 캔들 기준으로 last_closed 갱신
-                lc = self._infer_last_closed_minute_from_engine(symbol)
-                if lc is not None:
-                    self._last_closed_minute[symbol] = lc
-                else:
-                    self._last_closed_minute[symbol] = now_min - 1
-            except Exception as e:
-                if self.system_logger:
-                    self.system_logger.error(f"[{symbol}] REST backfill failed: {e}")
+        # 엔진 캔들이 없으면(초기) 과격 백필 금지
+        if engine_last is None:
+            return
+
+        # ✅ 진짜 갭: 닫혀 있어야 하는 분(expected_closed) 기준으로 2개 이상 밀릴 때만
+        if (expected_closed - int(engine_last)) < 2:
+            return
+
+        # (이하 쿨다운/로그/REST 동일)
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
         self.ensure_symbol(symbol)   # ✅ 여기 추가
