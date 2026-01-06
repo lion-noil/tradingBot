@@ -5,7 +5,7 @@ from typing import Optional, Callable, Any, Dict, List
 
 from .ws_freshness import ws_is_fresh
 from .bootstrap import bootstrap_candles_for_symbol, bootstrap_all_symbols  # ✅ 추가
-
+import uuid
 
 OnPriceFn = Callable[[str, float, Optional[float]], None]
 RefreshFn = Callable[[str], None]
@@ -43,6 +43,7 @@ class MarketSync:
             jump_service: Optional[Any] = None,  # ✅ 추가
             get_ma_threshold: Optional[GetThrFn] = None,  # ✅ 추가
     ):
+        self._id = uuid.uuid4().hex[:6]
         self.ws = ws
         self.rest = rest
         self.candle = candle_engine
@@ -134,6 +135,25 @@ class MarketSync:
         self._last_backfill_at[symbol] = float(now_ts)
         return True
 
+    def _infer_last_closed_minute_from_engine(self, symbol: str) -> Optional[int]:
+        try:
+            candles = self.candle.get_candles(symbol)
+        except Exception:
+            return None
+        if not candles:
+            return None
+
+        last = candles[-1] or {}
+        t_ms = last.get("start") or last.get("timestamp") or last.get("ts")
+        if t_ms is None:
+            return None
+
+        t_ms = float(t_ms)
+        if t_ms < 1e12:  # sec -> ms
+            t_ms *= 1000.0
+
+        return int(t_ms // 60000)
+
     def get_price(self, symbol: str, now_ts: float) -> Optional[float]:
         get_p = getattr(self.ws, "get_price", None)
         if not callable(get_p):
@@ -195,31 +215,30 @@ class MarketSync:
         )
         self.refresh_indicators(symbol)
 
-    def _apply_confirmed_kline_if_any(self, symbol: str) -> None:
-        """
-        확정봉이 새로 닫혔으면 candle 반영 + 지표 갱신
-        """
+    def _apply_confirmed_kline_if_any(self, symbol: str) -> bool:
         get_ck = getattr(self.ws, "get_last_confirmed_kline", None)
         if not callable(get_ck):
-            return
+            return False
 
         k = get_ck(symbol, "1")
         if not (k and k.get("confirm")):
-            return
+            return False
 
         k_start_minute = int(k["start"] // 60000)
-        if k_start_minute is None or k_start_minute == self._last_closed_minute[symbol]:
-            return
+        if k_start_minute == self._last_closed_minute[symbol]:
+            return False
 
         self.candle.apply_confirmed_kline(symbol, k)
         self.refresh_indicators(symbol)
         self._last_closed_minute[symbol] = k_start_minute
+        return True
 
     def _backfill_if_candle_gap(self, symbol: str, now_ts: float) -> None:
         now_min = int((now_ts * 1000) // 60000)
         last_closed = self._last_closed_minute.get(symbol)
 
         if last_closed is None or (now_min - int(last_closed)) >= 2:
+            prev_bf = float(self._last_backfill_at.get(symbol, 0.0) or 0.0)   # ✅ 먼저 읽기
             # ✅ 먼저 쿨다운 체크 (통과 못하면 조용히 return)
             if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
                 return
@@ -227,7 +246,9 @@ class MarketSync:
             # ✅ 실제로 REST 칠 때만 로그
             if self.system_logger:
                 self.system_logger.warning(
-                    f"[{symbol}] ⛏️ candle gap → REST backfill (last_closed={last_closed}, now_min={now_min})"
+                    f"[{symbol}]({self._id})  ⛏️ candle gap → REST backfill "
+                    f"(last_closed={last_closed}, now_min={now_min}, "
+                    f"since_last_backfill={now_ts - prev_bf:.1f}s)"
                 )
 
             try:
@@ -237,26 +258,25 @@ class MarketSync:
                     count=self.cfg.candles_num,
                 )
                 self.refresh_indicators(symbol)
-                self._last_closed_minute[symbol] = now_min - 1
+                # ✅ 여기 핵심: 실제 캔들 기준으로 last_closed 갱신
+                lc = self._infer_last_closed_minute_from_engine(symbol)
+                if lc is not None:
+                    self._last_closed_minute[symbol] = lc
+                else:
+                    self._last_closed_minute[symbol] = now_min - 1
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.error(f"[{symbol}] REST backfill failed: {e}")
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
-        """
-        TradeBot 1틱에서 심볼 단위로 호출.
-        순서:
-        1) 가격 읽기(+ on_price 훅)
-        2) accumulate/backfill
-        3) confirmed kline 반영 + refresh(cross pct 계산포함)
-        """
         self.ensure_symbol(symbol)   # ✅ 여기 추가
         price = self.get_price(symbol, now_ts)
         self._backfill_or_accumulate(symbol, price, now_ts)
-        self._apply_confirmed_kline_if_any(symbol)
 
-        # ✅ 추가: HB 때문에 stale 안 떠도 캔들 갭이면 REST로 메움
-        self._backfill_if_candle_gap(symbol, now_ts)
+        did_close = self._apply_confirmed_kline_if_any(symbol)
+
+        if not did_close:
+            self._backfill_if_candle_gap(symbol, now_ts)
 
         # ✅ tick 끝에서 jump 상태 갱신 (TradeBot에서 제거할 부분)
         if self.jump_service and self.get_ma_threshold:
