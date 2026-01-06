@@ -98,10 +98,11 @@ def get_long_entry_signal(
     if len(reasons) < 2:
         return None
 
-    ma_delta = (price - ma100) / max(ma100, 1e-12)
+    ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
+
     return Signal(
         ok=True, kind="ENTRY", side="LONG", reasons=reasons,
-        price=price, ma100=ma100, ma_delta_pct=ma_delta,
+        price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
         momentum_pct=mom,  # ✅ OHLC 기준 모멘텀 저장
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
         extra={"reentry_cooldown_sec": reentry_cooldown_sec}
@@ -143,11 +144,10 @@ def get_short_entry_signal(
 
     if len(reasons) < 2:
         return None
-
-    ma_delta = (price - ma100) / max(ma100, 1e-12)
+    ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
     return Signal(
         ok=True, kind="ENTRY", side="SHORT", reasons=reasons,
-        price=price, ma100=ma100, ma_delta_pct=ma_delta,
+        price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
         momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
         extra={"reentry_cooldown_sec": reentry_cooldown_sec}
@@ -197,10 +197,11 @@ def get_exit_signal(
             f"⛳: {_fmt_edge(y)}~",
             f"⏱ : {_fmt_dur(chain_elapsed_sec)}"
         ]
-        ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
+        ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
+
         return Signal(
             ok=True, kind="EXIT", side=position, reasons=reasons,
-            price=price, ma100=ma100, ma_delta_pct=ma_delta,
+            price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
             momentum_pct=None,
             thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
         )
@@ -244,7 +245,7 @@ def get_exit_signal(
         f"⏱ : {_fmt_dur(chain_elapsed_sec)}",
     ]
 
-    ma_delta = (price - ma100) / (ma100 if ma100 != 0 else 1e-12)
+    ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
     return Signal(
         ok=True,
         kind="EXIT",
@@ -252,7 +253,7 @@ def get_exit_signal(
         reasons=reasons,
         price=price,
         ma100=ma100,
-        ma_delta_pct=ma_delta,
+        ma_delta_pct=ma_delta_pct,
         momentum_pct=None,
         thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
     )

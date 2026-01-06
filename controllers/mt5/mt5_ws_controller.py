@@ -359,7 +359,7 @@ if __name__ == "__main__":
         # 연결/데이터 수신까지 잠깐 대기
         time.sleep(3)
 
-        print("\n[2] runtime status check")
+        print("\n[2] runtime reporting check")
         print("ws_connected:", ws.ws is not None)
         print("last_frame_time_monotonic:", ws.get_last_frame_time())
         print("all_prices_snapshot:", ws.get_all_prices())

@@ -1,4 +1,7 @@
 # bots/trade_config.py
+
+from __future__ import annotations
+
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 import json
@@ -245,7 +248,7 @@ def make_mt5_signal_config(
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-        symbols = ("US100", "JP225","KS200","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD")
+        symbols = ("US100", "JP225","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD")
 
     cfg = TradeConfig(
         name="mt5_signal",

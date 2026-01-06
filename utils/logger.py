@@ -65,7 +65,7 @@ class TelegramLogHandler(logging.Handler):
 
                     pct_txt = "N/A"
                     try:
-                        pct_txt = f"{float(d_pct) * 100:+.2f}%"
+                        pct_txt = f"{float(d_pct) :+.2f}%"
                     except Exception:
                         pass
 
