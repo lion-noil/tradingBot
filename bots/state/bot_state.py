@@ -9,6 +9,8 @@ class BotState:
     symbols: List[str]
     default_exit_ma_threshold: float
 
+    min_ma_threshold: float
+
     # 자산/포지션
     asset: Dict[str, Any] = field(default_factory=dict)
 
@@ -20,6 +22,7 @@ class BotState:
     exit_ma_threshold: Dict[str, Optional[float]] = field(default_factory=dict)
     thr_quantized: Dict[str, Optional[float]] = field(default_factory=dict)
     prev3_candle: Dict[str, Optional[dict]] = field(default_factory=dict)
+    ma_check_enabled: Dict[str, bool] = field(default_factory=dict)
 
     def init_defaults(self) -> None:
         # asset 기본
@@ -38,6 +41,7 @@ class BotState:
             self.exit_ma_threshold.setdefault(s, self.default_exit_ma_threshold)
             self.thr_quantized.setdefault(s, None)
             self.prev3_candle.setdefault(s, None)
+            self.ma_check_enabled.setdefault(s, False)
 
     def get_exit_thr(self, symbol: str) -> float:
         v = self.exit_ma_threshold.get(symbol)

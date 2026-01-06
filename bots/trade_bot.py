@@ -68,6 +68,7 @@ class TradeBot:
         self.state = BotState(
             symbols=self.symbols,
             default_exit_ma_threshold=self.config.default_exit_ma_threshold,
+            min_ma_threshold=self.config.min_ma_threshold,  # ✅
         )
         self.state.init_defaults()
 
@@ -81,6 +82,9 @@ class TradeBot:
             thr_quantized_map=self.state.thr_quantized,
             momentum_threshold_map=self.state.momentum_threshold,
             prev3_candle_map=self.state.prev3_candle,
+
+            ma_check_enabled_map=self.state.ma_check_enabled,  # ✅ 추가
+            min_ma_threshold=self.state.min_ma_threshold,  # ✅ 추가 (IndicatorState에 이 필드가 있어야 함)
         )
 
         self._refresh_indicators_fn = bind_refresher(
@@ -141,7 +145,7 @@ class TradeBot:
                 get_now_ma100=lambda s: self.state.now_ma100.get(s),
                 get_prev3_candle=lambda s: self.state.prev3_candle.get(s),
                 get_ma_threshold=lambda s: self.state.ma_threshold.get(s),
-                get_min_ma_threshold=lambda: None,  # ✅ 나중에 0.005 넣으면 0.005 이하는 신호 자체를 안 만들기
+                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
                 get_momentum_threshold=lambda s: self.state.momentum_threshold.get(s),
                 get_exit_ma_threshold=lambda s: (
                     self.state.exit_ma_threshold.get(s)
@@ -185,7 +189,7 @@ class TradeBot:
     async def run_once(self):
         now = time.time()
         for symbol in self.symbols:
-            # 1) 시세 읽기 + 캔들 누적/REST 백필 + 확정봉 반영 + 지표 refresh(+ jump 상태 업데이트)
+            # 1) 시세 읽기 + 캔들 누적/REST 백필 + 확정봉 반영 + 지표 refresh(+ jump 상태 업데이트), indicator계산(cross pct 계산)
             price = self.market.tick(symbol, now)
 
             # 2) 시그널 생성 (청산 → 진입) => action list 반환

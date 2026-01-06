@@ -140,7 +140,9 @@ def refresh_indicators_for_symbol(
     ma_threshold_map: Dict[str, Optional[float]],
     thr_quantized_map: Dict[str, Optional[float]],
     momentum_threshold_map: Dict[str, Optional[float]],
-    prev3_candle_map: Dict[str, Optional[float]],
+    prev3_candle_map: Dict[str, Optional[dict]],
+    min_ma_threshold: float,   # ✅ 추가
+    ma_check_enabled_map: Dict[str, bool],
     system_logger=None,
     redis_client=None,
     namespace: Optional[str] = None,
@@ -171,8 +173,27 @@ def refresh_indicators_for_symbol(
 
     thr_quantized_map[symbol] = q
     ma_threshold_map[symbol] = q
-
     momentum_threshold_map[symbol] = mom_thr
+
+    # ✅ 체크 상태 전환 감지: (q가 min 이상이면 enabled)
+    prev_enabled = bool(ma_check_enabled_map.get(symbol, False))
+    now_enabled = (q is not None) and (float(q) >= float(min_ma_threshold))
+
+    if prev_enabled != now_enabled:
+        ma_check_enabled_map[symbol] = now_enabled
+
+        # 로그 메시지
+        state_msg = "✅ MA check ENABLED" if now_enabled else "⛔ MA check DISABLED"
+        detail = f"(thr={fmt_pct(q)} / min={fmt_pct(min_ma_threshold)})"
+        msg = f"[{symbol}] {state_msg} {detail}"
+
+        if system_logger:
+            system_logger.debug(msg)
+    else:
+        # 상태가 변하지 않으면 업데이트는 하지 않아도 되지만,
+        # 초기 None 케이스/기본값 세팅 원하면 아래 한 줄은 유지해도 됨.
+        ma_check_enabled_map.setdefault(symbol, now_enabled)
+
     # 로깅(있을 때만)
     if log and redis_client is not None:
         msg = f"[{symbol}] {log['msg']}"
@@ -203,6 +224,8 @@ class IndicatorState:
     thr_quantized_map: Dict[str, Optional[float]]
     momentum_threshold_map: Dict[str, Optional[float]]
     prev3_candle_map: Dict[str, Optional[dict]]  # ✅ dict(open/high/low/close) 형태로 맞추기
+    ma_check_enabled_map: Dict[str, bool]
+    min_ma_threshold: float   # ✅ 이거 추가
 
 def refresh_symbol_indicators(
     candle_engine,
@@ -227,6 +250,8 @@ def refresh_symbol_indicators(
         thr_quantized_map=state.thr_quantized_map,
         momentum_threshold_map=state.momentum_threshold_map,
         prev3_candle_map=state.prev3_candle_map,
+        ma_check_enabled_map=state.ma_check_enabled_map,   # ✅ 추가
+        min_ma_threshold=state.min_ma_threshold,
         system_logger=system_logger,
         redis_client=redis_client,
         namespace=namespace,

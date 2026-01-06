@@ -53,6 +53,9 @@ class MarketSync:
         self.get_ma_threshold = get_ma_threshold
         self.cfg = cfg
         self._subscribed = set()
+        self._last_backfill_at = {}   # ✅ symbol -> time.time() (epoch sec)
+
+
 
         # 내부 상태(TradeBot에서 빼기 대상)
         self._rest_fallback_on = {}
@@ -119,9 +122,17 @@ class MarketSync:
         self._rest_fallback_on.setdefault(symbol, False)
         self._stale_counts.setdefault(symbol, 0)
         self._last_closed_minute.setdefault(symbol, None)
+        self._last_backfill_at.setdefault(symbol, 0.0)   # ✅ 추가
 
     def apply_config(self, cfg: MarketSyncConfig) -> None:
         self.cfg = cfg
+
+    def _can_backfill_now(self, symbol: str, now_ts: float, cooldown_sec: float = 30.0) -> bool:
+        last = float(self._last_backfill_at.get(symbol, 0.0) or 0.0)
+        if (now_ts - last) < float(cooldown_sec):
+            return False
+        self._last_backfill_at[symbol] = float(now_ts)
+        return True
 
     def get_price(self, symbol: str, now_ts: float) -> Optional[float]:
         get_p = getattr(self.ws, "get_price", None)
@@ -172,6 +183,11 @@ class MarketSync:
             if self.system_logger:
                 self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
 
+
+        # ✅ 쿨다운: 너무 자주 REST 때리지 않기
+        if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
+            return
+
         self.rest.update_candles(
             self.candle.get_candles(symbol),
             symbol=symbol,
@@ -199,18 +215,52 @@ class MarketSync:
         self.refresh_indicators(symbol)
         self._last_closed_minute[symbol] = k_start_minute
 
+    def _backfill_if_candle_gap(self, symbol: str, now_ts: float) -> None:
+        """
+        WS 연결은 살아있어도(HB) 캔들/확정봉이 뒤쳐지면 REST로 갭 메움.
+        - now_ts: epoch seconds
+        """
+        # 현재 minute (1분봉 기준)
+        now_min = int((now_ts * 1000) // 60000)
+
+        last_closed = self._last_closed_minute.get(symbol)
+
+        # 아직 확정봉을 한 번도 못 받았거나, 2분 이상 뒤쳐지면 백필
+        if last_closed is None or (now_min - int(last_closed)) >= 2:
+            if self.system_logger:
+                self.system_logger.warning(f"[{symbol}] ⛏️ candle gap → REST backfill (last_closed={last_closed}, now_min={now_min})")
+
+            # ✅ 추가
+            if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
+                return
+
+            try:
+                self.rest.update_candles(
+                    self.candle.get_candles(symbol),
+                    symbol=symbol,
+                    count=self.cfg.candles_num,
+                )
+                self.refresh_indicators(symbol)
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.error(f"[{symbol}] REST backfill failed: {e}")
+
+
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
         """
         TradeBot 1틱에서 심볼 단위로 호출.
         순서:
         1) 가격 읽기(+ on_price 훅)
         2) accumulate/backfill
-        3) confirmed kline 반영 + refresh
+        3) confirmed kline 반영 + refresh(cross pct 계산포함)
         """
         self.ensure_symbol(symbol)   # ✅ 여기 추가
         price = self.get_price(symbol, now_ts)
         self._backfill_or_accumulate(symbol, price, now_ts)
         self._apply_confirmed_kline_if_any(symbol)
+
+        # ✅ 추가: HB 때문에 stale 안 떠도 캔들 갭이면 REST로 메움
+        self._backfill_if_candle_gap(symbol, now_ts)
 
         # ✅ tick 끝에서 jump 상태 갱신 (TradeBot에서 제거할 부분)
         if self.jump_service and self.get_ma_threshold:

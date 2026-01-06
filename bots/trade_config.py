@@ -155,6 +155,7 @@ class SecretsConfig:
 class TradeConfig:
     # 어떤 용도/엔진인지 구분용 (예: "bybit", "mt5_signal")
     name: str = "default"
+    min_ma_threshold: float = 0.005
 
     # 청산(보유시간/근접윈도우)
     position_max_hold_sec: int = 7 * 24 * 3600  # ✅ 7일 기본
@@ -228,7 +229,7 @@ class TradeConfig:
         self.signal_only = bool(self.signal_only)
         self.position_max_hold_sec = max(600, int(self.position_max_hold_sec))  # 최소 60초
         self.near_touch_window_sec = max(0, int(self.near_touch_window_sec))  # 0 허용
-
+        self.min_ma_threshold = max(0.0, float(self.min_ma_threshold))
 
         # symbols 는 항상 리스트로
         self.symbols = list(self.symbols)
@@ -242,13 +243,14 @@ def make_mt5_signal_config(
     target_cross: int = 5,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
+    min_ma_threshold: float =  0.0051,
 ) -> "TradeConfig":
     """
     MT5 시그널 전용 기본 설정 팩토리.
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-        symbols = ("US100", "JP225","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD")
+        symbols = ("US100", "JP225","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
 
     cfg = TradeConfig(
         name="mt5_signal",
@@ -270,6 +272,7 @@ def make_mt5_signal_config(
         candles_num=candles_num,
         default_exit_ma_threshold=-0.0005,
 
+        min_ma_threshold=min_ma_threshold,
         signal_only=False,
     )
     return cfg.normalized()
@@ -300,6 +303,7 @@ def make_bybit_config(
 
     # 이 설정이 다루는 심볼 목록
     symbols: list[str] | tuple[str, ...] | None = None,
+    min_ma_threshold: float = 0.0051,
 ) -> "TradeConfig":
     """
     Bybit용 기본 트레이딩 설정 팩토리.
@@ -326,6 +330,7 @@ def make_bybit_config(
         candles_num=candles_num,
         default_exit_ma_threshold=default_exit_ma_threshold,
 
+        min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
     )
     return cfg.normalized()

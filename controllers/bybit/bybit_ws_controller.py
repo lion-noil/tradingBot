@@ -14,6 +14,9 @@ class BybitWebSocketController:
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
         cfg_secret = SecretsConfig.from_env().require_bybit_public()
 
+        self._last_recv_monotonic_global = 0.0
+        self._last_recv_monotonic: dict[str, float] = {}
+
         self.symbols = list(symbols)
         self.system_logger = system_logger
         self.ws_url = cfg_secret.bybit_price_ws_url
@@ -46,6 +49,17 @@ class BybitWebSocketController:
     def get_last_exchange_ts(self, symbol: str) -> float | None:
         with self._lock:
             return self._last_exchange_ts.get(symbol)
+
+    def get_last_recv_time(self, symbol: str | None = None) -> float | None:
+        """
+        마지막으로 WS에서 메시지를 '수신'한 시각 (monotonic).
+        - symbol 주면 심볼별
+        - None이면 전역
+        """
+        with self._lock:
+            if symbol is None:
+                return self._last_recv_monotonic_global or None
+            return self._last_recv_monotonic.get(symbol)
 
     # ──────────────────────────────────────────────
     # 런타임 구독 제어
@@ -125,24 +139,30 @@ class BybitWebSocketController:
         def on_message(ws, message: str):
             try:
                 parsed = json.loads(message)
-                self._last_frame_monotonic = time.monotonic()
+                now_mono = time.monotonic()
+                topic = parsed.get("topic", "")
+                with self._lock:
+                    self._last_frame_monotonic = now_mono
+                    self._last_recv_monotonic_global = now_mono
+                if topic == "hb":
+                    return
 
                 data = parsed.get("data")
                 if not data:
                     return
 
                 items = data if isinstance(data, list) else [data]
-                topic = parsed.get("topic", "")
                 frame_ts_ms = parsed.get("ts")
 
                 with self._lock:
                     for item in items:
                         if topic.startswith("tickers."):
                             sym = item.get("symbol") or topic.split(".")[1]
+
                             price_str = (
-                                item.get("lastPrice")
-                                or item.get("ask1Price")
-                                or item.get("bid1Price")
+                                    item.get("lastPrice")
+                                    or item.get("ask1Price")
+                                    or item.get("bid1Price")
                             )
                             if price_str is None:
                                 continue
@@ -161,8 +181,9 @@ class BybitWebSocketController:
                                 exch_ts = time.time()
 
                             self._prices[sym] = price
-                            self._last_tick_monotonic[sym] = time.monotonic()
+                            self._last_tick_monotonic[sym] = now_mono
                             self._last_exchange_ts[sym] = exch_ts
+                            self._last_recv_monotonic[sym] = now_mono  # ✅ 추가 (심볼별 recv)
                             continue
 
                         if topic.startswith("kline."):
@@ -193,7 +214,10 @@ class BybitWebSocketController:
                             self._last_kline[key] = k
                             if k["confirm"]:
                                 self._last_kline_confirmed[key] = k
+
+                            self._last_recv_monotonic[sym] = now_mono  # ✅ 추가 (심볼별 recv)
                             continue
+
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.debug(f"❌ Public 메시지 처리 오류: {e}")

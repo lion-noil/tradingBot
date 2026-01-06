@@ -24,6 +24,8 @@ class Mt5WebSocketController:
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
 
         cfg_secret = SecretsConfig.from_env().require_mt5_public()
+        self._last_recv_monotonic_global = 0.0
+        self._last_recv_monotonic: dict[str, float] = {}
 
 
         self.symbols = list(symbols)
@@ -101,6 +103,17 @@ class Mt5WebSocketController:
     def get_last_exchange_ts(self, symbol: str) -> Optional[float]:
         with self._lock:
             return self._last_exchange_ts.get(symbol)
+
+    def get_last_recv_time(self, symbol: str | None = None) -> float | None:
+        """
+        마지막으로 WS에서 메시지를 '수신'한 시각 (monotonic).
+        - symbol 주면 심볼별
+        - None이면 전역
+        """
+        with self._lock:
+            if symbol is None:
+                return self._last_recv_monotonic_global or None
+            return self._last_recv_monotonic.get(symbol)
 
     def get_last_frame_time(self) -> Optional[float]:
         return self._last_frame_monotonic or None
@@ -183,6 +196,8 @@ class Mt5WebSocketController:
             self._last_frame_monotonic = time.monotonic()
 
         def on_message(ws: WebSocketApp, message: str):
+
+
             try:
                 parsed = json.loads(message)
             except Exception:
@@ -190,11 +205,23 @@ class Mt5WebSocketController:
                     self.system_logger.debug(f"❌ MT5 WS JSON 파싱 실패: {message[:200]}")
                 return
 
-            self._last_frame_monotonic = time.monotonic()
+
+
+            now_mono = time.monotonic()
 
             topic = parsed.get("topic") or ""
+            if not topic:
+                return
+
+            with self._lock:
+                self._last_frame_monotonic = now_mono
+                self._last_recv_monotonic_global = now_mono
+
+            # ✅ heartbeat는 여기서 끝
+            if topic == "hb":
+                return
             data = parsed.get("data")
-            if not topic or data is None:
+            if data is None:
                 return
 
             # ─────────────────────
@@ -243,8 +270,9 @@ class Mt5WebSocketController:
 
                     # ✅ 저장: 대표
                     self._prices[sym] = price
-                    self._last_tick_monotonic[sym] = time.monotonic()
+                    self._last_tick_monotonic[sym] = now_mono   # ✅ 복구
                     self._last_exchange_ts[sym] = exch_ts
+                    self._last_recv_monotonic[sym] = now_mono   # ✅ 추가
                 return
             # ─────────────────────
             # 2) Kline
@@ -285,6 +313,7 @@ class Mt5WebSocketController:
                         self._last_kline[key] = k
                         if k["confirm"]:
                             self._last_kline_confirmed[key] = k
+                        self._last_recv_monotonic[sym] = now_mono  # ✅ 추가
 
         def on_error(ws: WebSocketApp, error):
             if self.system_logger:
