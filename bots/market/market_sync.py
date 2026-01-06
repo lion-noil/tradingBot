@@ -216,23 +216,19 @@ class MarketSync:
         self._last_closed_minute[symbol] = k_start_minute
 
     def _backfill_if_candle_gap(self, symbol: str, now_ts: float) -> None:
-        """
-        WS 연결은 살아있어도(HB) 캔들/확정봉이 뒤쳐지면 REST로 갭 메움.
-        - now_ts: epoch seconds
-        """
-        # 현재 minute (1분봉 기준)
         now_min = int((now_ts * 1000) // 60000)
-
         last_closed = self._last_closed_minute.get(symbol)
 
-        # 아직 확정봉을 한 번도 못 받았거나, 2분 이상 뒤쳐지면 백필
         if last_closed is None or (now_min - int(last_closed)) >= 2:
-            if self.system_logger:
-                self.system_logger.warning(f"[{symbol}] ⛏️ candle gap → REST backfill (last_closed={last_closed}, now_min={now_min})")
-
-            # ✅ 추가
+            # ✅ 먼저 쿨다운 체크 (통과 못하면 조용히 return)
             if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
                 return
+
+            # ✅ 실제로 REST 칠 때만 로그
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[{symbol}] ⛏️ candle gap → REST backfill (last_closed={last_closed}, now_min={now_min})"
+                )
 
             try:
                 self.rest.update_candles(
@@ -241,11 +237,10 @@ class MarketSync:
                     count=self.cfg.candles_num,
                 )
                 self.refresh_indicators(symbol)
-                self._last_closed_minute[symbol] = now_min - 1   # ✅ 추가(권장)
+                self._last_closed_minute[symbol] = now_min - 1
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.error(f"[{symbol}] REST backfill failed: {e}")
-
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
         """
