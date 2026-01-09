@@ -159,8 +159,7 @@ class TradeBot:
                 entry_store_get=lambda sym, side: self.entry_store.get(sym, side),
                 entry_store_set=lambda sym, side, ts: self.entry_store.set(sym, side, ts),
                 log_signal=lambda sym, sig: build_log_upload(
-                    self.trading_logger, redis_client, sig, sym, self.namespace
-                ),
+                    self.trading_logger,redis_client,sig,sym,self.namespace,keep_days=10,),
             ),
         )
 

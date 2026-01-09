@@ -38,7 +38,6 @@ class SignalProcessorDeps:
     get_position_max_hold_sec: Callable[[], int]
     get_near_touch_window_sec: Callable[[], int]
 
-    # ✅ (미래 대비) 최소 ma_threshold 게이트. 지금 당장은 None 반환해도 됨.
     get_min_ma_threshold: Callable[[], Optional[float]]
 
     # --- entry store ---
@@ -52,7 +51,6 @@ class SignalProcessorDeps:
 class SignalProcessor:
     """
     ✅ 책임: 신호 판단 + 상태 업데이트(entry_store 등) + 액션 리스트 반환
-    ❌ 책임 아님: 주문 실행/자산 동기화 (TradeExecutor가 담당)
     """
 
     def __init__(self, *, deps: SignalProcessorDeps, system_logger=None):
