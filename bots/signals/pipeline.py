@@ -29,6 +29,19 @@ def _hset_compat(redis_client: Any, key: str, field: str, value: str) -> None:
     hset(name=key, key=field, value=value)
 
 
+def _hget_compat(redis_client: Any, key: str, field: str) -> Optional[str]:
+    hget = getattr(redis_client, "hget", None)
+    if not callable(hget):
+        raise AttributeError("redis_client has no hget()")
+    try:
+        res = hget(key, field)
+    except TypeError:
+        res = hget(name=key, key=field)
+    if res is None:
+        return None
+    return _to_str(res)
+
+
 def _hdel_compat(redis_client: Any, key: str, fields: Sequence[str]) -> None:
     if not fields:
         return
@@ -121,6 +134,29 @@ def _pipeline_or_none(redis_client: Any) -> Optional[Any]:
     return None
 
 
+# ------------------------- latest helpers -------------------------
+def _latest_index(symbol: str, kind: Any, side: Any) -> str:
+    return f"{symbol}|{kind}|{side}"
+
+
+def _pack_latest(ts_ms: int, record_field: str) -> str:
+    # value: "<ts_ms>|<record_field>"
+    return f"{int(ts_ms)}|{record_field}"
+
+
+def _unpack_latest(v: str) -> Tuple[Optional[int], Optional[str]]:
+    if not v:
+        return (None, None)
+    parts = v.split("|", 1)
+    if len(parts) != 2:
+        return (None, None)
+    ts_s, record_field = parts
+    try:
+        return (int(ts_s), record_field)
+    except Exception:
+        return (None, record_field)
+
+
 def upload_signal(redis_client: Any, sig: Dict[str, Any], namespace: str) -> Tuple[str, int]:
     if not namespace:
         raise ValueError("namespace is required (e.g. 'bybit', 'mt5')")
@@ -136,7 +172,7 @@ def upload_signal(redis_client: Any, sig: Dict[str, Any], namespace: str) -> Tup
 
     sid_src = f"{symbol}|{ts_iso}|{sig.get('kind')}|{sig.get('side')}|{sig.get('price')}"
     sid = hashlib.sha1(sid_src.encode("utf-8")).hexdigest()
-    field = f"{day}|{sid}"
+    record_field = f"{day}|{sid}"
 
     extra = sig.get("extra") or {}
     if "ts_ms" not in extra:
@@ -153,24 +189,29 @@ def upload_signal(redis_client: Any, sig: Dict[str, Any], namespace: str) -> Tup
     key_time = f"{key_main}:time"
     key_latest = f"{key_main}:latest"
 
+    # ✅ latest는 (symbol,kind,side)별로 저장 + value에 ts_ms 포함
+    latest_index = _latest_index(symbol, sig.get("kind"), sig.get("side"))
+    latest_value = _pack_latest(ts_ms, record_field)
+
     pipe = _pipeline_or_none(redis_client)
     if pipe is not None:
         try:
-            _hset_compat(pipe, key_main, field, value)
+            _hset_compat(pipe, key_main, record_field, value)
             try:
-                pipe.zadd(key_time, {field: score})
+                pipe.zadd(key_time, {record_field: score})
             except Exception:
                 pass
-            _hset_compat(pipe, key_latest, symbol, field)
+            _hset_compat(pipe, key_latest, latest_index, latest_value)
             pipe.execute()
         finally:
-            _zadd_compat(redis_client, key_time, score, field)
-        return (field, ts_ms)
+            # 파이프가 zadd를 지원 못하는 케이스 대비
+            _zadd_compat(redis_client, key_time, score, record_field)
+        return (record_field, ts_ms)
 
-    _hset_compat(redis_client, key_main, field, value)
-    _zadd_compat(redis_client, key_time, score, field)
-    _hset_compat(redis_client, key_latest, symbol, field)
-    return (field, ts_ms)
+    _hset_compat(redis_client, key_main, record_field, value)
+    _zadd_compat(redis_client, key_time, score, record_field)
+    _hset_compat(redis_client, key_latest, latest_index, latest_value)
+    return (record_field, ts_ms)
 
 
 def prune_signals(
@@ -198,6 +239,7 @@ def prune_signals(
     _hdel_compat(redis_client, key_main, old_fields)
     _zrem_compat(redis_client, key_time, old_fields)
     return len(old_fields)
+
 
 _LAST_PRUNE_MS_BY_NS: Dict[str, int] = {}
 
@@ -229,7 +271,6 @@ def maybe_prune_signals(
         if n == 0:
             break
     return total
-
 
 
 def log_and_upload_signal(
@@ -294,3 +335,58 @@ def build_log_upload(
         keep_days=keep_days,
     )
     return sig_dict
+
+
+# ------------------------- read latest (1 roundtrip) -------------------------
+def get_latest_ts_ms(redis_client: Any, namespace: str, symbol: str, kind: str, side: str) -> Optional[int]:
+    """
+    HGET 한번으로 최신 ts_ms 반환.
+    """
+    if redis_client is None:
+        return None
+    key_latest = f"trading:{namespace}:signal:latest"
+    idx = _latest_index(symbol, kind, side)
+    try:
+        v = _hget_compat(redis_client, key_latest, idx)
+        ts_ms, _ = _unpack_latest(v or "")
+        return ts_ms
+    except Exception:
+        return None
+
+
+def get_latest_record_field(redis_client: Any, namespace: str, symbol: str, kind: str, side: str) -> Optional[str]:
+    """
+    HGET 한번으로 최신 record_field("YYYY-MM-DD|sid") 반환.
+    """
+    if redis_client is None:
+        return None
+    key_latest = f"trading:{namespace}:signal:latest"
+    idx = _latest_index(symbol, kind, side)
+    try:
+        v = _hget_compat(redis_client, key_latest, idx)
+        _, record_field = _unpack_latest(v or "")
+        return record_field
+    except Exception:
+        return None
+
+def get_latest_entry_ts_ms(redis_client: Any, namespace: str, symbol: str, side: str) -> Optional[int]:
+    """
+    trading:{ns}:signal:latest 에서 (symbol, ENTRY, side)의 최신 ts_ms를 HGET 1번으로 가져온다.
+    value 포맷: "<ts_ms>|<record_field>"
+    """
+    if redis_client is None:
+        return None
+    key_latest = f"trading:{namespace}:signal:latest"
+    idx = f"{symbol}|ENTRY|{side}"
+    try:
+        v = redis_client.hget(key_latest, idx)
+        if not v:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode("utf-8", errors="replace")
+        else:
+            v = str(v)
+        ts_s = v.split("|", 1)[0]
+        return int(ts_s) if ts_s else None
+    except Exception:
+        return None

@@ -5,14 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 import json
-
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 # 네임스페이스(name)에 따라 서로 다른 키를 쓰도록 템플릿으로 정의
 REDIS_KEY_CFG = "trading:{name}:config"                  # 전체 공용 설정 해시
-REDIS_KEY_CFG_EXIT_MA = "trading:{name}:config:exit_ma"  # 심볼별 청산 스레시홀드 해시
 REDIS_CH_CFG = "trading:{name}:config:update"            # 변경 브로드캐스트 채널(옵션)
 
 _ENV_LOADED = False
@@ -182,7 +181,7 @@ class TradeConfig:
     candles_num: int = 10080  # (예: 1분봉 7일치)
 
     # 기본 청산 스레시홀드(심볼별 커스텀은 별도 해시)
-    default_exit_ma_threshold: float = -0.0005
+    default_ma_easing: float = 0.0002
 
     # signal_only (True면 시그널만, 실제 주문 X)
     signal_only: bool = False
@@ -214,26 +213,24 @@ class TradeConfig:
         return asdict(self)
 
     def normalized(self) -> "TradeConfig":
-        """
-        각 필드에 대해 최소/형변환 등을 적용해서 안전한 값으로 정규화.
-        """
-        self.ws_stale_sec = max(1.0, float(self.ws_stale_sec))
-        self.ws_global_stale_sec = max(5.0, float(self.ws_global_stale_sec))
-        self.leverage = max(1, int(self.leverage))
-        self.entry_percent = max(0.01, float(self.entry_percent))
-        self.max_effective_leverage = max(0.0, float(self.max_effective_leverage))
-        self.indicator_min_thr = max(0.0, float(self.indicator_min_thr))
-        self.indicator_max_thr = max(self.indicator_min_thr, float(self.indicator_max_thr))
-        self.target_cross = max(1, int(self.target_cross))
-        self.candles_num = max(1, int(self.candles_num))
-        self.signal_only = bool(self.signal_only)
-        self.position_max_hold_sec = max(600, int(self.position_max_hold_sec))  # 최소 60초
-        self.near_touch_window_sec = max(0, int(self.near_touch_window_sec))  # 0 허용
-        self.min_ma_threshold = max(0.0, float(self.min_ma_threshold))
-
-        # symbols 는 항상 리스트로
-        self.symbols = list(self.symbols)
-        return self
+        return replace(
+            self,
+            ws_stale_sec=max(1.0, float(self.ws_stale_sec)),
+            ws_global_stale_sec=max(5.0, float(self.ws_global_stale_sec)),
+            leverage=max(1, int(self.leverage)),
+            entry_percent=max(0.01, float(self.entry_percent)),
+            max_effective_leverage=max(0.0, float(self.max_effective_leverage)),
+            indicator_min_thr=max(0.0, float(self.indicator_min_thr)),
+            indicator_max_thr=max(max(0.0, float(self.indicator_min_thr)), float(self.indicator_max_thr)),
+            target_cross=max(1, int(self.target_cross)),
+            candles_num=max(1, int(self.candles_num)),
+            signal_only=bool(self.signal_only),
+            position_max_hold_sec=max(600, int(self.position_max_hold_sec)),
+            near_touch_window_sec=max(0, int(self.near_touch_window_sec)),
+            min_ma_threshold=max(0.0, float(self.min_ma_threshold)),
+            default_ma_easing=max(0.0, float(self.default_ma_easing)),
+            symbols=list(self.symbols),
+        )
 
 
 def make_mt5_signal_config(
@@ -270,7 +267,7 @@ def make_mt5_signal_config(
         target_cross=target_cross,
 
         candles_num=candles_num,
-        default_exit_ma_threshold=-0.0005,
+        default_ma_easing=0.0002,
 
         min_ma_threshold=min_ma_threshold,
         signal_only=False,
@@ -295,9 +292,6 @@ def make_bybit_config(
     entry_percent: float = 3.0,
     max_effective_leverage: float = 30.0,
 
-    # 기본 청산 스레시홀드
-    default_exit_ma_threshold: float = -0.0005,
-
     # Bybit는 기본적으로 주문까지 수행하므로 기본 False
     signal_only: bool = False,
 
@@ -310,7 +304,7 @@ def make_bybit_config(
     - 기존 TradeConfig 기본값을 그대로 사용하면서, 필요시 인자만 살짝 바꿔서 재사용.
     """
     if symbols is None:
-        symbols = ("BTCUSDT", "ETHUSDT","SOLUSDT","XRPUSDT")
+        symbols = ("BTCUSDT",)
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스
@@ -328,42 +322,9 @@ def make_bybit_config(
         target_cross=target_cross,
 
         candles_num=candles_num,
-        default_exit_ma_threshold=default_exit_ma_threshold,
+        default_ma_easing=0.0002,
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
     )
     return cfg.normalized()
-
-if __name__ == "__main__":
-    from pprint import pprint
-
-    print("[DEBUG] dotenv loaded:", _ENV_LOADED)
-    print("[DEBUG] cwd:", Path.cwd())
-    root = Path(__file__).resolve().parents[1]
-    print("[DEBUG] expected .env:", root / ".env")
-    print("[DEBUG] .env exists:", (root / ".env").exists())
-
-    s = SecretsConfig.from_env()
-    pprint({
-        "enable_bybit": s.enable_bybit,
-        "enable_mt5": s.enable_mt5,
-        "bybit_price_ws_url": s.bybit_price_ws_url,
-        "bybit_price_rest_url": s.bybit_price_rest_url,
-        "bybit_trade_rest_url": s.bybit_trade_rest_url,
-        "bybit_trade_api_key_set": bool(s.bybit_trade_api_key),
-        "bybit_trade_api_secret_set": bool(s.bybit_trade_api_secret),
-    })
-
-    # 역할별 검증(원하는 것만)
-    try:
-        s.require_bybit_public()
-        print("✅ require_bybit_public OK")
-    except Exception as e:
-        print("❌ require_bybit_public FAIL:", e)
-
-    try:
-        s.require_bybit_trade()
-        print("✅ require_bybit_trade OK")
-    except Exception as e:
-        print("❌ require_bybit_trade FAIL:", e)

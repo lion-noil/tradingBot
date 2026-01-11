@@ -7,8 +7,11 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class BotState:
     symbols: List[str]
-    default_exit_ma_threshold: float
 
+    # ✅ 진입/청산 둘 다에서 쓰는 easing (기본값)
+    default_ma_easing: float
+
+    # ma_threshold gate 최소값
     min_ma_threshold: float
 
     # 자산/포지션
@@ -19,10 +22,12 @@ class BotState:
     now_ma100: Dict[str, Optional[float]] = field(default_factory=dict)
     ma_threshold: Dict[str, Optional[float]] = field(default_factory=dict)
     momentum_threshold: Dict[str, Optional[float]] = field(default_factory=dict)
-    exit_ma_threshold: Dict[str, Optional[float]] = field(default_factory=dict)
     thr_quantized: Dict[str, Optional[float]] = field(default_factory=dict)
     prev3_candle: Dict[str, Optional[dict]] = field(default_factory=dict)
     ma_check_enabled: Dict[str, bool] = field(default_factory=dict)
+
+    # ✅ 심볼별 easing (없으면 default_ma_easing 사용)
+    ma_easing: Dict[str, float] = field(default_factory=dict)
 
     def init_defaults(self) -> None:
         # asset 기본
@@ -32,17 +37,18 @@ class BotState:
                 "positions": {s: {} for s in self.symbols},
             }
 
-        # dict들 기본
         for s in self.symbols:
             self.ma100s.setdefault(s, [])
             self.now_ma100.setdefault(s, None)
             self.ma_threshold.setdefault(s, None)
             self.momentum_threshold.setdefault(s, None)
-            self.exit_ma_threshold.setdefault(s, self.default_exit_ma_threshold)
             self.thr_quantized.setdefault(s, None)
             self.prev3_candle.setdefault(s, None)
             self.ma_check_enabled.setdefault(s, False)
 
-    def get_exit_thr(self, symbol: str) -> float:
-        v = self.exit_ma_threshold.get(symbol)
-        return v if v is not None else self.default_exit_ma_threshold
+            # ✅ easing 기본 세팅
+            self.ma_easing.setdefault(s, float(self.default_ma_easing))
+
+    def get_ma_easing(self, symbol: str) -> float:
+        v = self.ma_easing.get(symbol)
+        return float(v) if v is not None else float(self.default_ma_easing)

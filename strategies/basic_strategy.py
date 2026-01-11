@@ -84,8 +84,9 @@ def get_long_entry_signal(
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
     if mom is None:
         return None
-    MA_EASING = 0.0001
-    eff_ma_th = ma_threshold - MA_EASING
+
+
+    eff_ma_th = ma_threshold
 
     reasons: List[str] = []
     if price < ma100 * (1 - eff_ma_th):
@@ -131,10 +132,7 @@ def get_short_entry_signal(
     if mom is None:
         return None
 
-
-    MA_EASING = 0.0001
-    eff_ma_th = ma_threshold - MA_EASING
-
+    eff_ma_th = ma_threshold
     reasons: List[str] = []
     if price > ma100 * (1 + eff_ma_th):
         reasons.append(f"MA100 +{eff_ma_th*100:.2f}%")
@@ -156,24 +154,19 @@ def get_short_entry_signal(
 
 
 def get_exit_signal(
-    position: str,
+    side: str,
     price: float,
     ma100: float,
     recent_entry_time: Optional[int] = None,   # ms
-    ma_threshold: float = 0.005,               # 0.5% (사용자 평소값)
-    exit_ma_threshold: float = -0.0005,         # -0.05% (근접 직전)
+    ma_threshold: float = 0.005,               # thr
+    exit_easing: float = 0.0002,               # ✅ 양수
     time_limit_sec: int = None,
     near_touch_window_sec: int = 60 * 60
 ) -> Optional["Signal"]:
-    """
-    position: "LONG" | "SHORT"
-    recent_entry_time: 엔트리 시각(ms). 없으면 시간기반 로직 없이 MA 기준만 적용(일반 기준 사용).
-    """
+
 
     if ma_threshold is None:
         raise ValueError("ma_threshold is required (got None)")
-    if exit_ma_threshold is None:
-        raise ValueError("exit_ma_threshold is required (got None)")
     if time_limit_sec is None:
         raise ValueError("time_limit_sec is required (got None)")
     if near_touch_window_sec is None:
@@ -181,7 +174,6 @@ def get_exit_signal(
 
     now_ms = int(time.time() * 1000)
 
-    # 1) 경과시간 계산(시그널 체인 기준)
     chain_elapsed_sec = None
     if recent_entry_time is not None:
         chain_elapsed_sec = max(0, (now_ms - recent_entry_time) // 1000)
@@ -189,55 +181,57 @@ def get_exit_signal(
     x = near_touch_window_sec
     y = time_limit_sec
 
-    # 2) 절대 종료 먼저(가장 강한 조건)
+    # 1) 절대 종료(최대 보유시간 초과)
     if chain_elapsed_sec is not None and chain_elapsed_sec > y:
-        # 문자열은 '성립'이므로 이제 생성
         reasons = [
             f"⏰ {y / 3600:.1f}h 초과",
             f"⛳: {_fmt_edge(y)}~",
             f"⏱ : {_fmt_dur(chain_elapsed_sec)}"
         ]
         ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
-
         return Signal(
-            ok=True, kind="EXIT", side=position, reasons=reasons,
+            ok=True, kind="EXIT", side=side, reasons=reasons,
             price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
             momentum_pct=None,
-            thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
+            thresholds={"ma": ma_threshold, "exit_easing": exit_easing},
         )
 
-    # 3) 트리거 선택만 계산 (문자열 생성 X)
+        # 2) 구간별 트리거
     if chain_elapsed_sec is None:
-        trigger_pct = ma_threshold
+        trigger_pct = ma_threshold  # 시간정보 없으면 일반 thr로
         trigger_name = "일반"
         band_label = "⛳: N/A"
     elif chain_elapsed_sec <= x:
-        trigger_pct = exit_ma_threshold
+        # ✅ 근접: MA에서 easing만큼 여유있게 청산
+        # LONG: price >= ma100*(1 - easing)
+        # SHORT: price <= ma100*(1 + easing)
+        trigger_pct = -float(exit_easing)
         trigger_name = "근접"
         band_label = f"⛳: 0~{_fmt_edge(x)}"
     else:
-        trigger_pct = ma_threshold
+        # ✅ 일반: MA + thr - easing (완화)
+        trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
         trigger_name = "일반"
         band_label = f"⛳: {_fmt_edge(x)}~{_fmt_edge(y)}"
 
-    # 4) 터치 성립 여부만 먼저 판단 (문자열 생성 X)
-    touched = False
-    if position == "LONG":
+        # 3) 터치 판정
+    if side == "LONG":
         touched = price >= ma100 * (1 + trigger_pct)
-    elif position == "SHORT":
+    elif side == "SHORT":
         touched = price <= ma100 * (1 - trigger_pct)
     else:
         return None
 
     if not touched:
-        return None  # 성립 안 하면 바로 끝 (문자열/계산 낭비 없음)
+        return None
 
-    # 5) 여기서부터 '성립'이므로 필요한 문자열/계산 생성
+    # 4) 성립 시 메시지 생성
     pct_val = trigger_pct * 100
-    if position == "LONG":
-        head = f"MA100 +{pct_val:.4f}% {trigger_name}"
-    else:
-        head = f"MA100 -{pct_val:.4f}% {trigger_name}"
+    head = (
+        f"MA100 +{pct_val:.4f}% {trigger_name}"
+        if side == "LONG"
+        else f"MA100 -{pct_val:.4f}% {trigger_name}"
+    )
 
     reasons: List[str] = [
         head,
@@ -249,11 +243,11 @@ def get_exit_signal(
     return Signal(
         ok=True,
         kind="EXIT",
-        side=position,
+        side=side,
         reasons=reasons,
         price=price,
         ma100=ma100,
         ma_delta_pct=ma_delta_pct,
         momentum_pct=None,
-        thresholds={"ma": ma_threshold, "exit_ma": exit_ma_threshold},
+        thresholds={"ma": ma_threshold, "exit_easing": exit_easing},
     )

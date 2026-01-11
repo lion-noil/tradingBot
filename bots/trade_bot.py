@@ -1,36 +1,43 @@
 # bots/trade_bot.py
 import time
 from typing import List
-
+from bots.state.signals import (
+    record_signal_with_ts,
+    open_push,
+    open_pop,
+)
+from bots.state.signals import OpenSignalsIndex, OpenSignalStats
 from .signals.pipeline import build_log_upload
 from .trade_config import TradeConfig
 from core.engines import CandleEngine, IndicatorEngine, JumpDetector
 from core.execution import ExecutionEngine
 from core.redis_client import redis_client
-
 from .market.indicators import IndicatorState, bind_refresher
 from .market.jump_reporting import JumpService
 from .market.market_sync import MarketSync, MarketSyncConfig
-
-from .state.entry_signal_store import EntrySignalStore
 from .state.bot_state import BotState
-
 from .reporting.status_reporter import StatusReporter, StatusReporterDeps
 from .trading.signal_processor import SignalProcessor, SignalProcessorDeps, TradeAction
 from .trading.trade_executor import TradeExecutor, TradeExecutorDeps
+from bots.state.lots import (
+    open_lot,
+    close_lot_full,
+    get_lot_qty_total,
+    LotsIndex,
+)
 
 
 class TradeBot:
     def __init__(
-        self,
-        bybit_websocket_controller,
-        bybit_rest_controller,
-        manual_queue,
-        system_logger=None,
-        trading_logger=None,
-        symbols=("BTCUSDT",),
-        signal_only: bool = False,
-        config: TradeConfig | None = None,
+            self,
+            bybit_websocket_controller,
+            bybit_rest_controller,
+            manual_queue,
+            system_logger=None,
+            trading_logger=None,
+            symbols=("BTCUSDT",),
+            signal_only: bool = False,
+            config: TradeConfig | None = None,
     ):
         self.ws = bybit_websocket_controller
         self.rest = bybit_rest_controller
@@ -67,8 +74,8 @@ class TradeBot:
         # state
         self.state = BotState(
             symbols=self.symbols,
-            default_exit_ma_threshold=self.config.default_exit_ma_threshold,
-            min_ma_threshold=self.config.min_ma_threshold,  # ✅
+            default_ma_easing=self.config.default_ma_easing,
+            min_ma_threshold=self.config.min_ma_threshold,
         )
         self.state.init_defaults()
 
@@ -82,9 +89,8 @@ class TradeBot:
             thr_quantized_map=self.state.thr_quantized,
             momentum_threshold_map=self.state.momentum_threshold,
             prev3_candle_map=self.state.prev3_candle,
-
-            ma_check_enabled_map=self.state.ma_check_enabled,  # ✅ 추가
-            min_ma_threshold=self.state.min_ma_threshold,  # ✅ 추가 (IndicatorState에 이 필드가 있어야 함)
+            ma_check_enabled_map=self.state.ma_check_enabled,
+            min_ma_threshold=self.state.min_ma_threshold,
         )
 
         self._refresh_indicators_fn = bind_refresher(
@@ -113,15 +119,26 @@ class TradeBot:
             get_ma_threshold=lambda s: self.state.ma_threshold.get(s),
         )
 
-        # entry store
-        self.entry_store = EntrySignalStore(redis_client, self.symbols, name=self.namespace)
-
         # bootstrap
         self.state.asset = self.market.bootstrap(
             symbols=self.symbols,
             signal_only=self.signal_only,
             leverage=self.leverage,
             asset=self.state.asset,
+        )
+
+        self.open_signals_index = OpenSignalsIndex()
+        self.open_signals_index.load_from_redis(
+            namespace=self.namespace,
+            symbols=self.symbols,
+        )
+
+        # lots cache
+        self.lots_index = LotsIndex()
+        self.lots_index.load_from_redis(
+            redis_client,
+            namespace=self.namespace,
+            symbols=self.symbols,
         )
 
         # executor (orders + sync)
@@ -134,10 +151,77 @@ class TradeBot:
                 get_asset=lambda: self.state.asset,
                 set_asset=lambda a: setattr(self.state, "asset", a),
                 get_entry_percent=lambda: self.entry_percent,
+
+                open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None: open_lot(
+                    namespace=self.namespace,
+                    symbol=symbol,
+                    side=side,
+                    entry_ts_ms=entry_ts_ms,
+                    entry_price=entry_price,
+                    qty_total=qty_total,
+                    entry_signal_id=entry_signal_id,
+                ),
+                close_lot_full=lambda *, lot_id: close_lot_full(
+                    namespace=self.namespace,
+                    lot_id=lot_id,
+                ),
+                get_lot_qty_total=lambda lot_id: get_lot_qty_total(
+                    namespace=self.namespace,
+                    lot_id=lot_id,
+                ),
+
+                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price: self.lots_index.on_open(
+                    sym,
+                    side,
+                    lot_id,
+                    entry_ts_ms=entry_ts_ms,
+                    qty_total=qty_total,
+                    entry_price=entry_price,
+                ),
+                on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
+
+                # ✅ executor가 lot_id=None일 때 직접 선택하려면 필수
+                pick_open_lot_ids=lambda sym, side, policy, limit: self.lots_index.pick_open_lot_ids(
+                    sym, side, policy=policy, limit=limit
+                ),
             ),
         )
 
-        # signal processor (signal decision only -> returns actions)
+        # ✅ Signal 저장/로그 업로드를 한 곳으로
+        def _log_signal(sym, side, kind, price, sig):
+            sid, ts = record_signal_with_ts(
+                namespace=self.namespace,
+                symbol=sym,
+                side=side,
+                kind=kind,
+                price=price,
+                payload=sig,
+            )
+
+            # ✅ open 상태 반영 (체결/lot과 무관하게 "신호" 기준으로만)
+            kind_u = (kind or "").upper()
+            side_u = (side or "").upper()
+
+            if kind_u == "OPEN":
+                self.open_signals_index.on_open(
+                    namespace=self.namespace,
+                    symbol=sym,
+                    side=side_u,
+                    signal_id=sid,
+                    ts_ms=ts,
+                )
+            elif kind_u == "CLOSE":
+                self.open_signals_index.on_close(
+                    namespace=self.namespace,
+                    symbol=sym,
+                    side=side_u,
+                    policy="LIFO",  # 네 정책대로
+                )
+
+            build_log_upload(self.trading_logger, redis_client, sig, sym, self.namespace, keep_days=10)
+            return sid, ts
+
+        # signal processor
         self.signal_processor = SignalProcessor(
             system_logger=self.system_logger,
             deps=SignalProcessorDeps(
@@ -145,21 +229,20 @@ class TradeBot:
                 get_now_ma100=lambda s: self.state.now_ma100.get(s),
                 get_prev3_candle=lambda s: self.state.prev3_candle.get(s),
                 get_ma_threshold=lambda s: self.state.ma_threshold.get(s),
-                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
                 get_momentum_threshold=lambda s: self.state.momentum_threshold.get(s),
-                get_exit_ma_threshold=lambda s: (
-                    self.state.exit_ma_threshold.get(s)
-                    if self.state.exit_ma_threshold.get(s) is not None
-                    else self.config.default_exit_ma_threshold
-                ),
+
                 is_signal_only=lambda: self.signal_only,
                 get_max_effective_leverage=lambda: self.max_effective_leverage,
                 get_position_max_hold_sec=lambda: self.config.position_max_hold_sec,
                 get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
-                entry_store_get=lambda sym, side: self.entry_store.get(sym, side),
-                entry_store_set=lambda sym, side, ts: self.entry_store.set(sym, side, ts),
-                log_signal=lambda sym, sig: build_log_upload(
-                    self.trading_logger,redis_client,sig,sym,self.namespace,keep_days=10,),
+                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
+                get_ma_easing=lambda s: self.state.get_ma_easing(s),
+                get_open_signal_stats=lambda sym, side: self.open_signals_index.stats(
+                    symbol=sym,
+                    side=side.upper(),
+                ),
+
+                log_signal=_log_signal,
             ),
         )
 
@@ -188,18 +271,36 @@ class TradeBot:
     async def run_once(self):
         now = time.time()
         for symbol in self.symbols:
-            # 1) 시세 읽기 + 캔들 누적/REST 백필 + 확정봉 반영 + 지표 refresh(+ jump 상태 업데이트), indicator계산(cross pct 계산)
             price = self.market.tick(symbol, now)
 
-            # 2) 시그널 생성 (청산 → 진입) => action list 반환
             actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
-            # 3) 실행(주문/동기화)
             for act in actions:
                 if act.action == "OPEN":
-                    await self.trade_executor.open_position(act.symbol, act.side, act.price)
-                elif act.action == "CLOSE":
-                    await self.trade_executor.close_position(act.symbol, act.side, act.qty)
+                    await self.trade_executor.open_position(
+                        act.symbol,
+                        act.side,
+                        act.price,
+                        entry_signal_id=act.signal_id,
+                    )
 
-        # 4) 상태/로그 스냅샷(변화 감지 및 리포팅)
+                elif act.action == "CLOSE":
+                    # ✅ lot_id는 실행 직전에 고른다 (신호/체결 분리 유지)
+                    lot_id = act.lot_id
+                    if not lot_id:
+                        ids = self.lots_index.pick_open_lot_ids(
+                            act.symbol,
+                            (act.side or "").upper(),
+                            policy="LIFO",
+                            limit=1,
+                        )
+                        lot_id = ids[0] if ids else None
+
+                    await self.trade_executor.close_position(
+                        act.symbol,
+                        act.side,
+                        lot_id,
+                        exit_signal_id=act.signal_id,
+                    )
+
         self.reporter.tick(now)
