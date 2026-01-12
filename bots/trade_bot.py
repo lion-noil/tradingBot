@@ -3,8 +3,6 @@ import time
 from typing import List
 from bots.state.signals import (
     record_signal_with_ts,
-    open_push,
-    open_pop,
 )
 from bots.state.signals import OpenSignalsIndex, OpenSignalStats
 from .signals.pipeline import build_log_upload
@@ -228,7 +226,11 @@ class TradeBot:
                 get_asset=lambda: self.state.asset,
                 get_now_ma100=lambda s: self.state.now_ma100.get(s),
                 get_prev3_candle=lambda s: self.state.prev3_candle.get(s),
-                get_ma_threshold=lambda s: self.state.ma_threshold.get(s),
+                get_ma_threshold=lambda s: (
+                    self.state.ma_threshold.get(s)
+                    if self.state.ma_check_enabled.get(s, True)
+                    else None
+                ),
                 get_momentum_threshold=lambda s: self.state.momentum_threshold.get(s),
 
                 is_signal_only=lambda: self.signal_only,
@@ -238,6 +240,7 @@ class TradeBot:
                 get_min_ma_threshold=lambda: self.state.min_ma_threshold,
                 get_ma_easing=lambda s: self.state.get_ma_easing(s),
                 get_open_signal_stats=lambda sym, side: self.open_signals_index.stats(
+                    namespace=self.namespace,
                     symbol=sym,
                     side=side.upper(),
                 ),
@@ -258,6 +261,8 @@ class TradeBot:
                 get_positions_by_symbol=lambda: (self.state.asset.get("positions") or {}),
                 get_price=lambda s, now_ts: self.market.get_price(s, now_ts),
                 get_taker_fee_rate=lambda: getattr(self.exec, "TAKER_FEE_RATE", 0.00055),
+                get_ma_check_enabled=lambda: self.state.ma_check_enabled,
+                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
             ),
         )
 
