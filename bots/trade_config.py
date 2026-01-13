@@ -248,6 +248,7 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
+        symbols = ("WTI",)
 
     cfg = TradeConfig(
         name="mt5_signal",

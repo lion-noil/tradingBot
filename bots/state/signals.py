@@ -47,7 +47,7 @@ class SignalInfo:
     side: str
     kind: str              # "OPEN" | "CLOSE"
     price: Optional[float]
-    payload: Any
+    payload: Optional[Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -65,15 +65,10 @@ def _json_dumps(payload: Any) -> str:
         return json.dumps(str(payload), ensure_ascii=False)
 
 def _extract_open_signal_id(payload: Any) -> Optional[str]:
-    if not payload:
+    if not isinstance(payload, dict):
         return None
-    if isinstance(payload, dict):
-        v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
-        return str(v) if v else None
-    return (
-        getattr(payload, "open_signal_id", None)
-        or getattr(payload, "target_open_signal_id", None)
-    )
+    v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
+    return str(v) if v else None
 
 # ---------- write: signal event ----------
 def record_signal_with_ts(

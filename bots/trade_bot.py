@@ -24,6 +24,9 @@ from bots.state.lots import (
     LotsIndex,
 )
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+_TZ = ZoneInfo("Asia/Seoul")
 
 class TradeBot:
     def __init__(
@@ -183,23 +186,34 @@ class TradeBot:
         )
 
         def _extract_open_signal_id(payload):
-            if not payload:
+            if not isinstance(payload, dict):
                 return None
-            if isinstance(payload, dict):
-                v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
-                return str(v) if v else None
-            return getattr(payload, "open_signal_id", None) or getattr(payload, "target_open_signal_id", None)
-
+            v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
+            return str(v) if v else None
 
         # ✅ Signal 저장/로그 업로드를 한 곳으로
         def _log_signal(sym, side, kind, price, sig):
+            # ✅ payload는 dict로 통일 (아니면 빈 dict)
+            payload = sig if isinstance(sig, dict) else {}
+
+            # ✅ 업로드/저장용 완성 dict
+            sig_dict = {
+                **payload,
+                "kind": kind,
+                "side": side,
+                "symbol": sym,
+                "ts": datetime.now(_TZ).isoformat(),
+                "price": price,
+                "engine": self.namespace,
+            }
+
             sid, ts = record_signal_with_ts(
                 namespace=self.namespace,
                 symbol=sym,
                 side=side,
                 kind=kind,
                 price=price,
-                payload=sig,
+                payload=sig_dict,  # ✅ 저장도 dict로 통일
             )
 
             kind_u = (kind or "").upper()
@@ -214,7 +228,7 @@ class TradeBot:
                     ts_ms=ts,
                 )
             elif kind_u == "CLOSE":
-                target_open_id = _extract_open_signal_id(sig)
+                target_open_id = _extract_open_signal_id(payload)
                 if target_open_id:
                     self.open_signals_index.on_close_by_id(
                         namespace=self.namespace, symbol=sym, side=side_u, open_signal_id=target_open_id
@@ -222,7 +236,7 @@ class TradeBot:
                 else:
                     if self.system_logger:
                         self.system_logger.warning(f"[{sym}] CLOSE signal missing open_signal_id (side={side_u})")
-            build_log_upload(self.trading_logger, redis_client, sig, sym, self.namespace, keep_days=10)
+            build_log_upload(self.trading_logger, redis_client, sig_dict, sym, self.namespace, keep_days=10)
             return sid, ts
 
         # signal processor

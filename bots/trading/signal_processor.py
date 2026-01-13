@@ -18,7 +18,7 @@ class TradeAction:
     side: str  # "LONG" | "SHORT"
     price: Optional[float] = None
 
-    sig: Optional[Any] = None
+    sig: Optional[Dict[str, Any]] = None
     signal_id: Optional[str] = None  # signals store에 기록된 id
 
     close_open_signal_id: Optional[str] = None
@@ -49,8 +49,8 @@ class SignalProcessorDeps:
     get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
 
     # --- logging / signal store ---
-    # (symbol, side, kind, price, sig) -> (signal_id, ts_ms)
-    log_signal: Callable[[str, str, str, Optional[float], Any], tuple[str, int]]
+    log_signal: Callable[[str, str, str, Optional[float], Dict[str, Any]], tuple[str, int]]
+
 
 
 class SignalProcessor:
@@ -63,7 +63,8 @@ class SignalProcessor:
         self.deps = deps
         self.system_logger = system_logger
 
-    def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Any) -> tuple[str, int]:
+    def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
+        str, int]:
         return self.deps.log_signal(symbol, side, kind, price, sig)
 
     async def process_symbol(self, symbol: str, price: Optional[float]) -> List[TradeAction]:
@@ -109,6 +110,7 @@ class SignalProcessor:
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
                 near_touch_window_sec=self.deps.get_near_touch_window_sec(),
             )
+            
             if not sig:
                 continue
 

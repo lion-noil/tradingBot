@@ -298,43 +298,37 @@ def log_and_upload_signal(
         )
 
 
-def build_signal_dict(sig: Any, symbol: str, namespace: str) -> Dict[str, Any]:
-    d: Dict[str, Any] = {
-        "kind": sig.kind,
-        "side": sig.side,
-        "symbol": symbol,
-        "ts": datetime.now(_TZ).isoformat(),
-        "price": sig.price,
-        "ma100": sig.ma100,
-        "ma_delta_pct": sig.ma_delta_pct,
-        "thresholds": sig.thresholds,
-        "reasons": sig.reasons,
-        "engine": namespace,
-    }
-    extra = getattr(sig, "extra", None)
-    if isinstance(extra, dict) and extra:
-        d["extra"] = extra
-    return d
-
-
 def build_log_upload(
     trading_logger: Any,
     redis_client: Any,
-    sig: Any,
+    sig_dict: Dict[str, Any],
     symbol: str,
     namespace: str,
     *,
     keep_days: Optional[int] = None,
 ) -> Dict[str, Any]:
-    sig_dict = build_signal_dict(sig, symbol, namespace=namespace)
+    if not isinstance(sig_dict, dict):
+        raise TypeError(f"build_log_upload expects dict, got {type(sig_dict)}")
+
+    # copy to avoid mutating caller's dict
+    d: Dict[str, Any] = dict(sig_dict)
+
+    # 최소 필드 보정 (없으면 채움)
+    if symbol and not d.get("symbol"):
+        d["symbol"] = symbol
+    if not d.get("ts"):
+        d["ts"] = datetime.now(_TZ).isoformat()
+    if namespace and not d.get("engine"):
+        d["engine"] = namespace
+
     log_and_upload_signal(
         trading_logger,
         redis_client,
-        sig_dict,
+        d,
         namespace,
         keep_days=keep_days,
     )
-    return sig_dict
+    return d
 
 
 # ------------------------- read latest (1 roundtrip) -------------------------

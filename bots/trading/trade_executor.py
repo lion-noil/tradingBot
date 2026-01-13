@@ -207,7 +207,7 @@ class TradeExecutor:
         self.deps.set_asset(new_asset)
 
         after_qty = self._get_pos_qty(new_asset, symbol, side_u)
-        delta = max(0.0, after_qty - before_qty)
+        delta = max(0.0, abs(after_qty) - abs(before_qty))
 
         if delta <= 0:
             if self.system_logger:
