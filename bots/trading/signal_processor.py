@@ -1,6 +1,6 @@
 # bots/trading/signal_processor.py
 from __future__ import annotations
-
+from typing import Tuple
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -13,17 +13,17 @@ from bots.state.balances import get_total_balance_usd
 
 @dataclass
 class TradeAction:
-    action: str                 # "OPEN" | "CLOSE"
+    action: str  # "OPEN" | "CLOSE"
     symbol: str
-    side: str                   # "LONG" | "SHORT"
+    side: str  # "LONG" | "SHORT"
     price: Optional[float] = None
-
-    # CLOSE는 lot 기반으로 실행할 것이라 qty는 executor가 lot에서 읽음
-    # ✅ signal layer에서는 lot 선택하지 않음
-    lot_id: Optional[str] = None
 
     sig: Optional[Any] = None
     signal_id: Optional[str] = None  # signals store에 기록된 id
+
+    close_open_signal_id: Optional[str] = None
+
+Item = Tuple[str, int]   # (signal_id, ts_ms)
 
 
 @dataclass
@@ -44,9 +44,9 @@ class SignalProcessorDeps:
     get_min_ma_threshold: Callable[[], Optional[float]]
 
     # ✅ open-state stats (from in-memory cache; redis fallback은 index가 알아서)
-    # newest_ts_ms: 단타/재진입 쿨다운 기준
-    # oldest_ts_ms: 최대 홀드 초과 확인용(필요하면 전략에서 사용)
     get_open_signal_stats: Callable[[str, str], OpenSignalStats]  # (symbol, side) -> stats
+
+    get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
 
     # --- logging / signal store ---
     # (symbol, side, kind, price, sig) -> (signal_id, ts_ms)
@@ -84,30 +84,26 @@ class SignalProcessor:
         return actions
 
     def _decide_exits(
-        self,
-        symbol: str,
-        price: float,
-        now_ma100: float,
-        thr: float,
-        easing: float,
+            self,
+            symbol: str,
+            price: float,
+            now_ma100: float,
+            thr: float,
+            easing: float,
     ) -> List[TradeAction]:
         actions: List[TradeAction] = []
         exit_easing = easing
 
         for side in ("LONG", "SHORT"):
-            stats = self.deps.get_open_signal_stats(symbol, side)
-
-            # ✅ 열린 OPEN이 하나도 없으면 close 신호 판단 자체를 안 함
-            if not stats.count or not stats.newest_ts_ms:
+            open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts), newest-first]
+            if not open_items:
                 continue
 
-            # 기존 전략 시그니처가 recent_entry_time 하나만 받으니까
-            # ✅ "최근 진입" = newest_ts_ms로 넣는다
             sig = get_exit_signal(
                 side=side,
                 price=price,
                 ma100=now_ma100,
-                recent_entry_time=int(stats.newest_ts_ms),
+                open_items=open_items,  # [(open_signal_id, ts_ms), ...]
                 ma_threshold=float(thr),
                 exit_easing=float(exit_easing),
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
@@ -116,27 +112,32 @@ class SignalProcessor:
             if not sig:
                 continue
 
-            signal_id, _ = self._record(symbol, side, "CLOSE", price, sig)
+            targets = sig.get("targets") or []
+            if not targets:
+                continue
 
-            # ✅ lot_id는 executor가 고름
-            actions.append(TradeAction(
-                action="CLOSE",
-                symbol=symbol,
-                side=side,
-                lot_id=None,
-                sig=sig,
-                signal_id=signal_id,
-            ))
+            for target_open_id in targets:
+                payload = {**sig, "open_signal_id": target_open_id}  # 개별 close 이벤트용
+                signal_id, _ = self._record(symbol, side, "CLOSE", price, payload)
+
+                actions.append(TradeAction(
+                    action="CLOSE",
+                    symbol=symbol,
+                    side=side,
+                    sig=payload,  # ✅ payload 넣는게 좋음(개별 open_signal_id 포함)
+                    signal_id=signal_id,
+                    close_open_signal_id=target_open_id,
+                ))
 
         return actions
 
     def _decide_entries(
-        self,
-        symbol: str,
-        price: float,
-        now_ma100: float,
-        thr: float,
-        easing: float,
+            self,
+            symbol: str,
+            price: float,
+            now_ma100: float,
+            thr: float,
+            easing: float,
     ) -> List[TradeAction]:
         asset = self.deps.get_asset()
         signal_only = self.deps.is_signal_only()

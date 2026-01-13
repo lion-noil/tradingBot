@@ -15,13 +15,15 @@ class TradeExecutorDeps:
 
     # lots_store hooks (keyword 호출로 통일)
     # lots.py 시그니처
-    open_lot: Callable[..., str]          # open_lot(symbol=..., side=..., entry_ts_ms=..., entry_price=..., qty_total=..., entry_signal_id=None) -> lot_id
-    close_lot_full: Callable[..., bool]   # close_lot_full(lot_id=...) -> bool
+    open_lot: Callable[
+        ..., str]  # open_lot(symbol=..., side=..., entry_ts_ms=..., entry_price=..., qty_total=..., entry_signal_id=None) -> lot_id
+    close_lot_full: Callable[..., bool]  # close_lot_full(lot_id=...) -> bool
     get_lot_qty_total: Callable[[str], Optional[float]]
 
     # lots_index cache hooks (주문 성공 후에만 호출)
-    on_lot_open: Callable[[str, str, str, int, float, float], None]   # (symbol, side, lot_id, entry_ts_ms, qty_total, entry_price)
-    on_lot_close: Callable[[str, str, str], None]                     # (symbol, side, lot_id)
+    on_lot_open: Callable[[str, str, str, int, float, float,
+                           str], None]  # (symbol, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id)
+    on_lot_close: Callable[[str, str, str], None]  # (symbol, side, lot_id)
 
     # lot_id가 None일 때 executor가 직접 고르기 위해 필요
     pick_open_lot_ids: Callable[[str, str, str, Optional[int]], list[str]]  # (symbol, side, policy, limit) -> lot_ids
@@ -39,12 +41,12 @@ class TradeExecutor:
     """
 
     def __init__(
-        self,
-        *,
-        rest: Any,
-        exec_engine: Any,
-        deps: TradeExecutorDeps,
-        system_logger=None,
+            self,
+            *,
+            rest: Any,
+            exec_engine: Any,
+            deps: TradeExecutorDeps,
+            system_logger=None,
     ):
         self.rest = rest
         self.exec = exec_engine
@@ -83,13 +85,13 @@ class TradeExecutor:
         return ref
 
     async def close_position(
-        self,
-        symbol: str,
-        side: str,
-        lot_id: Optional[str],
-        *,
-        exit_signal_id: Optional[str] = None,  # 신호/체결 분리: 현재는 저장하지 않음(인터페이스만 유지)
-        pick_policy: str = "LIFO",             # "LIFO" | "FIFO"
+            self,
+            symbol: str,
+            side: str,
+            lot_id: Optional[str],
+            *,
+            exit_signal_id: Optional[str] = None,  # 신호/체결 분리: 현재는 저장하지 않음(인터페이스만 유지)
+            pick_policy: str = "LIFO",  # "LIFO" | "FIFO"
     ) -> None:
         """
         lot_id 기반 '전부청산' (부분청산 없음 가정)
@@ -162,12 +164,12 @@ class TradeExecutor:
                     self.system_logger.info(f"[lots_index] on_lot_close 실패 ({lot_id}) err={e}")
 
     async def open_position(
-        self,
-        symbol: str,
-        side: str,
-        price: float,
-        *,
-        entry_signal_id: Optional[str] = None,  # 액션에서 넘어온 OPEN signal_id → lot에 저장
+            self,
+            symbol: str,
+            side: str,
+            price: float,
+            *,
+            entry_signal_id: Optional[str] = None,  # 액션에서 넘어온 OPEN signal_id → lot에 저장
     ) -> None:
         """
         OPEN 주문 성공 후 lot OPEN 기록 + cache 반영
@@ -189,10 +191,6 @@ class TradeExecutor:
 
         # ✅ 포지션 ref 안전 체크
         pos_ref = self._ensure_pos_ref(asset, symbol, side_u)
-        if not pos_ref:
-            if self.system_logger:
-                self.system_logger.info(f"[OPEN] positions ref 없음 → 스킵 ({symbol} {side_u})")
-            return
 
         await self.exec.execute_and_sync(
             self.rest.open_market,
@@ -246,6 +244,7 @@ class TradeExecutor:
                     entry_ts_ms,
                     float(delta),
                     float(price),
+                    entry_signal_id or "",
                 )
             except Exception as e:
                 if self.system_logger:

@@ -11,7 +11,6 @@ from core.redis_client import redis_client
 
 # ----------------------------- keys -----------------------------
 
-
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -26,15 +25,16 @@ def _lot_key(namespace: str, lot_id: str) -> str:
 
 
 def _open_zset_key(namespace: str, symbol: str, side: str) -> str:
-    return f"{_ns(namespace)}:open_lots:{symbol}:{side}"
+    # ✅ lots로 시작 + OPEN 인덱스
+    return f"{_ns(namespace)}:lots:{symbol}:{side}:OPEN"
 
 
-def _open_lot_by_signal_key(namespace: str, entry_signal_id: str) -> str:
-    return f"{_ns(namespace)}:open_lot_by_signal:{entry_signal_id}"
+def _by_signal_hash_key(namespace: str) -> str:
+    # ✅ entry_signal_id -> lot_id 매핑을 hash 1개로 통합
+    return f"{_ns(namespace)}:lots:by_signal:OPEN"
 
 
 # ----------------------------- Redis store (source of truth) -----------------------------
-
 
 def open_lot(
     *,
@@ -48,12 +48,14 @@ def open_lot(
 ) -> str:
     """
     ✅ 체결 확정 후에만 호출해야 함.
-    - OPEN lot 생성 + open_lots zset 인덱싱
-    - signal_id ↔ lot_id 매핑 저장(옵션)
+    - lot hash 저장
+    - open lots zset 인덱싱
+    - entry_signal_id -> lot_id 매핑은 HASH 1개에 저장
     """
     lot_id = uuid.uuid4().hex
     hkey = _lot_key(namespace, lot_id)
     zkey = _open_zset_key(namespace, symbol, side)
+    mkey = _by_signal_hash_key(namespace)
 
     body = {
         "lot_id": lot_id,
@@ -71,7 +73,7 @@ def open_lot(
     pipe.zadd(zkey, {lot_id: float(entry_ts_ms)})
 
     if entry_signal_id:
-        pipe.set(_open_lot_by_signal_key(namespace, entry_signal_id), lot_id)
+        pipe.hset(mkey, entry_signal_id, lot_id)
 
     pipe.execute()
     return lot_id
@@ -84,11 +86,9 @@ def close_lot_full(
 ) -> bool:
     """
     ✅ 청산 주문 체결 확정 후에만 호출해야 함.
-
-    설계:
-    - CLOSED 상태는 별도 저장 안 함(요청사항)
-    - open_lots 인덱스에서 제거 + lot hash 삭제
-    - signal_id ↔ lot_id 매핑도 제거
+    - open zset에서 제거
+    - lot hash 삭제
+    - by_signal hash에서도 제거(같이 정리)
     """
     hkey = _lot_key(namespace, lot_id)
     if not redis_client.exists(hkey):
@@ -103,12 +103,16 @@ def close_lot_full(
     entry_signal_id = entry_signal_b.decode() if entry_signal_b else ""
 
     pipe = redis_client.pipeline()
+
     if symbol and side:
         pipe.zrem(_open_zset_key(namespace, symbol, side), lot_id)
+
+    # lot 본문 삭제
     pipe.delete(hkey)
 
+    # ✅ entry_signal_id -> lot_id 매핑도 같이 삭제
     if entry_signal_id:
-        pipe.delete(_open_lot_by_signal_key(namespace, entry_signal_id))
+        pipe.hdel(_by_signal_hash_key(namespace), entry_signal_id)
 
     pipe.execute()
     return True
@@ -119,11 +123,11 @@ def pick_open_lot_ids(
     namespace: str = "bybit",
     symbol: str,
     side: str,
-    policy: str,          # "LIFO" | "FIFO"
-    limit: Optional[int], # 1이면 1개, None이면 전부
+    policy: str,           # "LIFO" | "FIFO"
+    limit: Optional[int],  # 1이면 1개, None이면 전부
 ) -> List[str]:
     """
-    Redis open index에서 OPEN lot ids 선택.
+    open lots zset에서 OPEN lot ids 선택.
     - LIFO: 최신 entry_ts_ms부터
     - FIFO: 오래된 entry_ts_ms부터
     """
@@ -147,7 +151,12 @@ def get_open_lot_id_by_entry_signal_id(
     namespace: str = "bybit",
     entry_signal_id: str,
 ) -> Optional[str]:
-    v = redis_client.get(_open_lot_by_signal_key(namespace, entry_signal_id))
+    """
+    ✅ entry_signal_id -> lot_id (HASH lookup)
+    """
+    if not entry_signal_id:
+        return None
+    v = redis_client.hget(_by_signal_hash_key(namespace), entry_signal_id)
     if not v:
         return None
     try:
@@ -188,40 +197,42 @@ def get_lot_entry_price(*, namespace: str = "bybit", lot_id: str) -> Optional[fl
 
 # ----------------------------- LotsIndex (in-memory cache) -----------------------------
 
-
 @dataclass
 class LotCacheItem:
     lot_id: str
     entry_ts_ms: int
     qty_total: float
     entry_price: float
+    entry_signal_id: str = ""
 
 
 class LotsIndex:
     """
-    ✅ 로컬 캐시: OPEN lot만 관리 (가속용)
-    - source of truth는 Redis lots store
-    - 주문 체결 성공 후(OPEN/CLOSE) TradeExecutor에서 on_open/on_close로만 갱신
-    - 재시작 시 1회 load_from_redis로 warm-up
+    In-memory cache.
+    목표:
+    - 시작 시 Redis로부터 동기화(load_from_redis)
+    - 체결 확정 후 on_open/on_close로만 갱신
+    - entry_signal_id -> lot_id lookup을 메모리에서 처리
     """
 
-    def __init__(self) -> None:
-        # (symbol, side) -> [LotCacheItem...]
-        # 기본 정렬: entry_ts_ms 내림차순 (LIFO: newest first)
-        self._items: Dict[Tuple[str, str], List[LotCacheItem]] = {}
-        # lot_id -> (symbol, side) 역인덱스
-        self._rev: Dict[str, Tuple[str, str]] = {}
+    def __init__(self, *, namespace: str, redis_cli=redis_client) -> None:
+        self.namespace = namespace
+        self.redis = redis_cli
 
-    # ---- warmup ----
+        self._items: Dict[Tuple[str, str], List[LotCacheItem]] = {}  # (symbol, side) -> newest-first
+        self._rev: Dict[str, Tuple[str, str]] = {}                   # lot_id -> (symbol, side)
 
-    def load_from_redis(self, redis_cli, *, namespace: str, symbols: List[str]) -> None:
-        """
-        재시작 시 1회 로드용.
-        - 각 symbol, side별 open_lots zset에서 lot_id들을 가져오고
-        - lot hash에서 필요한 메타(entry_ts_ms/qty_total/entry_price)만 읽어 캐시에 넣는다.
-        """
+        self._by_entry_signal: Dict[Tuple[str, str, str], str] = {}  # (symbol, side, entry_signal_id) -> lot_id
+        self._entry_by_lot: Dict[str, str] = {}                      # lot_id -> entry_signal_id
+
+    def load_from_redis(self, *, symbols: List[str]) -> None:
         self._items.clear()
         self._rev.clear()
+        self._by_entry_signal.clear()
+        self._entry_by_lot.clear()
+
+        namespace = self.namespace
+        r = self.redis
 
         for sym in symbols:
             for side in ("LONG", "SHORT"):
@@ -237,8 +248,7 @@ class LotsIndex:
 
                 arr: List[LotCacheItem] = []
                 for lot_id in lot_ids:
-                    hkey = _lot_key(namespace, lot_id)
-                    h = redis_cli.hgetall(hkey)
+                    h = r.hgetall(_lot_key(namespace, lot_id))
                     if not h:
                         continue
 
@@ -250,6 +260,7 @@ class LotsIndex:
                         entry_ts_ms = int(float(_get("entry_ts_ms") or "0"))
                         qty_total = float(_get("qty_total") or "0")
                         entry_price = float(_get("entry_price") or "0")
+                        entry_signal_id = _get("entry_signal_id") or ""
                     except Exception:
                         continue
 
@@ -258,16 +269,23 @@ class LotsIndex:
                         entry_ts_ms=entry_ts_ms,
                         qty_total=qty_total,
                         entry_price=entry_price,
+                        entry_signal_id=entry_signal_id,
                     )
                     arr.append(item)
                     self._rev[lot_id] = (sym, side)
 
-                # LIFO 정렬 보장
+                    if entry_signal_id:
+                        self._by_entry_signal[(sym, side, entry_signal_id)] = lot_id
+                        self._entry_by_lot[lot_id] = entry_signal_id
+
                 arr.sort(key=lambda x: x.entry_ts_ms, reverse=True)
                 if arr:
                     self._items[(sym, side)] = arr
 
-    # ---- realtime updates (after fills only) ----
+    def find_open_lot_id_by_entry_signal_id(self, symbol: str, side: str, entry_signal_id: str) -> Optional[str]:
+        if not entry_signal_id:
+            return None
+        return self._by_entry_signal.get((symbol, side, entry_signal_id))
 
     def on_open(
         self,
@@ -278,23 +296,28 @@ class LotsIndex:
         entry_ts_ms: int,
         qty_total: float,
         entry_price: float,
+        entry_signal_id: str = "",
     ) -> None:
         k = (symbol, side)
-        arr = self._items.get(k) or []
+        arr = list(self._items.get(k) or [])
 
-        # 중복 제거
         arr = [x for x in arr if x.lot_id != lot_id]
 
-        # newest first
-        arr.insert(0, LotCacheItem(
+        item = LotCacheItem(
             lot_id=lot_id,
             entry_ts_ms=int(entry_ts_ms),
             qty_total=float(qty_total),
             entry_price=float(entry_price),
-        ))
+            entry_signal_id=entry_signal_id or "",
+        )
+        arr.insert(0, item)
 
         self._items[k] = arr
         self._rev[lot_id] = k
+
+        if entry_signal_id:
+            self._by_entry_signal[(symbol, side, entry_signal_id)] = lot_id
+            self._entry_by_lot[lot_id] = entry_signal_id
 
     def on_close(self, symbol: str, side: str, lot_id: str) -> None:
         k = (symbol, side)
@@ -304,9 +327,12 @@ class LotsIndex:
             self._items[k] = arr
         else:
             self._items.pop(k, None)
+
         self._rev.pop(lot_id, None)
 
-    # ---- reads ----
+        entry_signal_id = self._entry_by_lot.pop(lot_id, "")
+        if entry_signal_id:
+            self._by_entry_signal.pop((symbol, side, entry_signal_id), None)
 
     def pick_open_lot_ids(self, symbol: str, side: str, *, policy: str, limit: Optional[int]) -> List[str]:
         k = (symbol, side)
@@ -326,8 +352,7 @@ class LotsIndex:
         k = self._rev.get(lot_id)
         if not k:
             return None
-        arr = self._items.get(k) or []
-        for x in arr:
+        for x in (self._items.get(k) or []):
             if x.lot_id == lot_id:
                 return x.entry_ts_ms
         return None
@@ -336,8 +361,7 @@ class LotsIndex:
         k = self._rev.get(lot_id)
         if not k:
             return None
-        arr = self._items.get(k) or []
-        for x in arr:
+        for x in (self._items.get(k) or []):
             if x.lot_id == lot_id:
                 return x.qty_total
         return None
@@ -346,8 +370,7 @@ class LotsIndex:
         k = self._rev.get(lot_id)
         if not k:
             return None
-        arr = self._items.get(k) or []
-        for x in arr:
+        for x in (self._items.get(k) or []):
             if x.lot_id == lot_id:
                 return x.entry_price
         return None

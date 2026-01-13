@@ -4,7 +4,7 @@ from typing import List
 from bots.state.signals import (
     record_signal_with_ts,
 )
-from bots.state.signals import OpenSignalsIndex, OpenSignalStats
+from bots.state.signals import OpenSignalsIndex
 from .signals.pipeline import build_log_upload
 from .trade_config import TradeConfig
 from core.engines import CandleEngine, IndicatorEngine, JumpDetector
@@ -132,12 +132,8 @@ class TradeBot:
         )
 
         # lots cache
-        self.lots_index = LotsIndex()
-        self.lots_index.load_from_redis(
-            redis_client,
-            namespace=self.namespace,
-            symbols=self.symbols,
-        )
+        self.lots_index = LotsIndex(namespace=self.namespace, redis_cli=redis_client)
+        self.lots_index.load_from_redis(symbols=self.symbols)
 
         # executor (orders + sync)
         self.trade_executor = TradeExecutor(
@@ -168,13 +164,14 @@ class TradeBot:
                     lot_id=lot_id,
                 ),
 
-                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price: self.lots_index.on_open(
+                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id: self.lots_index.on_open(
                     sym,
                     side,
                     lot_id,
                     entry_ts_ms=entry_ts_ms,
                     qty_total=qty_total,
                     entry_price=entry_price,
+                    entry_signal_id=entry_signal_id
                 ),
                 on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
 
@@ -184,6 +181,15 @@ class TradeBot:
                 ),
             ),
         )
+
+        def _extract_open_signal_id(payload):
+            if not payload:
+                return None
+            if isinstance(payload, dict):
+                v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
+                return str(v) if v else None
+            return getattr(payload, "open_signal_id", None) or getattr(payload, "target_open_signal_id", None)
+
 
         # ✅ Signal 저장/로그 업로드를 한 곳으로
         def _log_signal(sym, side, kind, price, sig):
@@ -196,7 +202,6 @@ class TradeBot:
                 payload=sig,
             )
 
-            # ✅ open 상태 반영 (체결/lot과 무관하게 "신호" 기준으로만)
             kind_u = (kind or "").upper()
             side_u = (side or "").upper()
 
@@ -209,13 +214,14 @@ class TradeBot:
                     ts_ms=ts,
                 )
             elif kind_u == "CLOSE":
-                self.open_signals_index.on_close(
-                    namespace=self.namespace,
-                    symbol=sym,
-                    side=side_u,
-                    policy="LIFO",  # 네 정책대로
-                )
-
+                target_open_id = _extract_open_signal_id(sig)
+                if target_open_id:
+                    self.open_signals_index.on_close_by_id(
+                        namespace=self.namespace, symbol=sym, side=side_u, open_signal_id=target_open_id
+                    )
+                else:
+                    if self.system_logger:
+                        self.system_logger.warning(f"[{sym}] CLOSE signal missing open_signal_id (side={side_u})")
             build_log_upload(self.trading_logger, redis_client, sig, sym, self.namespace, keep_days=10)
             return sid, ts
 
@@ -243,6 +249,9 @@ class TradeBot:
                     namespace=self.namespace,
                     symbol=sym,
                     side=side.upper(),
+                ),
+                get_open_signal_items=lambda sym, side: self.open_signals_index.list_open(
+                    namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True
                 ),
 
                 log_signal=_log_signal,
@@ -290,22 +299,20 @@ class TradeBot:
                     )
 
                 elif act.action == "CLOSE":
-                    # ✅ lot_id는 실행 직전에 고른다 (신호/체결 분리 유지)
-                    lot_id = act.lot_id
+
+                    lot_id = self.lots_index.find_open_lot_id_by_entry_signal_id(
+                        act.symbol,
+                        (act.side or "").upper(),
+                        act.close_open_signal_id or "",
+                    )
+
                     if not lot_id:
-                        ids = self.lots_index.pick_open_lot_ids(
-                            act.symbol,
-                            (act.side or "").upper(),
-                            policy="LIFO",
-                            limit=1,
+                        raise RuntimeError(
+                            f"[{act.symbol}] lot_id not found for close_open_signal_id={act.close_open_signal_id} side={act.side}"
                         )
-                        lot_id = ids[0] if ids else None
 
                     await self.trade_executor.close_position(
-                        act.symbol,
-                        act.side,
-                        lot_id,
-                        exit_signal_id=act.signal_id,
+                        act.symbol, act.side, lot_id, exit_signal_id=act.signal_id
                     )
 
         self.reporter.tick(now)

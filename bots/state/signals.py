@@ -64,6 +64,16 @@ def _json_dumps(payload: Any) -> str:
     except Exception:
         return json.dumps(str(payload), ensure_ascii=False)
 
+def _extract_open_signal_id(payload: Any) -> Optional[str]:
+    if not payload:
+        return None
+    if isinstance(payload, dict):
+        v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
+        return str(v) if v else None
+    return (
+        getattr(payload, "open_signal_id", None)
+        or getattr(payload, "target_open_signal_id", None)
+    )
 
 # ---------- write: signal event ----------
 def record_signal_with_ts(
@@ -131,13 +141,17 @@ def record_signal_with_ts(
     # 3) open-state zset 갱신
     if kind_u == "OPEN":
         pipe.zadd(zkey, {sid: float(ts)})
-        pipe.zremrangebyscore(zkey, "-inf", cutoff_ms)  # 오래된 찌꺼기 방지
+        pipe.zremrangebyscore(zkey, "-inf", cutoff_ms)
     elif kind_u == "CLOSE":
-        pol = (open_policy or "LIFO").upper()
-        if pol == "FIFO":
-            pipe.zpopmin(zkey, 1)
+        open_id = _extract_open_signal_id(payload)
+        if open_id:
+            pipe.zrem(zkey, open_id)  # ✅ id 기반 제거
         else:
-            pipe.zpopmax(zkey, 1)
+            pol = (open_policy or "LIFO").upper()
+            if pol == "FIFO":
+                pipe.zpopmin(zkey, 1)
+            else:
+                pipe.zpopmax(zkey, 1)
         pipe.zremrangebyscore(zkey, "-inf", cutoff_ms)
 
     pipe.execute()
@@ -258,12 +272,6 @@ def get_signal_info(*, namespace: str = "bybit", signal_id: str) -> Optional[Sig
 
 
 # ---------- local cache (no redis writes!) ----------
-@dataclass(frozen=True)
-class OpenSignalStats:
-    count: int
-    oldest_ts_ms: Optional[int]
-    newest_ts_ms: Optional[int]
-
 Key = Tuple[str, str, str]          # (namespace, symbol, side)
 Item = Tuple[str, int]              # (signal_id, ts_ms)
 
@@ -299,3 +307,28 @@ class OpenSignalsIndex:
             return None
         pol = (policy or "LIFO").upper()
         return d.popleft() if pol == "FIFO" else d.pop()
+
+    def list_open(self, *, namespace: str, symbol: str, side: str, newest_first: bool = True,
+                  limit: Optional[int] = None) -> List[Item]:
+        d = self._dq.get((namespace, symbol, side))
+        if not d:
+            return []
+        rows = list(d)
+        if newest_first:
+            rows = list(reversed(rows))
+        if limit is not None:
+            rows = rows[: max(0, int(limit))]
+        return rows
+
+    def on_close_by_id(self, *, namespace: str, symbol: str, side: str, open_signal_id: str) -> Optional[Item]:
+        key = (namespace, symbol, side)
+        d = self._dq.get(key)
+        if not d:
+            return None
+        for i, (sid, ts) in enumerate(d):
+            if sid == open_signal_id:
+                d.rotate(-i)
+                item = d.popleft()
+                d.rotate(i)
+                return item
+        return None
