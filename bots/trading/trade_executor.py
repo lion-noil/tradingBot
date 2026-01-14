@@ -25,9 +25,6 @@ class TradeExecutorDeps:
                            str], None]  # (symbol, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id)
     on_lot_close: Callable[[str, str, str], None]  # (symbol, side, lot_id)
 
-    # lot_id가 None일 때 executor가 직접 고르기 위해 필요
-    pick_open_lot_ids: Callable[[str, str, str, Optional[int]], list[str]]  # (symbol, side, policy, limit) -> lot_ids
-
 
 class TradeExecutor:
     """
@@ -88,17 +85,13 @@ class TradeExecutor:
             self,
             symbol: str,
             side: str,
-            lot_id: Optional[str],
+            lot_id: str,
             *,
-            exit_signal_id: Optional[str] = None,  # 신호/체결 분리: 현재는 저장하지 않음(인터페이스만 유지)
-            pick_policy: str = "LIFO",  # "LIFO" | "FIFO"
+            exit_signal_id: Optional[str] = None,  # 메타데이터(원하면 lot에 저장 가능)
     ) -> None:
-        """
-        lot_id 기반 '전부청산' (부분청산 없음 가정)
-        - lot_id가 None이면 executor가 lots_index에서 선택
-        - qty는 lot에서 읽음
-        - 주문 성공 후 lot CLOSED 처리 + cache 반영
-        """
+        if not lot_id:
+            raise ValueError("lot_id is required")
+
         if self.deps.is_signal_only():
             if self.system_logger:
                 self.system_logger.info(f"[signal_only] CLOSE 스킵 ({symbol} {side} lot_id={lot_id})")
@@ -108,18 +101,6 @@ class TradeExecutor:
         if side_u not in ("LONG", "SHORT"):
             side_u = side  # 원본 유지(혹시 커스텀)
 
-        # ✅ lot_id가 없으면 여기서 고른다
-        if not lot_id:
-            try:
-                cand = self.deps.pick_open_lot_ids(symbol, side_u, pick_policy, 1)
-            except Exception:
-                cand = []
-            if not cand:
-                if self.system_logger:
-                    self.system_logger.info(f"[CLOSE] open lot 없음 → 스킵 ({symbol} {side_u})")
-                return
-            lot_id = cand[0]
-
         qty = self.deps.get_lot_qty_total(lot_id)
         if qty is None or qty <= 0:
             if self.system_logger:
@@ -127,13 +108,11 @@ class TradeExecutor:
                     f"[CLOSE] lot qty 없음/0 → 스킵 ({symbol} {side_u} lot_id={lot_id} qty={qty})"
                 )
             return
-
         asset = self.deps.get_asset()
-
-        # ✅ 포지션 ref 안전 체크
+        # 포지션 ref 안전 체크
         pos_ref = self._ensure_pos_ref(asset, symbol, side_u)
 
-        # 실행 (기존 엔진 그대로 사용)
+        # 실행
         await self.exec.execute_and_sync(
             self.rest.close_market,
             pos_ref,
@@ -155,13 +134,15 @@ class TradeExecutor:
             if self.system_logger:
                 self.system_logger.info(f"[lots_store] close_lot_full 실패 ({lot_id}) err={e}")
 
-        # ✅ cache 반영 (close_lot_full 성공했을 때만)
+        # cache 반영 (close_lot_full 성공했을 때만)
         if ok:
             try:
                 self.deps.on_lot_close(symbol, side_u, lot_id)
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.info(f"[lots_index] on_lot_close 실패 ({lot_id}) err={e}")
+
+
 
     async def open_position(
             self,

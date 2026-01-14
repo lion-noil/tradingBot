@@ -1,6 +1,6 @@
 # strategies/basic_strategy.py
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 import time
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -18,7 +18,7 @@ class Signal:
     ma_delta_pct: float
     momentum_pct: Optional[float]
     thresholds: Dict[str, float]
-    extra: Dict[str, Any] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 def momentum_vs_prev_candle_ohlc(price: float, prev_candle: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -53,6 +53,20 @@ def _fmt_edge(seconds: int) -> str:
     if seconds % 60 == 0:
         return f"{seconds // 60}m"
     return f"{seconds}s"
+def _signal_to_dict(s: Signal) -> Dict[str, Any]:
+    return {
+        "ok": bool(s.ok),
+        "kind": str(s.kind),           # ENTRY
+        "side": str(s.side),           # LONG/SHORT
+        "reasons": list(s.reasons or []),
+        "price": float(s.price),
+        "ma100": float(s.ma100),
+        "ma_delta_pct": float(s.ma_delta_pct),
+        "momentum_pct": None if s.momentum_pct is None else float(s.momentum_pct),
+        "thresholds": dict(s.thresholds or {}),
+        "extra": dict(s.extra or {}),
+    }
+
 
 
 def _fmt_dur(sec: int | None) -> str:
@@ -74,7 +88,7 @@ def get_long_entry_signal(
         momentum_threshold: float = 0.001,
         recent_entry_time: Optional[int] = None,
         reentry_cooldown_sec: int = 3600
-) -> Optional["Signal"]:
+) -> Optional[Dict[str, Any]]:
     # ✅ 데이터 없으면(휴장/결측) 신호 없음
     if price is None or ma100 is None or prev3_candle is None:
         return None
@@ -106,14 +120,14 @@ def get_long_entry_signal(
 
     ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
 
-    return Signal(
+    s = Signal(
         ok=True, kind="ENTRY", side="LONG", reasons=reasons,
         price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
-        momentum_pct=mom,  # ✅ OHLC 기준 모멘텀 저장
+        momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
-        extra={"reentry_cooldown_sec": reentry_cooldown_sec}
+        extra={"reentry_cooldown_sec": reentry_cooldown_sec},
     )
-
+    return _signal_to_dict(s)
 
 def get_short_entry_signal(
         price: float,
@@ -122,8 +136,8 @@ def get_short_entry_signal(
         ma_threshold: float = 0.002,
         momentum_threshold: float = 0.001,
         recent_entry_time: Optional[int] = None,
-        reentry_cooldown_sec: int = 3600
-) -> Optional["Signal"]:
+        reentry_cooldown_sec: int = 1800
+) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
 
@@ -148,13 +162,15 @@ def get_short_entry_signal(
     if len(reasons) < 2:
         return None
     ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
-    return Signal(
+
+    s = Signal(
         ok=True, kind="ENTRY", side="SHORT", reasons=reasons,
         price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
         momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
-        extra={"reentry_cooldown_sec": reentry_cooldown_sec}
+        extra={"reentry_cooldown_sec": reentry_cooldown_sec},
     )
+    return _signal_to_dict(s)
 
 
 def get_exit_signal(
@@ -198,7 +214,7 @@ def get_exit_signal(
             "kind": "EXIT",
             "mode": "TIME_LIMIT",
             "targets": targets,
-            "target_open_signal_id": newest_id,  # 대표값도 newest로 두는 게 자연스러움
+            "anchor_open_signal_id": newest_id,  # 대표값도 newest로 두는 게 자연스러움
             "reasons": [
                 f"⏰ newest {y / 3600:.1f}h 초과",
                 f"oldest={oldest_elapsed_sec}s newest={newest_elapsed_sec}s",
@@ -245,7 +261,7 @@ def get_exit_signal(
         "kind": "EXIT",
         "mode": "NEAR_TOUCH" if newest_elapsed_sec <= x else "NORMAL",
         "targets": targets,
-        "target_open_signal_id": rep_id,  # ✅ 대표값(로그/요약용)
+        "anchor_open_signal_id": rep_id,  # ✅ 대표값(로그/요약용)
         "reasons": [
             head,
             band_label,
@@ -253,3 +269,6 @@ def get_exit_signal(
         ],
         "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
     }
+
+
+

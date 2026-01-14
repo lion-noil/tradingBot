@@ -13,7 +13,7 @@ from bots.state.balances import get_total_balance_usd
 
 @dataclass
 class TradeAction:
-    action: str  # "OPEN" | "CLOSE"
+    action: str  # "ENTRY" | "EXIT"
     symbol: str
     side: str  # "LONG" | "SHORT"
     price: Optional[float] = None
@@ -97,6 +97,7 @@ class SignalProcessor:
 
         for side in ("LONG", "SHORT"):
             open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts), newest-first]
+
             if not open_items:
                 continue
 
@@ -119,11 +120,17 @@ class SignalProcessor:
                 continue
 
             for target_open_id in targets:
-                payload = {**sig, "open_signal_id": target_open_id}  # 개별 close 이벤트용
-                signal_id, _ = self._record(symbol, side, "CLOSE", price, payload)
+                payload = {
+                    **sig,
+                    "open_signal_id": target_open_id,
+                    "price": price,
+                    "ma100": now_ma100,
+                    "ma_delta_pct": (price - now_ma100) / max(now_ma100, 1e-12) * 100.0,
+                }
+                signal_id, _ = self._record(symbol, side, "EXIT", price, payload)
 
                 actions.append(TradeAction(
-                    action="CLOSE",
+                    action="EXIT",
                     symbol=symbol,
                     side=side,
                     sig=payload,  # ✅ payload 넣는게 좋음(개별 open_signal_id 포함)
@@ -172,9 +179,9 @@ class SignalProcessor:
                 reentry_cooldown_sec=60 * 60,
             )
             if sig_s:
-                signal_id, _ = self._record(symbol, "SHORT", "OPEN", price, sig_s)
+                signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
                 actions.append(TradeAction(
-                    action="OPEN",
+                    action="ENTRY",
                     symbol=symbol,
                     side="SHORT",
                     price=price,
@@ -200,9 +207,9 @@ class SignalProcessor:
                 reentry_cooldown_sec=60 * 60,
             )
             if sig_l:
-                signal_id, _ = self._record(symbol, "LONG", "OPEN", price, sig_l)
+                signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
                 actions.append(TradeAction(
-                    action="OPEN",
+                    action="ENTRY",
                     symbol=symbol,
                     side="LONG",
                     price=price,

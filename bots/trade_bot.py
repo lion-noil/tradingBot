@@ -5,7 +5,6 @@ from bots.state.signals import (
     record_signal_with_ts,
 )
 from bots.state.signals import OpenSignalsIndex
-from .signals.pipeline import build_log_upload
 from .trade_config import TradeConfig
 from core.engines import CandleEngine, IndicatorEngine, JumpDetector
 from core.execution import ExecutionEngine
@@ -23,6 +22,7 @@ from bots.state.lots import (
     get_lot_qty_total,
     LotsIndex,
 )
+import json  # trade_bot.py 상단에 추가 (없으면)
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -177,11 +177,6 @@ class TradeBot:
                     entry_signal_id=entry_signal_id
                 ),
                 on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
-
-                # ✅ executor가 lot_id=None일 때 직접 선택하려면 필수
-                pick_open_lot_ids=lambda sym, side, policy, limit: self.lots_index.pick_open_lot_ids(
-                    sym, side, policy=policy, limit=limit
-                ),
             ),
         )
 
@@ -193,15 +188,23 @@ class TradeBot:
 
         # ✅ Signal 저장/로그 업로드를 한 곳으로
         def _log_signal(sym, side, kind, price, sig):
-            # ✅ payload는 dict로 통일 (아니면 빈 dict)
             payload = sig if isinstance(sig, dict) else {}
 
-            # ✅ 업로드/저장용 완성 dict
+            # ✅ 표준화: kind는 ENTRY/EXIT로 통일 (방어)
+            kind_u = (kind or "").upper().strip()
+            if kind_u == "OPEN":
+                kind_u = "ENTRY"
+            elif kind_u == "CLOSE":
+                kind_u = "EXIT"
+
+            side_u = (side or "").upper().strip()
+            sym_u = (sym or "").upper().strip()
+
             sig_dict = {
                 **payload,
-                "kind": kind,
-                "side": side,
-                "symbol": sym,
+                "kind": kind_u,
+                "side": side_u,
+                "symbol": sym_u,
                 "ts": datetime.now(_TZ).isoformat(),
                 "price": price,
                 "engine": self.namespace,
@@ -209,34 +212,43 @@ class TradeBot:
 
             sid, ts = record_signal_with_ts(
                 namespace=self.namespace,
-                symbol=sym,
-                side=side,
-                kind=kind,
+                symbol=sym_u,
+                side=side_u,
+                kind=kind_u,
                 price=price,
-                payload=sig_dict,  # ✅ 저장도 dict로 통일
+                payload=sig_dict,
             )
 
-            kind_u = (kind or "").upper()
-            side_u = (side or "").upper()
 
-            if kind_u == "OPEN":
+            if kind_u == "ENTRY":
                 self.open_signals_index.on_open(
                     namespace=self.namespace,
-                    symbol=sym,
+                    symbol=sym_u,
                     side=side_u,
                     signal_id=sid,
                     ts_ms=ts,
                 )
-            elif kind_u == "CLOSE":
+
+            elif kind_u == "EXIT":
                 target_open_id = _extract_open_signal_id(payload)
                 if target_open_id:
                     self.open_signals_index.on_close_by_id(
-                        namespace=self.namespace, symbol=sym, side=side_u, open_signal_id=target_open_id
+                        namespace=self.namespace,
+                        symbol=sym_u,
+                        side=side_u,
+                        open_signal_id=str(target_open_id),
                     )
                 else:
                     if self.system_logger:
-                        self.system_logger.warning(f"[{sym}] CLOSE signal missing open_signal_id (side={side_u})")
-            build_log_upload(self.trading_logger, redis_client, sig_dict, sym, self.namespace, keep_days=10)
+                        self.system_logger.warning(f"[{sym_u}] EXIT signal missing open_signal_id (side={side_u})")
+
+            # ✅ pipeline 대신: 로그만 남김
+            if self.trading_logger:
+                try:
+                    self.trading_logger.info("SIG " + json.dumps(sig_dict, ensure_ascii=False, default=str))
+                except Exception:
+                    self.trading_logger.info(f"SIG {sig_dict}")
+
             return sid, ts
 
         # signal processor
@@ -304,7 +316,7 @@ class TradeBot:
             actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
             for act in actions:
-                if act.action == "OPEN":
+                if act.action == "ENTRY":
                     await self.trade_executor.open_position(
                         act.symbol,
                         act.side,
@@ -312,7 +324,7 @@ class TradeBot:
                         entry_signal_id=act.signal_id,
                     )
 
-                elif act.action == "CLOSE":
+                elif act.action == "EXIT":
 
                     lot_id = self.lots_index.find_open_lot_id_by_entry_signal_id(
                         act.symbol,

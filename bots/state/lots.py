@@ -146,47 +146,8 @@ def pick_open_lot_ids(
     return [x.decode() for x in ids]
 
 
-def get_open_lot_id_by_entry_signal_id(
-    *,
-    namespace: str = "bybit",
-    entry_signal_id: str,
-) -> Optional[str]:
-    """
-    ✅ entry_signal_id -> lot_id (HASH lookup)
-    """
-    if not entry_signal_id:
-        return None
-    v = redis_client.hget(_by_signal_hash_key(namespace), entry_signal_id)
-    if not v:
-        return None
-    try:
-        return v.decode()
-    except Exception:
-        return None
-
-
 def get_lot_qty_total(*, namespace: str = "bybit", lot_id: str) -> Optional[float]:
     v = redis_client.hget(_lot_key(namespace, lot_id), "qty_total")
-    if not v:
-        return None
-    try:
-        return float(v.decode())
-    except Exception:
-        return None
-
-
-def get_lot_entry_ts_ms(*, namespace: str = "bybit", lot_id: str) -> Optional[int]:
-    v = redis_client.hget(_lot_key(namespace, lot_id), "entry_ts_ms")
-    if not v:
-        return None
-    try:
-        return int(float(v.decode()))
-    except Exception:
-        return None
-
-
-def get_lot_entry_price(*, namespace: str = "bybit", lot_id: str) -> Optional[float]:
-    v = redis_client.hget(_lot_key(namespace, lot_id), "entry_price")
     if not v:
         return None
     try:
@@ -333,44 +294,3 @@ class LotsIndex:
         entry_signal_id = self._entry_by_lot.pop(lot_id, "")
         if entry_signal_id:
             self._by_entry_signal.pop((symbol, side, entry_signal_id), None)
-
-    def pick_open_lot_ids(self, symbol: str, side: str, *, policy: str, limit: Optional[int]) -> List[str]:
-        k = (symbol, side)
-        arr = list(self._items.get(k) or [])
-
-        pol = (policy or "LIFO").upper()
-        if pol == "FIFO":
-            arr = list(reversed(arr))
-
-        ids = [x.lot_id for x in arr]
-        if limit is None:
-            return ids
-        n = max(0, int(limit))
-        return ids[:n]
-
-    def get_entry_ts_ms(self, lot_id: str) -> Optional[int]:
-        k = self._rev.get(lot_id)
-        if not k:
-            return None
-        for x in (self._items.get(k) or []):
-            if x.lot_id == lot_id:
-                return x.entry_ts_ms
-        return None
-
-    def get_qty_total(self, lot_id: str) -> Optional[float]:
-        k = self._rev.get(lot_id)
-        if not k:
-            return None
-        for x in (self._items.get(k) or []):
-            if x.lot_id == lot_id:
-                return x.qty_total
-        return None
-
-    def get_entry_price(self, lot_id: str) -> Optional[float]:
-        k = self._rev.get(lot_id)
-        if not k:
-            return None
-        for x in (self._items.get(k) or []):
-            if x.lot_id == lot_id:
-                return x.entry_price
-        return None
