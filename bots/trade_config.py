@@ -305,7 +305,6 @@ def make_bybit_config(
     """
     if symbols is None:
         symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
-        symbols = ("BTCUSDT",)
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스
