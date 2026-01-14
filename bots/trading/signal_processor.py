@@ -4,7 +4,6 @@ from typing import Tuple
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from bots.state.signals import OpenSignalStats
 from strategies.basic_strategy import (
     get_short_entry_signal, get_long_entry_signal, get_exit_signal
 )
@@ -23,7 +22,7 @@ class TradeAction:
 
     close_open_signal_id: Optional[str] = None
 
-Item = Tuple[str, int]   # (signal_id, ts_ms)
+Item = Tuple[str, int, float]   # (signal_id, ts_ms, entry_price)
 
 
 @dataclass
@@ -43,8 +42,6 @@ class SignalProcessorDeps:
     get_near_touch_window_sec: Callable[[], int]
     get_min_ma_threshold: Callable[[], Optional[float]]
 
-    # ✅ open-state stats (from in-memory cache; redis fallback은 index가 알아서)
-    get_open_signal_stats: Callable[[str, str], OpenSignalStats]  # (symbol, side) -> stats
 
     get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
 
@@ -96,7 +93,7 @@ class SignalProcessor:
         exit_easing = easing
 
         for side in ("LONG", "SHORT"):
-            open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts), newest-first]
+            open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts, entry_price), newest-first]
 
             if not open_items:
                 continue
@@ -105,7 +102,7 @@ class SignalProcessor:
                 side=side,
                 price=price,
                 ma100=now_ma100,
-                open_items=open_items,  # [(open_signal_id, ts_ms), ...]
+                open_items=open_items,  # [(open_signal_id, ts_ms, entry_price), ...]
                 ma_threshold=float(thr),
                 exit_easing=float(exit_easing),
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
@@ -166,17 +163,16 @@ class SignalProcessor:
         short_eff_x = (short_amt * price / total_balance) if (total_balance and not signal_only) else 0.0
 
         if signal_only or short_eff_x < max_eff:
-            stats = self.deps.get_open_signal_stats(symbol, "SHORT")
-            recent_entry_ts = stats.newest_ts_ms  # ✅ 쿨다운 기준
+            open_items = self.deps.get_open_signal_items(symbol, "SHORT")  # ✅ 추가
 
             sig_s = get_short_entry_signal(
                 price=price,
                 ma100=now_ma100,
                 prev3_candle=self.deps.get_prev3_candle(symbol),
+                open_items=open_items,  # ✅ 추가
                 ma_threshold=entry_ma_thr,
                 momentum_threshold=self.deps.get_momentum_threshold(symbol),
-                recent_entry_time=recent_entry_ts,
-                reentry_cooldown_sec=60 * 60,
+                reentry_cooldown_sec=30 * 60,  # ✅ 30분
             )
             if sig_s:
                 signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
@@ -194,17 +190,16 @@ class SignalProcessor:
         long_eff_x = (long_amt * price / total_balance) if (total_balance and not signal_only) else 0.0
 
         if signal_only or long_eff_x < max_eff:
-            stats = self.deps.get_open_signal_stats(symbol, "LONG")
-            recent_entry_ts = stats.newest_ts_ms
+            open_items = self.deps.get_open_signal_items(symbol, "LONG")  # ✅ 추가
 
             sig_l = get_long_entry_signal(
                 price=price,
                 ma100=now_ma100,
                 prev3_candle=self.deps.get_prev3_candle(symbol),
+                open_items=open_items,  # ✅ 추가
                 ma_threshold=entry_ma_thr,
                 momentum_threshold=self.deps.get_momentum_threshold(symbol),
-                recent_entry_time=recent_entry_ts,
-                reentry_cooldown_sec=60 * 60,
+                reentry_cooldown_sec=30 * 60,  # ✅ 30분
             )
             if sig_l:
                 signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)

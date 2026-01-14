@@ -176,7 +176,7 @@ def record_signal_with_ts(
 
 # ---------- local cache (no redis writes!) ----------
 Key = Tuple[str, str, str]  # (namespace, symbol, side)
-Item = Tuple[str, int]  # (signal_id, ts_ms)
+Item = Tuple[str, int, float]  # (signal_id, ts_ms, entry_price)
 
 
 class OpenSignalsIndex:
@@ -188,10 +188,36 @@ class OpenSignalsIndex:
             for side in ("LONG", "SHORT"):
                 zkey = open_zset_key(namespace, sym, side)
                 rows = redis_client.zrange(zkey, 0, -1, withscores=True)  # oldest -> newest
-                d: Deque[Item] = deque()
+
+                # sid 목록
+                sids: List[str] = []
+                ts_list: List[int] = []
                 for sid_b, score in rows:
                     sid = sid_b.decode() if isinstance(sid_b, (bytes, bytearray)) else str(sid_b)
-                    d.append((sid, int(score)))
+                    sids.append(sid)
+                    ts_list.append(int(score))
+
+                # ✅ sid별 entry_price는 hash에서 읽어옴 (pipeline)
+                prices: List[float] = []
+                if sids:
+                    pipe = redis_client.pipeline()
+                    for sid in sids:
+                        hkey = signal_hash_key(namespace, sid)
+                        pipe.hget(hkey, "price")
+                    raw_prices = pipe.execute()
+
+                    for rp in raw_prices:
+                        # record_signal_with_ts에서 price는 "" 또는 "123.45" 문자열로 저장
+                        try:
+                            p = float(rp) if rp not in (None, b"", "") else 0.0
+                        except Exception:
+                            p = 0.0
+                        prices.append(p)
+
+                d: Deque[Item] = deque()
+                for sid, ts, p in zip(sids, ts_list, prices):
+                    d.append((sid, ts, float(p)))
+
                 self._dq[(namespace, sym, side)] = d
 
     def stats(self, *, namespace: str, symbol: str, side: str) -> OpenSignalStats:
@@ -200,12 +226,28 @@ class OpenSignalsIndex:
             return OpenSignalStats(count=0, oldest_ts_ms=None, newest_ts_ms=None)
         return OpenSignalStats(count=len(d), oldest_ts_ms=d[0][1], newest_ts_ms=d[-1][1])
 
-    def on_open(self, *, namespace: str, symbol: str, side: str, signal_id: str, ts_ms: int) -> None:
+    def on_open(
+        self,
+        *,
+        namespace: str,
+        symbol: str,
+        side: str,
+        signal_id: str,
+        ts_ms: int,
+        entry_price: float,
+    ) -> None:
         key = (namespace, symbol, side)
-        self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms)))
+        self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price)))
 
-    def list_open(self, *, namespace: str, symbol: str, side: str, newest_first: bool = True,
-                  limit: Optional[int] = None) -> List[Item]:
+    def list_open(
+        self,
+        *,
+        namespace: str,
+        symbol: str,
+        side: str,
+        newest_first: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Item]:
         d = self._dq.get((namespace, symbol, side))
         if not d:
             return []
@@ -216,12 +258,19 @@ class OpenSignalsIndex:
             rows = rows[: max(0, int(limit))]
         return rows
 
-    def on_close_by_id(self, *, namespace: str, symbol: str, side: str, open_signal_id: str) -> Optional[Item]:
+    def on_close_by_id(
+        self,
+        *,
+        namespace: str,
+        symbol: str,
+        side: str,
+        open_signal_id: str,
+    ) -> Optional[Item]:
         key = (namespace, symbol, side)
         d = self._dq.get(key)
         if not d:
             return None
-        for i, (sid, ts) in enumerate(d):
+        for i, (sid, ts, p) in enumerate(d):
             if sid == open_signal_id:
                 d.rotate(-i)
                 item = d.popleft()

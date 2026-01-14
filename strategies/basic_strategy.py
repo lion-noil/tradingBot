@@ -1,10 +1,11 @@
 # strategies/basic_strategy.py
 from __future__ import annotations
-from dataclasses import dataclass,field
+from dataclasses import dataclass, field
 import time
 from typing import List, Tuple, Optional, Dict, Any
 
-Item = Tuple[str, int]  # (signal_id, ts_ms)
+# (signal_id, ts_ms, entry_price)
+Item = Tuple[str, int, float]
 
 
 @dataclass
@@ -47,17 +48,11 @@ def momentum_vs_prev_candle_ohlc(price: float, prev_candle: Optional[Dict[str, A
     return max(vals, key=lambda x: abs(x))
 
 
-def _fmt_edge(seconds: int) -> str:
-    if seconds % 3600 == 0:
-        return f"{seconds // 3600}h"
-    if seconds % 60 == 0:
-        return f"{seconds // 60}m"
-    return f"{seconds}s"
 def _signal_to_dict(s: Signal) -> Dict[str, Any]:
     return {
         "ok": bool(s.ok),
-        "kind": str(s.kind),           # ENTRY
-        "side": str(s.side),           # LONG/SHORT
+        "kind": str(s.kind),  # ENTRY / EXIT
+        "side": str(s.side),  # LONG/SHORT
         "reasons": list(s.reasons or []),
         "price": float(s.price),
         "ma100": float(s.ma100),
@@ -68,107 +63,164 @@ def _signal_to_dict(s: Signal) -> Dict[str, Any]:
     }
 
 
-
-def _fmt_dur(sec: int | None) -> str:
-    if sec is None:
-        return "N/A"
-    m, s = divmod(int(sec), 60)
-    h, m = divmod(m, 60)
-    if h: return f"{h}h {m}m {s}s"
-    if m: return f"{m}m {s}s"
-    return f"{s}s"
+def _sorted_items(open_items: List[Item]) -> List[Item]:
+    # oldest -> newest
+    return sorted(open_items or [], key=lambda x: x[1])
 
 
 # ---------- 엔트리 신호 ----------
 def get_long_entry_signal(
         price: float,
         ma100: float,
-        prev3_candle: Optional[Dict[str, Any]],  # ✅ 바뀜
+        prev3_candle: Optional[Dict[str, Any]],
+        open_items: List[Item],
         ma_threshold: float = 0.002,
         momentum_threshold: float = 0.001,
-        recent_entry_time: Optional[int] = None,
-        reentry_cooldown_sec: int = 3600
+        reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
 ) -> Optional[Dict[str, Any]]:
-    # ✅ 데이터 없으면(휴장/결측) 신호 없음
     if price is None or ma100 is None or prev3_candle is None:
         return None
 
-    # 재진입 쿨다운
-    if recent_entry_time is not None:
-        now_ms = int(time.time() * 1000)
-        held_sec = max(0, (now_ms - recent_entry_time) // 1000)
-        if held_sec < reentry_cooldown_sec:
-            return None
-
-    # ✅ 3분전 OHLC 기반 모멘텀
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
     if mom is None:
         return None
 
-    eff_ma_th = ma_threshold
+    items = _sorted_items(open_items)
+    now_ms = int(time.time() * 1000)
 
-    reasons: List[str] = []
-    if price < ma100 * (1 - eff_ma_th):
-        reasons.append(f"MA100 -{eff_ma_th * 100:.2f}%")
+    # ✅ 물타기(SCALE_IN): "불리 + MOM"만 (MA 조건은 보지 않음)
+    if items:
+        newest_id, newest_ts, newest_entry_price = items[-1]
 
-    # LONG은 "3분전 대비 하락"이 조건이었으니 mom이 음수일 때만 체크
-    if (-mom) > momentum_threshold:
-        reasons.append(f"3m -{momentum_threshold * 100:.2f}%")
+        held_sec = max(0, (now_ms - int(newest_ts)) // 1000)
+        if held_sec < int(reentry_cooldown_sec):
+            return None
 
-    if len(reasons) < 2:
+        adverse = price < float(newest_entry_price)  # LONG 불리
+        mom_ok = (-mom) > float(momentum_threshold)  # LONG: 3m 하락 모멘텀
+        ma_ok = price < ma100  # ✅ MA100 자체보다 아래(유리)
+        if not (adverse and mom_ok and ma_ok):
+            return None
+
+        ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
+        s = Signal(
+            ok=True,
+            kind="ENTRY",
+            side="LONG",
+            # ✅ 간결 + 핵심 퍼센트 유지
+            reasons=[
+                "SCALE_IN",
+                "MA100",
+                f"3m -{momentum_threshold * 100:.2f}%",
+            ],
+            price=price,
+            ma100=ma100,
+            ma_delta_pct=ma_delta_pct,
+            momentum_pct=mom,
+            thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
+            extra={"is_scale_in": True, "anchor_open_signal_id": newest_id},
+        )
+        return _signal_to_dict(s)
+
+    # ✅ 첫진입(ENTRY): MA + MOM (둘 다 필요)
+    ma_ok = price < ma100 * (1 - float(ma_threshold))
+    mom_ok = (-mom) > float(momentum_threshold)
+    if not (ma_ok and mom_ok):
         return None
 
     ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
-
     s = Signal(
-        ok=True, kind="ENTRY", side="LONG", reasons=reasons,
-        price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
+        ok=True,
+        kind="ENTRY",
+        side="LONG",
+        reasons=[
+            f"MA100 -{ma_threshold * 100:.2f}%",
+            f"3m -{momentum_threshold * 100:.2f}%",
+        ],
+        price=price,
+        ma100=ma100,
+        ma_delta_pct=ma_delta_pct,
         momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
-        extra={"reentry_cooldown_sec": reentry_cooldown_sec},
+        extra={"is_scale_in": False},
     )
     return _signal_to_dict(s)
+
 
 def get_short_entry_signal(
         price: float,
         ma100: float,
-        prev3_candle: Optional[Dict[str, Any]],  # ✅ 바뀜
+        prev3_candle: Optional[Dict[str, Any]],
+        open_items: List[Item],
         ma_threshold: float = 0.002,
         momentum_threshold: float = 0.001,
-        recent_entry_time: Optional[int] = None,
-        reentry_cooldown_sec: int = 1800
+        reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
 ) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
-
-    if recent_entry_time is not None:
-        now_ms = int(time.time() * 1000)
-        held_sec = max(0, (now_ms - recent_entry_time) // 1000)
-        if held_sec < reentry_cooldown_sec:
-            return None
 
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle)
     if mom is None:
         return None
 
-    eff_ma_th = ma_threshold
-    reasons: List[str] = []
-    if price > ma100 * (1 + eff_ma_th):
-        reasons.append(f"MA100 +{eff_ma_th * 100:.2f}%")
+    items = _sorted_items(open_items)
+    now_ms = int(time.time() * 1000)
 
-    if mom > momentum_threshold:
-        reasons.append(f"3m +{momentum_threshold * 100:.2f}%")
+    # ✅ 물타기(SCALE_IN): "불리 + MOM"만 (MA 조건은 보지 않음)
+    if items:
+        newest_id, newest_ts, newest_entry_price = items[-1]
 
-    if len(reasons) < 2:
+        held_sec = max(0, (now_ms - int(newest_ts)) // 1000)
+        if held_sec < int(reentry_cooldown_sec):
+            return None
+
+        adverse = price > float(newest_entry_price)  # SHORT 불리
+        mom_ok = mom > float(momentum_threshold)  # SHORT: 3m 상승 모멘텀
+        ma_ok = price > ma100  # ✅ MA100 자체보다 위(유리)
+
+        if not (adverse and mom_ok and ma_ok):
+            return None
+
+        ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
+        s = Signal(
+            ok=True,
+            kind="ENTRY",
+            side="SHORT",
+            reasons=[
+                "SCALE_IN",
+                "MA100",
+                f"3m +{momentum_threshold * 100:.2f}%",
+            ],
+            price=price,
+            ma100=ma100,
+            ma_delta_pct=ma_delta_pct,
+            momentum_pct=mom,
+            thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
+            extra={"is_scale_in": True, "anchor_open_signal_id": newest_id},
+        )
+        return _signal_to_dict(s)
+
+    # ✅ 첫진입(ENTRY): MA + MOM (둘 다 필요)
+    ma_ok = price > ma100 * (1 + float(ma_threshold))
+    mom_ok = mom > float(momentum_threshold)
+    if not (ma_ok and mom_ok):
         return None
-    ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
 
+    ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
     s = Signal(
-        ok=True, kind="ENTRY", side="SHORT", reasons=reasons,
-        price=price, ma100=ma100, ma_delta_pct=ma_delta_pct,
+        ok=True,
+        kind="ENTRY",
+        side="SHORT",
+        reasons=[
+            f"MA100 +{ma_threshold * 100:.2f}%",
+            f"3m +{momentum_threshold * 100:.2f}%",
+        ],
+        price=price,
+        ma100=ma100,
+        ma_delta_pct=ma_delta_pct,
         momentum_pct=mom,
         thresholds={"ma": ma_threshold, "momentum": momentum_threshold},
-        extra={"reentry_cooldown_sec": reentry_cooldown_sec},
+        extra={"is_scale_in": False},
     )
     return _signal_to_dict(s)
 
@@ -178,7 +230,7 @@ def get_exit_signal(
         side: str,
         price: float,
         ma100: float,
-        open_items: List[Item],  # ✅ 필수
+        open_items: List[Item],  # (sid, ts, entry_price)
         ma_threshold: float = 0.005,
         exit_easing: float = 0.0002,
         time_limit_sec: int = None,
@@ -195,48 +247,63 @@ def get_exit_signal(
 
     now_ms = int(time.time() * 1000)
 
-    # open_items 정렬 확실히: oldest -> newest
-    items = sorted(open_items, key=lambda x: x[1])
-    oldest_id, oldest_ts = items[0]
-    newest_id, newest_ts = items[-1]
+    items = _sorted_items(open_items)  # oldest -> newest
+    oldest_id, oldest_ts, _ = items[0]
+    newest_id, newest_ts, _ = items[-1]
 
-    # elapsed
-    oldest_elapsed_sec = max(0, (now_ms - oldest_ts) // 1000)
-    newest_elapsed_sec = max(0, (now_ms - newest_ts) // 1000)
+    oldest_elapsed_sec = max(0, (now_ms - int(oldest_ts)) // 1000)
+    newest_elapsed_sec = max(0, (now_ms - int(newest_ts)) // 1000)
 
     x = int(near_touch_window_sec)
     y = int(time_limit_sec)
 
-    # 1) 절대 종료: newest 기준 (✅ 변경)
+    # 1) 절대 종료: newest 기준 (전체 청산)
     if newest_elapsed_sec > y:
-        targets = [sid for sid, _ in items]  # 전체 청산
+        targets = [sid for sid, _, _ in items]
         return {
             "kind": "EXIT",
             "mode": "TIME_LIMIT",
             "targets": targets,
-            "anchor_open_signal_id": newest_id,  # 대표값도 newest로 두는 게 자연스러움
+            "anchor_open_signal_id": newest_id,
             "reasons": [
-                f"⏰ newest {y / 3600:.1f}h 초과",
-                f"oldest={oldest_elapsed_sec}s newest={newest_elapsed_sec}s",
+                "TIME_LIMIT",
+                f"oldest:{oldest_elapsed_sec}s newest:{newest_elapsed_sec}s",
             ],
             "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
         }
 
-    # 2) 구간별 트리거 설정: newest 기준으로 구간 판단
+    # 2) 구간별 타겟/트리거
     if newest_elapsed_sec <= x:
         # ✅ 근접: newest 1개만
         trigger_pct = -float(exit_easing)
         trigger_name = "근접"
-        band_label = f"⛳: 0~{x}s"
+        band_label = f"⛳ 0~{x}s"
         targets = [newest_id]
         rep_id = newest_id
+        mode = "NEAR_TOUCH"
+        profit_only = False
     else:
-        # ✅ 일반: 전체 청산
+        # ✅ 일반: "이득인 item만" 청산
         trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
         trigger_name = "일반"
-        band_label = f"⛳: {x}s~{y}s"
-        targets = [sid for sid, _ in items]
-        rep_id = oldest_id  # 대표값은 oldest로 두는 게 디버깅에 보통 좋음
+        band_label = f"⛳ {x}s~{y}s"
+
+        def _is_profit(entry_price: float) -> bool:
+            ep = float(entry_price)
+            if side == "LONG":
+                return price > ep
+            if side == "SHORT":
+                return price < ep
+            return False
+
+        profit_items = [(sid, ts, ep) for (sid, ts, ep) in items if _is_profit(ep)]
+        targets = [sid for sid, _, _ in profit_items]
+        if not targets:
+            return None  # 이득인 게 없으면 NORMAL 청산 자체를 안 함
+
+        rep_id = targets[0]
+        mode = "NORMAL"
+        profit_only = True
 
     # 3) 터치 판정
     if side == "LONG":
@@ -249,26 +316,24 @@ def get_exit_signal(
     if not touched:
         return None
 
-    # 4) 성립 시 메시지 생성
-    pct_val = trigger_pct * 100
+    pct_val = trigger_pct * 100.0
     head = (
         f"MA100 +{pct_val:.4f}% {trigger_name}"
         if side == "LONG"
         else f"MA100 -{pct_val:.4f}% {trigger_name}"
     )
 
+    # ✅ reasons: 간결 + 너가 원한 핵심 라벨 유지
+    reasons = [head, band_label]
+    if profit_only:
+        reasons.append("profit_only")
+    reasons.append(f"oldest:{oldest_elapsed_sec}s newest:{newest_elapsed_sec}s")
+
     return {
         "kind": "EXIT",
-        "mode": "NEAR_TOUCH" if newest_elapsed_sec <= x else "NORMAL",
+        "mode": mode,
         "targets": targets,
-        "anchor_open_signal_id": rep_id,  # ✅ 대표값(로그/요약용)
-        "reasons": [
-            head,
-            band_label,
-            f"⏱ oldest:{oldest_elapsed_sec}s newest:{newest_elapsed_sec}s",
-        ],
+        "anchor_open_signal_id": rep_id,
+        "reasons": reasons,
         "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
     }
-
-
-

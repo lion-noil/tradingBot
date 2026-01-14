@@ -219,7 +219,6 @@ class TradeBot:
                 payload=sig_dict,
             )
 
-
             if kind_u == "ENTRY":
                 self.open_signals_index.on_open(
                     namespace=self.namespace,
@@ -227,6 +226,7 @@ class TradeBot:
                     side=side_u,
                     signal_id=sid,
                     ts_ms=ts,
+                    entry_price=float(price or 0.0),  # ✅ 추가
                 )
 
             elif kind_u == "EXIT":
@@ -271,11 +271,6 @@ class TradeBot:
                 get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
                 get_min_ma_threshold=lambda: self.state.min_ma_threshold,
                 get_ma_easing=lambda s: self.state.get_ma_easing(s),
-                get_open_signal_stats=lambda sym, side: self.open_signals_index.stats(
-                    namespace=self.namespace,
-                    symbol=sym,
-                    side=side.upper(),
-                ),
                 get_open_signal_items=lambda sym, side: self.open_signals_index.list_open(
                     namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True
                 ),
