@@ -22,6 +22,33 @@ class Signal:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+def fmt_dur_smh_d(sec: int) -> str:
+    try:
+        s = int(sec)
+    except Exception:
+        return ""
+    if s < 0:
+        s = 0
+    if s < 60:
+        return f"{s}s"
+    m = (s + 30) // 60
+    if m < 60:
+        return f"{m}m"
+    h = (m + 30) // 60
+    if h < 24:
+        return f"{h}h"
+    d = (h + 12) // 24
+    return f"{d}d"
+
+
+def fmt_pct2(p: float) -> str:
+    # p=0.0048 -> "0.48%"
+    try:
+        return f"{float(p) * 100.0:.2f}%"
+    except Exception:
+        return "—"
+
+
 def momentum_vs_prev_candle_ohlc(price: float, prev_candle: Optional[Dict[str, Any]]) -> Optional[float]:
     """
     현재가(price)와 '3분 전 봉'(prev_candle)의 OHLC 중
@@ -96,9 +123,10 @@ def get_long_entry_signal(
         if held_sec < int(reentry_cooldown_sec):
             return None
 
-        adverse = price < float(newest_entry_price)  # LONG 불리
-        mom_ok = (-mom) > float(momentum_threshold)  # LONG: 3m 하락 모멘텀
-        ma_ok = price < ma100  # ✅ MA100 자체보다 아래(유리)
+        adverse = price < float(newest_entry_price)  # LONG: 더 낮아야(유리)
+        mom_ok = (-mom) > float(momentum_threshold)  # 3m 하락 모멘텀
+        ma_ok = price <= ma100 * (1 - float(momentum_threshold))  # ✅ MA100 - mom_thr%
+
         if not (adverse and mom_ok and ma_ok):
             return None
 
@@ -107,10 +135,9 @@ def get_long_entry_signal(
             ok=True,
             kind="ENTRY",
             side="LONG",
-            # ✅ 간결 + 핵심 퍼센트 유지
             reasons=[
                 "SCALE_IN",
-                "MA100",
+                f"MA100 -{momentum_threshold * 100:.2f}%",
                 f"3m -{momentum_threshold * 100:.2f}%",
             ],
             price=price,
@@ -134,6 +161,7 @@ def get_long_entry_signal(
         kind="ENTRY",
         side="LONG",
         reasons=[
+            "INIT",
             f"MA100 -{ma_threshold * 100:.2f}%",
             f"3m -{momentum_threshold * 100:.2f}%",
         ],
@@ -167,6 +195,7 @@ def get_short_entry_signal(
     now_ms = int(time.time() * 1000)
 
     # ✅ 물타기(SCALE_IN): "불리 + MOM"만 (MA 조건은 보지 않음)
+    # ✅ 물타기(SCALE_IN): adverse + MOM + (MA100에서 mom_thr 만큼 유리)
     if items:
         newest_id, newest_ts, newest_entry_price = items[-1]
 
@@ -174,9 +203,9 @@ def get_short_entry_signal(
         if held_sec < int(reentry_cooldown_sec):
             return None
 
-        adverse = price > float(newest_entry_price)  # SHORT 불리
-        mom_ok = mom > float(momentum_threshold)  # SHORT: 3m 상승 모멘텀
-        ma_ok = price > ma100  # ✅ MA100 자체보다 위(유리)
+        adverse = price > float(newest_entry_price)  # SHORT: 더 높아야(유리)
+        mom_ok = mom > float(momentum_threshold)  # 3m 상승 모멘텀
+        ma_ok = price >= ma100 * (1 + float(momentum_threshold))  # ✅ MA100 + mom_thr%
 
         if not (adverse and mom_ok and ma_ok):
             return None
@@ -188,7 +217,7 @@ def get_short_entry_signal(
             side="SHORT",
             reasons=[
                 "SCALE_IN",
-                "MA100",
+                f"MA100 +{momentum_threshold * 100:.2f}%",
                 f"3m +{momentum_threshold * 100:.2f}%",
             ],
             price=price,
@@ -212,6 +241,7 @@ def get_short_entry_signal(
         kind="ENTRY",
         side="SHORT",
         reasons=[
+            "INIT",
             f"MA100 +{ma_threshold * 100:.2f}%",
             f"3m +{momentum_threshold * 100:.2f}%",
         ],
@@ -234,7 +264,7 @@ def get_exit_signal(
         ma_threshold: float = 0.005,
         exit_easing: float = 0.0002,
         time_limit_sec: int = None,
-        near_touch_window_sec: int = 60 * 60,
+        near_touch_window_sec: int = 30 * 60,
 ) -> Optional[Dict[str, Any]]:
     if ma_threshold is None:
         raise ValueError("ma_threshold is required (got None)")
@@ -260,15 +290,13 @@ def get_exit_signal(
     # 1) 절대 종료: newest 기준 (전체 청산)
     if newest_elapsed_sec > y:
         targets = [sid for sid, _, _ in items]
+        age_label = f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
         return {
             "kind": "EXIT",
             "mode": "TIME_LIMIT",
             "targets": targets,
             "anchor_open_signal_id": newest_id,
-            "reasons": [
-                "TIME_LIMIT",
-                f"oldest:{oldest_elapsed_sec}s newest:{newest_elapsed_sec}s",
-            ],
+            "reasons": ["TIME_LIMIT", age_label],
             "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
         }
 
@@ -277,7 +305,7 @@ def get_exit_signal(
         # ✅ 근접: newest 1개만
         trigger_pct = -float(exit_easing)
         trigger_name = "근접"
-        band_label = f"⛳ 0~{x}s"
+        band_label = f"⛳ 0~{fmt_dur_smh_d(x)}"
         targets = [newest_id]
         rep_id = newest_id
         mode = "NEAR_TOUCH"
@@ -286,7 +314,7 @@ def get_exit_signal(
         # ✅ 일반: "이득인 item만" 청산
         trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
         trigger_name = "일반"
-        band_label = f"⛳ {x}s~{y}s"
+        band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
 
         def _is_profit(entry_price: float) -> bool:
             ep = float(entry_price)
@@ -316,18 +344,22 @@ def get_exit_signal(
     if not touched:
         return None
 
-    pct_val = trigger_pct * 100.0
-    head = (
-        f"MA100 +{pct_val:.4f}% {trigger_name}"
-        if side == "LONG"
-        else f"MA100 -{pct_val:.4f}% {trigger_name}"
-    )
+    pct_abs_txt = fmt_pct2(abs(trigger_pct))  # "0.02%"
+
+    if mode == "NEAR_TOUCH":
+        sign = "-" if side == "LONG" else "+"
+    else:
+        sign = "+" if side == "LONG" else "-"
+    head = f"MA100 {sign}{pct_abs_txt} {trigger_name}"
 
     # ✅ reasons: 간결 + 너가 원한 핵심 라벨 유지
-    reasons = [head, band_label]
+    label = "NEAR_TOUCH" if mode == "NEAR_TOUCH" else "NORMAL"
+    reasons = [label, head, band_label]
     if profit_only:
         reasons.append("profit_only")
-    reasons.append(f"oldest:{oldest_elapsed_sec}s newest:{newest_elapsed_sec}s")
+    reasons.append(
+        f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
+    )
 
     return {
         "kind": "EXIT",

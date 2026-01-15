@@ -26,7 +26,9 @@ import json  # trade_bot.py 상단에 추가 (없으면)
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 _TZ = ZoneInfo("Asia/Seoul")
+
 
 class TradeBot:
     def __init__(
@@ -167,7 +169,8 @@ class TradeBot:
                     lot_id=lot_id,
                 ),
 
-                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id: self.lots_index.on_open(
+                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price,
+                                   entry_signal_id: self.lots_index.on_open(
                     sym,
                     side,
                     lot_id,
@@ -304,36 +307,50 @@ class TradeBot:
         self.max_effective_leverage = cfg.max_effective_leverage
 
     async def run_once(self):
-        now = time.time()
         for symbol in self.symbols:
-            price = self.market.tick(symbol, now)
+            try:
+                now = time.time()
+                price = self.market.tick(symbol, now)
 
-            actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
+                actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
-            for act in actions:
-                if act.action == "ENTRY":
-                    await self.trade_executor.open_position(
-                        act.symbol,
-                        act.side,
-                        act.price,
-                        entry_signal_id=act.signal_id,
-                    )
-
-                elif act.action == "EXIT":
-
-                    lot_id = self.lots_index.find_open_lot_id_by_entry_signal_id(
-                        act.symbol,
-                        (act.side or "").upper(),
-                        act.close_open_signal_id or "",
-                    )
-
-                    if not lot_id:
-                        raise RuntimeError(
-                            f"[{act.symbol}] lot_id not found for close_open_signal_id={act.close_open_signal_id} side={act.side}"
+                for act in actions:
+                    if act.action == "ENTRY":
+                        if act.price is None:
+                            continue
+                        await self.trade_executor.open_position(
+                            act.symbol,
+                            act.side,
+                            act.price,
+                            entry_signal_id=act.signal_id,
                         )
 
-                    await self.trade_executor.close_position(
-                        act.symbol, act.side, lot_id, exit_signal_id=act.signal_id
-                    )
 
-        self.reporter.tick(now)
+                    elif act.action == "EXIT":
+                        if not act.close_open_signal_id:
+                            if self.system_logger:
+                                self.system_logger.warning(
+                                    f"[{act.symbol}] EXIT skip: missing close_open_signal_id (side={act.side})"
+                                )
+                            continue
+
+                        lot_id = self.lots_index.find_open_lot_id_by_entry_signal_id(
+                            act.symbol,
+                            (act.side or "").upper(),
+                            act.close_open_signal_id,
+                        )
+                        if not lot_id:
+                            if self.system_logger:
+                                self.system_logger.warning(
+                                    f"[{act.symbol}] EXIT skip: lot_id not found for open_signal_id={act.close_open_signal_id} side={act.side}"
+                                )
+                            continue
+                        await self.trade_executor.close_position(
+                            act.symbol, act.side, lot_id, exit_signal_id=act.signal_id
+                        )
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.exception(f"[{symbol}] run_once error: {e}")
+                continue
+
+        self.reporter.tick(time.time())

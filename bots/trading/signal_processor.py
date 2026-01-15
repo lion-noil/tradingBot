@@ -65,21 +65,30 @@ class SignalProcessor:
         return self.deps.log_signal(symbol, side, kind, price, sig)
 
     async def process_symbol(self, symbol: str, price: Optional[float]) -> List[TradeAction]:
-        actions: List[TradeAction] = []
+        if price is None:
+            return []
 
         now_ma100 = self.deps.get_now_ma100(symbol)
-        if price is None or now_ma100 is None:
-            return actions
+        if now_ma100 is None:
+            return []
 
         thr = self.deps.get_ma_threshold(symbol)
         if thr is None:
-            return actions
+            return []
 
         easing = float(self.deps.get_ma_easing(symbol) or 0.0)
 
-        actions.extend(self._decide_exits(symbol, price, now_ma100, thr, easing))
-        actions.extend(self._decide_entries(symbol, price, now_ma100, thr, easing))
-        return actions
+        # 1) EXIT 먼저
+        exit_actions = self._decide_exits(symbol, price, now_ma100, thr, easing)
+        if exit_actions:
+            return exit_actions  # ✅ EXIT만 (여러 개 가능)
+
+        # 2) EXIT 없으면 ENTRY
+        entry_actions = self._decide_entries(symbol, price, now_ma100, thr, easing)
+        if entry_actions:
+            return [entry_actions[0]]
+
+        return []
 
     def _decide_exits(
             self,

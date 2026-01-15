@@ -116,7 +116,7 @@ def compute_indicators_for_symbol(candle_engine, indicator_engine, symbol: str):
 # 2-2) 임계값 파생치 & 로깅 메시지 준비 (순수)
 def derive_thresholds_and_log(prev_q: Optional[float], thr_raw: Optional[float]):
     q = quantize_thr(thr_raw)
-    mom_thr = (q / 4.0) if q is not None else None
+    mom_thr = (q / 3.0) if q is not None else None # momentum 기준
     # 로깅용 문자열(있을 때만)
     log = None
     if q != prev_q:
