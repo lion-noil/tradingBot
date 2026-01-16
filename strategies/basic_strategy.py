@@ -264,7 +264,7 @@ def get_exit_signal(
         ma_threshold: float = 0.005,
         exit_easing: float = 0.0002,
         time_limit_sec: int = None,
-        near_touch_window_sec: int = 30 * 60,
+        near_touch_window_sec: int = 60 * 60,
 ) -> Optional[Dict[str, Any]]:
     if ma_threshold is None:
         raise ValueError("ma_threshold is required (got None)")

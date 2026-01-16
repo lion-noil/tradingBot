@@ -158,7 +158,7 @@ class TradeConfig:
 
     # 청산(보유시간/근접윈도우)
     position_max_hold_sec: int = 7 * 24 * 3600  # ✅ 7일 기본
-    near_touch_window_sec: int = 30 * 60  # ✅ 30분 기본
+    near_touch_window_sec: int = 60 * 60  # ✅ 60분 기본
 
     # 이 설정이 다루는 심볼 목록 (프론트/봇에서 공통으로 사용)
     symbols: List[str] = field(default_factory=list)
