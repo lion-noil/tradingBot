@@ -111,11 +111,15 @@ class SignalProcessor:
                 side=side,
                 price=price,
                 ma100=now_ma100,
+                prev3_candle=self.deps.get_prev3_candle(symbol),  # ✅ 추가
                 open_items=open_items,  # [(open_signal_id, ts_ms, entry_price), ...]
+
                 ma_threshold=float(thr),
                 exit_easing=float(exit_easing),
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
                 near_touch_window_sec=self.deps.get_near_touch_window_sec(),
+
+                momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),  # ✅ 추가
             )
             
             if not sig:

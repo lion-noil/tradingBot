@@ -101,7 +101,7 @@ def get_long_entry_signal(
         ma100: float,
         prev3_candle: Optional[Dict[str, Any]],
         open_items: List[Item],
-        ma_threshold: float = 0.002,
+        ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
         reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
 ) -> Optional[Dict[str, Any]]:
@@ -180,7 +180,7 @@ def get_short_entry_signal(
         ma100: float,
         prev3_candle: Optional[Dict[str, Any]],
         open_items: List[Item],
-        ma_threshold: float = 0.002,
+        ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
         reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
 ) -> Optional[Dict[str, Any]]:
@@ -260,11 +260,15 @@ def get_exit_signal(
         side: str,
         price: float,
         ma100: float,
+        prev3_candle: Optional[Dict[str, Any]],  # ✅ 추가 (mom 계산용)
         open_items: List[Item],  # (sid, ts, entry_price)
-        ma_threshold: float = 0.005,
+
+        ma_threshold: float = 0.01,
         exit_easing: float = 0.0002,
         time_limit_sec: int = None,
         near_touch_window_sec: int = 60 * 60,
+
+        momentum_threshold: float = 0.001,
 ) -> Optional[Dict[str, Any]]:
     if ma_threshold is None:
         raise ValueError("ma_threshold is required (got None)")
@@ -299,6 +303,62 @@ def get_exit_signal(
             "reasons": ["TIME_LIMIT", age_label],
             "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
         }
+
+    # ------------------------------------------------------------
+    # ✅ 1.5) 최신 진입 lot 일부 청산 (TRIM_LATEST)
+    # ------------------------------------------------------------
+    mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
+    if mom is not None:
+        mom_thr = float(momentum_threshold)
+        ma_thr = float(ma_threshold)  # ✅ entry 비교에 쓸 기준
+
+        # 최신 lot entry
+        _newest_id, _newest_ts, newest_entry_price = items[-1]
+        newest_entry_price = float(newest_entry_price)
+
+        if side == "LONG":
+            ma_ok = price >= ma100 * (1 + mom_thr)  # MA 기준 유리(매도)
+            mom_ok = mom > mom_thr  # 모멘텀
+            entry_ok = price >= newest_entry_price * (1 + ma_thr)  # ✅ entry 기준은 ma_thr
+            sign_ma = "+"
+            sign_mom = "+"
+            sign_ep = "+"
+        elif side == "SHORT":
+            ma_ok = price <= ma100 * (1 - mom_thr)
+            mom_ok = mom < -mom_thr
+            entry_ok = price <= newest_entry_price * (1 - ma_thr)  # ✅ entry 기준은 ma_thr
+            sign_ma = "-"
+            sign_mom = "-"
+            sign_ep = "-"
+        else:
+            ma_ok = mom_ok = entry_ok = False
+            sign_ma = sign_mom = sign_ep = ""
+
+        if ma_ok and mom_ok and entry_ok:
+            return {
+                "kind": "EXIT",
+                "mode": "SCALE_OUT",
+                "targets": [newest_id],
+                "anchor_open_signal_id": newest_id,
+                "reasons": [
+                    "SCALE_OUT",
+                    f"MA100 {sign_ma}{mom_thr * 100:.2f}%",
+                    f"3m {sign_mom}{mom_thr * 100:.2f}%",
+                    f"EP {sign_ep}{ma_thr * 100:.2f}%",  # ✅ entry 기준은 ma_thr 라벨
+                    f"⏱ new:{fmt_dur_smh_d(newest_elapsed_sec)}",
+                ],
+                "thresholds": {
+                    "ma": ma_threshold,
+                    "exit_easing": exit_easing,
+                    "momentum": mom_thr,
+                    "x": x, "y": y,
+                },
+                "extra": {
+                    "scale_out_latest_only": True,
+                    "momentum_pct": mom,
+                    "newest_entry_price": newest_entry_price,
+                },
+            }
 
     # 2) 구간별 타겟/트리거
     if newest_elapsed_sec <= x:
