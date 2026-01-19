@@ -172,6 +172,9 @@ class TradeConfig:
     entry_percent: float = 3  # leverage * entry_percent 가 한번 진입 퍼센트: 50 x 3 = 150% 진입
     max_effective_leverage: float = 30.0   # 보유노션/지갑 최대 배수 (가드)
 
+    # ✅ 심볼별 진입 퍼센트 (없으면 entry_percent 사용)
+    entry_percent_by_symbol: Dict[str, float] = field(default_factory=dict)
+
     # 인디케이터
     indicator_min_thr: float = 0.004
     indicator_max_thr: float = 0.04
@@ -218,7 +221,11 @@ class TradeConfig:
             ws_stale_sec=max(1.0, float(self.ws_stale_sec)),
             ws_global_stale_sec=max(5.0, float(self.ws_global_stale_sec)),
             leverage=max(1, int(self.leverage)),
-            entry_percent=max(0.01, float(self.entry_percent)),
+            entry_percent=max(0.001, float(self.entry_percent)),
+            entry_percent_by_symbol={
+                str(k).upper(): max(0.01, float(v))
+                for k, v in (self.entry_percent_by_symbol or {}).items()
+            },
             max_effective_leverage=max(0.0, float(self.max_effective_leverage)),
             indicator_min_thr=max(0.0, float(self.indicator_min_thr)),
             indicator_max_thr=max(max(0.0, float(self.indicator_min_thr)), float(self.indicator_max_thr)),
@@ -240,7 +247,10 @@ def make_mt5_signal_config(
     target_cross: int = 5,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
-    min_ma_threshold: float =  0.0051,
+    min_ma_threshold: float = 0.0051,
+
+    # ✅ 추가: 심볼별 entry% 맵
+    entry_percent_by_symbol: dict[str, float] | None = None,
 ) -> "TradeConfig":
     """
     MT5 시그널 전용 기본 설정 팩토리.
@@ -248,6 +258,12 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","XAUUSD","WTI","XNGUSD","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
+        # symbols = ("SOLUSD",)
+
+    if entry_percent_by_symbol is None:
+        entry_percent_by_symbol = {
+            "SOLUSD": 1.0,   # leverage 50이면 50% 진입(=50 x 1%)
+        }
 
     cfg = TradeConfig(
         name="mt5_signal",
@@ -259,6 +275,8 @@ def make_mt5_signal_config(
         # 주문 관련 값은 의미 없으므로 안전하게 최소로
         leverage=50,
         entry_percent=3.0,
+        entry_percent_by_symbol=entry_percent_by_symbol,
+
         max_effective_leverage=30.0,
 
         # 인디케이터 관련
@@ -304,7 +322,8 @@ def make_bybit_config(
     - 기존 TradeConfig 기본값을 그대로 사용하면서, 필요시 인자만 살짝 바꿔서 재사용.
     """
     if symbols is None:
-        symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
+        # symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
+        symbols = ("BTCUSDT",)
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스

@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+import math
 
 
 @dataclass
@@ -11,7 +12,7 @@ class TradeExecutorDeps:
     is_signal_only: Callable[[], bool]
     get_asset: Callable[[], Dict[str, Any]]
     set_asset: Callable[[Dict[str, Any]], None]
-    get_entry_percent: Callable[[], float]
+    get_entry_percent: Callable[[str], float]  # ✅ 심볼별
 
     # lots_store hooks (keyword 호출로 통일)
     # lots.py 시그니처
@@ -21,10 +22,12 @@ class TradeExecutorDeps:
     get_lot_qty_total: Callable[[str], Optional[float]]
 
     # lots_index cache hooks (주문 성공 후에만 호출)
-    on_lot_open: Callable[[str, str, str, int, float, float,
-                           str], None]  # (symbol, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id)
+    on_lot_open: Callable[[str, str, str, int, float, float, str, int], None]
+    # (symbol, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id, ex_lot_id)
+
     on_lot_close: Callable[[str, str, str], None]  # (symbol, side, lot_id)
 
+    get_lot_ex_lot_id: Callable[[str], Optional[int]]  # ✅ 추가
 
 class TradeExecutor:
     """
@@ -81,6 +84,60 @@ class TradeExecutor:
             asset["positions"][symbol][side] = ref
         return ref
 
+
+    def _get_rules(self, symbol: str) -> dict:
+        sym = (symbol or "").upper().strip()
+        try:
+            rules_map = getattr(self.rest, "_symbol_rules", None)
+            if isinstance(rules_map, dict):
+                return rules_map.get(sym) or {}
+        except Exception:
+            pass
+        return {}
+
+    def _round_step(self, value: float, step: float, mode: str = "floor") -> float:
+        if step <= 0:
+            return float(value)
+        n = float(value) / step
+        if mode == "ceil":
+            n = math.ceil(n - 1e-12)
+        elif mode == "round":
+            n = round(n)
+        else:
+            n = math.floor(n + 1e-12)
+        # 주문/저장용 float 찌꺼기 완화
+        return float(f"{n * step:.12f}")
+
+    def _normalize_qty(self, symbol: str, qty: float, mode: str = "floor") -> float:
+        """
+        rest._symbol_rules[symbol]에서 qtyStep/minOrderQty/maxOrderQty 를 읽어
+        step 기준으로 버림 + min 미만 0 처리.
+        """
+        rules = self._get_rules(symbol)
+        q = max(0.0, float(qty or 0.0))
+
+        step = float(rules.get("qtyStep") or rules.get("qty_step") or rules.get("step") or 0.0) or 0.0
+        min_qty = float(rules.get("minOrderQty") or rules.get("min_qty") or 0.0) or 0.0
+        max_qty = float(rules.get("maxOrderQty") or rules.get("max_qty") or 0.0) or 0.0
+
+        if step <= 0:
+            if self.system_logger:
+                self.system_logger.info(f"[normalize_qty] missing rules/step (sym={symbol}) -> 0")
+            return 0.0
+
+        if min_qty <= 0:
+            min_qty = step
+
+        qn = self._round_step(q, step, mode=mode)
+
+        if qn < min_qty:
+            return 0.0
+
+        if max_qty > 0 and qn > max_qty:
+            qn = self._round_step(max_qty, step, mode="floor")
+
+        return float(qn)
+
     async def close_position(
             self,
             symbol: str,
@@ -108,19 +165,42 @@ class TradeExecutor:
                     f"[CLOSE] lot qty 없음/0 → 스킵 ({symbol} {side_u} lot_id={lot_id} qty={qty})"
                 )
             return
+
+        qty_n = self._normalize_qty(symbol, float(qty), mode="floor")
+        if qty_n <= 0:
+            if self.system_logger:
+                self.system_logger.info(
+                    f"[CLOSE] normalize 후 qty=0 → 스킵 ({symbol} {side_u} lot_id={lot_id} raw={qty} norm={qty_n})"
+                )
+            return
+
         asset = self.deps.get_asset()
         # 포지션 ref 안전 체크
         pos_ref = self._ensure_pos_ref(asset, symbol, side_u)
 
-        # 실행
-        await self.exec.execute_and_sync(
+        ex_lot_id = None
+        try:
+            ex_lot_id = self.deps.get_lot_ex_lot_id(lot_id)
+        except Exception:
+            ex_lot_id = None
+
+        res = await self.exec.execute_and_sync(
             self.rest.close_market,
             pos_ref,
             symbol,
             symbol,
             side=side_u,
-            qty=float(qty),
+            qty=qty_n,
+            ex_lot_id=ex_lot_id,
         )
+
+        filled = (res or {}).get("_filled") if isinstance(res, dict) else None
+        status = (filled or {}).get("orderStatus", "").upper()
+
+        if status != "FILLED":
+            if self.system_logger:
+                self.system_logger.warning(f"[CLOSE] not filled -> keep lot (lot_id={lot_id} status={status})")
+            return
 
         # asset refresh
         new_asset = self.rest.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
@@ -166,14 +246,14 @@ class TradeExecutor:
             side_u = side
 
         asset = self.deps.get_asset()
-        entry_percent = float(self.deps.get_entry_percent())
+        entry_percent = float(self.deps.get_entry_percent(symbol))
 
         before_qty = self._get_pos_qty(asset, symbol, side_u)
 
         # ✅ 포지션 ref 안전 체크
         pos_ref = self._ensure_pos_ref(asset, symbol, side_u)
 
-        await self.exec.execute_and_sync(
+        res = await self.exec.execute_and_sync(
             self.rest.open_market,
             pos_ref,
             symbol,
@@ -184,16 +264,32 @@ class TradeExecutor:
             asset.get("wallet") or {},
         )
 
+        filled = (res or {}).get("_filled") if isinstance(res, dict) else None
+        status = (filled or {}).get("orderStatus", "").upper()
+        if status != "FILLED":
+            if self.system_logger:
+                self.system_logger.warning(f"[OPEN] not filled -> skip lot (sym={symbol} status={status})")
+            return
+
+        ex_lot_id = None
+        try:
+            ex_lot_id = (filled or {}).get("ex_lot_id")
+            ex_lot_id = int(ex_lot_id) if ex_lot_id else None
+        except Exception:
+            ex_lot_id = None
+
         new_asset = self.rest.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
         self.deps.set_asset(new_asset)
 
         after_qty = self._get_pos_qty(new_asset, symbol, side_u)
-        delta = max(0.0, abs(after_qty) - abs(before_qty))
+        raw_delta = max(0.0, abs(after_qty) - abs(before_qty))
+
+        delta = self._normalize_qty(symbol, raw_delta, mode="floor")
 
         if delta <= 0:
             if self.system_logger:
                 self.system_logger.info(
-                    f"[OPEN] qty 변화 없음 → lot 생성 스킵 ({symbol} {side_u} before={before_qty} after={after_qty})"
+                    f"[OPEN] qty 변화 없음/normalize 후 0 → lot 생성 스킵 ({symbol} {side_u} raw={raw_delta} norm={delta} before={before_qty} after={after_qty})"
                 )
             return
 
@@ -209,6 +305,7 @@ class TradeExecutor:
                 entry_price=float(price),
                 qty_total=float(delta),
                 entry_signal_id=entry_signal_id,
+                ex_lot_id=ex_lot_id,   # ✅ 추가
             )
         except Exception as e:
             if self.system_logger:
@@ -226,6 +323,7 @@ class TradeExecutor:
                     float(delta),
                     float(price),
                     entry_signal_id or "",
+                    int(ex_lot_id or 0),   # ✅ 추가
                 )
             except Exception as e:
                 if self.system_logger:

@@ -130,7 +130,7 @@ class BybitRestTradeMixin:
             )
 
         return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
-    def close_market(self, symbol, side, qty):
+    def close_market(self, symbol, side, qty, **kwargs):
         """
         보유 포지션 청산(시장가 reduceOnly).
         side: "LONG" / "SHORT"

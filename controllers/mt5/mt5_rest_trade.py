@@ -155,6 +155,7 @@ class Mt5RestTradeMixin:
         qty: float,
         position_idx: int = 0,  # 호환용(무시)
         reduce_only: bool = False,
+        ex_lot_id: int | None = None,   # ✅ 추가
         deviation: int = 20,
         magic: int = 20251213,
         comment: str = "mt5-market",
@@ -215,14 +216,25 @@ class Mt5RestTradeMixin:
 
         if reduce_only:
             poss = mt5.positions_get(symbol=sym) or []
-            targets = [p for p in poss if int(getattr(p, "type", -1)) == closing_position_type]
-            if not targets:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.warning(f"[WARN] reduce_only but no opposite position to close: {sym}")
-                return None
 
-            # hedging이면 여러개일 수 있어 가장 큰 포지션 1개만 대상
-            p = max(targets, key=lambda x: float(getattr(x, "volume", 0.0) or 0.0))
+            # 1) ex_lot_id가 있으면 그 포지션만 대상으로
+            if ex_lot_id:
+                p = next((x for x in poss if int(getattr(x, "ticket", 0) or 0) == int(ex_lot_id)), None)
+                if not p:
+                    if getattr(self, "system_logger", None):
+                        self.system_logger.warning(
+                            f"[WARN] ex_lot_id not found in positions: {sym} ex_lot_id={ex_lot_id}")
+                    return None
+            else:
+                # 2) 기존 로직: 반대 포지션 중 가장 큰 1개
+                targets = [p for p in poss if int(getattr(p, "type", -1)) == closing_position_type]
+                if not targets:
+                    if getattr(self, "system_logger", None):
+                        self.system_logger.warning(f"[WARN] reduce_only but no opposite position to close: {sym}")
+                    return None
+                p = max(targets, key=lambda x: float(getattr(x, "volume", 0.0) or 0.0))
+
+            # ✅ 지정된 포지션 ticket으로 닫기
             req["position"] = int(getattr(p, "ticket", 0) or 0)
 
             pos_vol = float(getattr(p, "volume", 0.0) or 0.0)
@@ -279,14 +291,9 @@ class Mt5RestTradeMixin:
             "reduce_only": bool(reduce_only),
             "time_ms": int(time.time() * 1000),
         }
-
-        order_id = int(out.get("deal") or out.get("order") or 0)
-        if order_id <= 0:
-            order_id = int(out.get("time_ms") or int(time.time() * 1000))
-
-        out["orderId"] = str(order_id)  # ✅ 엔진이 바로 찾게
-        out["result"] = {"orderId": str(order_id)}  # ✅ Bybit 스타일 호환(엔진이 result를 볼 수도 있어서)
-
+        order_id = int(out.get("order") or 0) or int(out.get("deal") or 0) or int(out.get("time_ms") or 0)
+        out["orderId"] = str(order_id)
+        out["match_hint"] = int(out.get("deal") or 0) or int(out.get("order") or 0) or None
         if not ok and getattr(self, "system_logger", None):
             self.system_logger.error(f"[ERROR] mt5 order failed: {out}")
         return out
@@ -465,42 +472,6 @@ class Mt5RestTradeMixin:
         }
         return float(raw_lot), meta
 
-    def _calc_raw_lot_from_percent(
-            self,
-            symbol: str,
-            price: float,
-            percent: float,
-            wallet: dict,
-            side: str = "buy",
-    ) -> tuple[float, dict]:
-        cc, balance = self._pick_balance(wallet)
-
-        sym = symbol.upper()
-        pct = float(percent or 0.0)
-        p = float(price or 0.0)
-
-        # ✅ 목표는 "노출"이 아니라 "사용할 마진"
-        target_margin = float(balance) * (pct / 100.0) * self.leverage
-
-        # ✅ 1 lot 마진(서버 규칙 그대로)
-        order_type = mt5.ORDER_TYPE_BUY if side.lower() == "buy" else mt5.ORDER_TYPE_SELL
-        margin_1lot = mt5.order_calc_margin(order_type, sym, 1.0, p)
-
-        raw_lot = 0.0
-        if margin_1lot and float(margin_1lot) > 0:
-            raw_lot = target_margin / float(margin_1lot)
-
-        meta = {
-            "currency": cc,
-            "balance": float(balance),
-            "percent": pct,
-            "price": p,
-            "target_margin": target_margin,
-            "margin_1lot": float(margin_1lot) if margin_1lot else None,
-            "raw_lot": raw_lot,
-            "method": "order_calc_margin",
-        }
-        return float(raw_lot), meta
 
     def open_market(self, symbol: str, side: str, price: float, percent: float, wallet: dict):
         if not symbol or wallet is None:
@@ -607,89 +578,69 @@ class Mt5RestTradeMixin:
     # -------------------------
     # Bybit 스타일 래퍼: 청산
     # -------------------------
-    def close_market(self, symbol: str, side: str, qty: float):
-        qty = float(qty)
-        qty = self.normalize_qty(symbol, qty, mode="floor")
-        if qty <= 0:
-            if getattr(self, "system_logger", None):
-                self.system_logger.warning("❗ 청산 수량이 최소단위 미만입니다. 중단.")
-            return None
+    # controllers/mt5/mt5_rest_trade.py
 
-        if side.upper() == "LONG":
+    def close_market(
+            self,
+            symbol: str,
+            side: str,
+            qty: float | None = None,
+            *,
+            ex_lot_id: int | None = None,
+    ):
+        sym = (symbol or "").upper()
+        side_u = (side or "").upper()
+
+        if side_u == "LONG":
             order_side, position_idx = "Sell", 1
-        elif side.upper() == "SHORT":
+        elif side_u == "SHORT":
             order_side, position_idx = "Buy", 2
         else:
             if getattr(self, "system_logger", None):
                 self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
             return None
 
+        # ✅ 기본: 전량청산 (ex_lot_id가 있을 때 그 티켓의 volume)
+        if qty is None:
+            if not ex_lot_id:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error("❌ qty=None 인데 ex_lot_id가 없음 (전량청산 불가)")
+                return None
+
+            if not self._ensure_mt5():
+                return None
+            if not mt5.symbol_select(sym, True):
+                return None
+
+            poss = mt5.positions_get(symbol=sym) or []
+            p = next((x for x in poss if int(getattr(x, "ticket", 0) or 0) == int(ex_lot_id)), None)
+            if not p:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.warning(f"[WARN] ex_lot_id not found: {sym} ex_lot_id={ex_lot_id}")
+                return None
+
+            qty = float(getattr(p, "volume", 0.0) or 0.0)
+
+        # 기존 normalize + submit
+        qty = self.normalize_qty(sym, float(qty), mode="floor")
+        if qty <= 0:
+            if getattr(self, "system_logger", None):
+                self.system_logger.warning("❗ 청산 수량이 최소단위 미만입니다. 중단.")
+            return None
+
         if getattr(self, "system_logger", None):
-            self.system_logger.debug(f"📤 [MT5] {side.upper()} 포지션 청산 시도 | qty(lot)={qty:.4f} ({symbol})")
+            self.system_logger.debug(
+                f"📤 [MT5] {side_u} 포지션 청산 시도 | qty(lot)={qty:.4f} ({sym}) ex_lot_id={ex_lot_id or 0}"
+            )
 
-        return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
-
-
-    # -------------------------
-    # 주문 취소
-    # -------------------------
-    def cancel_order(self, symbol: str, order_id: str | int):
-        """
-        MT5용 주문 취소.
-        - MT5에서는 'pending order'만 취소 가능(지정가/스탑 등).
-        - 시장가 DEAL은 취소 개념이 거의 없음(이미 체결 시도).
-        Bybit 스타일 유사 응답을 리턴한다.
-        """
-        if not self._ensure_mt5():
-            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED",
-                    "comment": "mt5 initialize failed"}
-
-        sym = (symbol or "").upper()
-        oid = int(order_id) if str(order_id).isdigit() else 0
-        if oid <= 0:
-            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED", "comment": "invalid order_id"}
-
-        # 1) pending order 존재 확인
-        try:
-            # MT5 python은 orders_get(ticket=...) 지원
-            orders = mt5.orders_get(ticket=oid) or []
-        except Exception:
-            orders = []
-
-        if not orders:
-            # 이미 체결됐거나(딜), 존재하지 않거나, 다른 심볼일 수 있음
-            return {
-                "ok": True,
-                "orderId": str(order_id),
-                "orderStatus": "NOT_FOUND",
-                "comment": "no pending order found (maybe filled/canceled/already dealt)",
-                "symbol": sym,
-            }
-
-        # 2) pending 취소 시도 (TRADE_ACTION_REMOVE)
-        req = {
-            "action": mt5.TRADE_ACTION_REMOVE,
-            "order": oid,
-            "symbol": sym,
-            "comment": "mt5-cancel",
-        }
-
-        res = mt5.order_send(req)
-        if res is None:
-            return {"ok": False, "orderId": str(order_id), "orderStatus": "REJECTED",
-                    "comment": f"order_send None: {mt5.last_error()}"}
-
-        retcode = int(getattr(res, "retcode", -1))
-        ok = retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
-
-        return {
-            "ok": bool(ok),
-            "orderId": str(order_id),
-            "orderStatus": "CANCELLED" if ok else "REJECTED",
-            "retcode": retcode,
-            "comment": str(getattr(res, "comment", "")),
-            "symbol": sym,
-        }
+        return self.submit_market_order(
+            sym,
+            order_side,
+            qty,
+            position_idx,
+            reduce_only=True,
+            ex_lot_id=ex_lot_id,
+        )
 
     def wait_order_fill(
             self,
@@ -698,41 +649,27 @@ class Mt5RestTradeMixin:
             *,
             expected: str = "OPEN",  # "OPEN" or "CLOSE"
             side: str | None = None,  # "LONG" / "SHORT"
-            before_qty: float | None = None,  # fallback 용
-            deal_ticket: int | None = None,  # ✅ 있으면 최우선 매칭(=deal.ticket)
+            before_qty: float | None = None,  # 주문 직전 qty
+            match_hint: int | None = None,  # deal ticket (가능하면)
+            expected_qty: float | None = None,  # 요청 lot
             max_retries: int = 10,
             sleep_sec: float = 0.5,
     ):
         """
-        MT5 체결 확인 (deal 기반) - 최종 안정화 버전
+        MT5 체결 확인 (전량판정=포지션 qty delta, 부가정보=deals에서 보조)
 
-        ✅ 시간: tick.time 기반 dt_to (서버틱 시간), tick이 오래되면 now fallback
-        ✅ 매칭: (deal.ticket == deal_ticket) 우선, 그다음 (deal.ticket == oid) OR (deal.order == oid)
-        ✅ OPEN/CLOSE: deal.entry (0=IN, 1=OUT)로 필터
-        ✅ side(BUY/SELL): deal.type (0=BUY, 1=SELL) 기반
-        ✅ 부분체결: volume 가중평균(avgPrice), 누적수량(cumExecQty)
-        ✅ ExecutionEngine._log_fill 호환 포맷 리턴
+        - 전량체결 판정: positions_get 기반 delta >= expected_qty
+        - ex_lot_id/avgPrice/deal: history_deals_get에서 match_hint(deal.ticket)로 보조 추출
         """
-
-        import time
-        from datetime import datetime, timedelta
-
         if not self._ensure_mt5():
             return {"orderId": str(order_id), "orderStatus": "REJECTED", "comment": "mt5 initialize failed"}
 
         sym = (symbol or "").upper()
         oid = str(order_id)
-
         exp = (expected or "OPEN").upper()
         s = (side or "").upper() if side else None
 
-        # order_id → int
-        try:
-            oid_int = int(float(oid))
-        except Exception:
-            oid_int = 0
-
-        # before_qty fallback (포지션 변화 판정용)
+        # before_qty
         if before_qty is None:
             before_qty = self._get_position_qty(sym, s)
 
@@ -740,157 +677,157 @@ class Mt5RestTradeMixin:
         pos_idx = 1 if s == "LONG" else 2 if s == "SHORT" else 0
         reduce_only = (exp == "CLOSE")
 
-        # deal.type → BUY/SELL (너가 준 실제 데이터 기준으로 확정)
-        def _mt5_type_to_bs(t: int) -> str:
-            return "BUY" if int(t) == 0 else "SELL"
+        # qtyStep 기반 eps + expected_qty 정규화(중요)
+        try:
+            rules = self.get_symbol_rules(sym) or {}
+            step = float(rules.get("qtyStep") or 0.01) or 0.01
+        except Exception:
+            step = 0.01
+        eps = max(step * 0.5, 1e-8)
 
-        # deal.entry 필터 (너가 준 실제 데이터 기준으로 확정)
-        # entry=0 → IN(OPEN), entry=1 → OUT(CLOSE)
-        def _entry_ok(entry_val: int) -> bool:
-            e = int(entry_val)
-            if exp == "OPEN":
-                return e == 0
-            return e == 1
+        target_qty = 0.0
+        if expected_qty is not None:
+            # float 오차 제거: step 기준으로 반올림 정규화
+            target_qty = float(self.normalize_qty(sym, float(expected_qty), mode="round") or 0.0)
 
-        # 서버틱 기반 dt_to (tick이 너무 과거면 now)
-        def _get_dt_to():
+        # deal에서 뽑을 보조정보
+        last_ex_lot_id = 0
+        last_avg_price = 0.0
+        last_deal_ticket = 0
+        last_seen = {"minutes": 0, "deals": 0}
+
+        def _get_dt_to() -> datetime:
             now = datetime.now()
             try:
                 tick = mt5.symbol_info_tick(sym)
                 if tick and getattr(tick, "time", 0):
                     tick_dt = datetime.fromtimestamp(int(tick.time))
-                    # tick이 2분 이상 오래되면 now로
                     if tick_dt >= now - timedelta(minutes=2):
                         return tick_dt
             except Exception:
                 pass
             return now
 
-        # deals fetch (group 사용 X, 파이썬에서 symbol 필터)
-        def _fetch_deals(minutes: int):
+        def _update_from_deals(minutes: int = 60) -> None:
+            """match_hint(deal ticket)가 있을 때만 deal에서 ex_lot_id/avgPrice 갱신."""
+            nonlocal last_ex_lot_id, last_avg_price, last_deal_ticket, last_seen
+
+            if not match_hint:
+                return
+
             dt_to = _get_dt_to()
             dt_from = dt_to - timedelta(minutes=minutes)
             deals = mt5.history_deals_get(dt_from, dt_to) or []
-            return [d for d in deals if (getattr(d, "symbol", "") or "").upper() == sym]
+            deals = [d for d in deals if (getattr(d, "symbol", "") or "").upper() == sym]
+            last_seen = {"minutes": minutes, "deals": len(deals)}
+            if not deals:
+                return
 
-        # 매칭 함수: deal_ticket 우선, 그 다음 oid(ticket/order)
-        def _match_deal(d) -> bool:
-            try:
-                if not _entry_ok(getattr(d, "entry", -999)):
-                    return False
+            # entry 필터(OPEN=IN(0), CLOSE=OUT(1))
+            want_entry = 0 if exp == "OPEN" else 1
 
-                d_ticket = int(getattr(d, "ticket", 0) or 0)
-                d_order = int(getattr(d, "order", 0) or 0)
+            matched = []
+            mh = int(match_hint or 0)
+            for d in deals:
+                try:
+                    if int(getattr(d, "entry", -999)) != want_entry:
+                        continue
+                    if int(getattr(d, "ticket", 0) or 0) == mh:
+                        matched.append(d)
+                except Exception:
+                    continue
 
-                # 1) deal_ticket 인자가 있으면 최우선
-                if deal_ticket:
-                    return d_ticket == int(deal_ticket)
-
-                # 2) 아니면 oid로 ticket/order 둘 다 매칭
-                if oid_int:
-                    return (d_ticket == oid_int) or (d_order == oid_int)
-
-                # 3) 숫자 변환 실패한 경우 문자열 비교(드문 케이스)
-                return (str(getattr(d, "ticket", "")) == oid) or (str(getattr(d, "order", "")) == oid)
-
-            except Exception:
-                return False
-
-        # deal들 → filled 표준 포맷
-        def _build_filled(deals):
-            matched = [d for d in deals if _match_deal(d)]
             if not matched:
-                return None
+                return
 
-            # 시간순 정렬
-            try:
-                matched.sort(key=lambda x: int(getattr(x, "time_msc", 0) or 0))
-            except Exception:
-                pass
-
+            # (deal ticket는 보통 1개지만) 방어적으로 평균가/수량도 계산
             total_qty = 0.0
             total_px_qty = 0.0
-            last_ticket = 0
+            pos_ticket = 0
+            deal_ticket = 0
 
             for d in matched:
                 try:
                     qty = float(getattr(d, "volume", 0.0) or 0.0)
                     px = float(getattr(d, "price", 0.0) or 0.0)
-                    if qty <= 0:
-                        continue
-                    total_qty += qty
-                    total_px_qty += px * qty
-                    last_ticket = int(getattr(d, "ticket", 0) or 0) or last_ticket
+                    if qty > 0:
+                        total_qty += qty
+                        total_px_qty += px * qty
+                    deal_ticket = int(getattr(d, "ticket", 0) or 0) or deal_ticket
+
+                    pid = (
+                            getattr(d, "position_id", 0)
+                            or getattr(d, "position", 0)
+                            or getattr(d, "position_by_id", 0)
+                            or 0
+                    )
+                    pid = int(pid or 0)
+                    if pid > 0:
+                        pos_ticket = pid
                 except Exception:
                     continue
 
-            if total_qty <= 0:
-                return None
+            if total_qty > 0:
+                last_avg_price = float(total_px_qty / total_qty)
+            if deal_ticket > 0:
+                last_deal_ticket = deal_ticket
+            if pos_ticket > 0:
+                last_ex_lot_id = pos_ticket
 
-            avg_price = total_px_qty / total_qty
-            # 마지막 deal.type 기준(BUY/SELL)
-            side_bs = _mt5_type_to_bs(getattr(matched[-1], "type", 0))
+        def _filled_qty(cur_qty: float) -> float:
+            if exp == "OPEN":
+                return max(cur_qty - before_qty, 0.0)
+            return max(before_qty - cur_qty, 0.0)
 
-            return {
-                "orderId": oid,
-                "orderStatus": "FILLED",
-                "symbol": sym,
-                "deal": last_ticket,
-
-                # ✅ ExecutionEngine._log_fill 호환
-                "positionIdx": pos_idx,
-                "reduceOnly": reduce_only,
-                "side": side_bs,  # BUY/SELL
-                "avgPrice": float(avg_price),
-                "cumExecQty": float(total_qty),
-            }
-
-        # ---- main loop ----
-        windows = (5, 20, 60, 600)  # ✅ 짧게 → 길게 백오프
+        # ---- loop ----
+        # 거래 직후면 5~20분이면 충분한데, 서버 지연 대비로 60분까지 한 번만 훑자
+        deal_windows = (5, 20)
+        post_fill_poll_sec = 0.2
 
         for i in range(max_retries):
-            for minutes in windows:
-                deals = _fetch_deals(minutes)
-                filled = _build_filled(deals)
-                if filled:
-                    return filled
+            # deal 보조정보 업데이트
+            for m in deal_windows:
+                _update_from_deals(minutes=m)
 
-            # fallback: 포지션 변화(히스토리 반영 지연 대비)
+            # 전량판정(핵심)
             cur_qty = self._get_position_qty(sym, s)
+            filled_qty = _filled_qty(cur_qty)
 
-            if exp == "OPEN" and cur_qty > before_qty + 1e-12:
-                exec_qty = max(cur_qty - before_qty, 0.0)
+            if target_qty > 0 and (filled_qty + eps >= target_qty):
+                # ✅ 전량체결은 확정. 이제 ex_lot_id만 짧게 더 기다려본다.
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    for m in (5, 20):
+                        _update_from_deals(minutes=m)
+
+                    if last_ex_lot_id > 0:
+                        break
+
+                    time.sleep(post_fill_poll_sec)
+
                 return {
                     "orderId": oid,
                     "orderStatus": "FILLED",
                     "symbol": sym,
+                    "deal": int(last_deal_ticket or 0),
+                    "ex_lot_id": int(last_ex_lot_id or 0),
                     "positionIdx": pos_idx,
-                    "reduceOnly": False,
-                    "side": "BUY" if pos_idx == 1 else "SELL" if pos_idx == 2 else "",
-                    "avgPrice": 0.0,
-                    "cumExecQty": float(exec_qty),
-                    "beforeQty": before_qty,
-                    "afterQty": cur_qty,
-                }
-
-            if exp == "CLOSE" and (cur_qty < before_qty - 1e-12 or (before_qty > 0 and cur_qty <= 1e-12)):
-                exec_qty = max(before_qty - cur_qty, 0.0)
-                return {
-                    "orderId": oid,
-                    "orderStatus": "FILLED",
-                    "symbol": sym,
-                    "positionIdx": pos_idx,
-                    "reduceOnly": True,
-                    "side": "SELL" if pos_idx == 1 else "BUY" if pos_idx == 2 else "",
-                    "avgPrice": 0.0,
-                    "cumExecQty": float(exec_qty),
-                    "beforeQty": before_qty,
-                    "afterQty": cur_qty,
+                    "reduceOnly": reduce_only,
+                    "side": "BUY" if (s == "LONG" and exp == "OPEN") or (s == "SHORT" and exp == "CLOSE") else "SELL",
+                    "avgPrice": float(last_avg_price or 0.0),
+                    "cumExecQty": float(filled_qty),
+                    "beforeQty": float(before_qty),
+                    "afterQty": float(cur_qty),
+                    "expectedQty": float(target_qty),
+                    "match_hint": match_hint or 0,
                 }
 
             if getattr(self, "system_logger", None):
                 self.system_logger.debug(
-                    f"⌛ [MT5] 체결 대기중... ({i + 1}/{max_retries}) {sym} exp={exp} oid={oid} deal_hint={deal_ticket or 0}"
+                    f"⌛ [MT5] 체결 대기중... ({i + 1}/{max_retries}) {sym} exp={exp} side={s} "
+                    f"qty: before={before_qty:.8f} after={cur_qty:.8f} filled≈{filled_qty:.8f}/{target_qty:.8f} "
+                    f"match_hint={int(match_hint or 0)} ex_lot_id={last_ex_lot_id} "
+                    f"last_deals={last_seen['deals']}@{last_seen['minutes']}m"
                 )
 
             time.sleep(sleep_sec)
@@ -900,7 +837,14 @@ class Mt5RestTradeMixin:
             "orderStatus": "TIMEOUT",
             "symbol": sym,
             "expected": exp,
-            "beforeQty": before_qty,
+            "beforeQty": float(before_qty),
+            "afterQty": float(self._get_position_qty(sym, s)),
+            "match_hint": int(match_hint or 0),
+            "expectedQty": float(target_qty),
+            "last_ex_lot_id": int(last_ex_lot_id or 0),
+            "last_deals_count": int(last_seen["deals"] or 0),
+            "last_window_min": int(last_seen["minutes"] or 0),
         }
+
 
 

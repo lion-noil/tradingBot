@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-
+from decimal import Decimal, ROUND_DOWN
 from core.redis_client import redis_client
 
 
@@ -35,6 +35,27 @@ def _by_signal_hash_key(namespace: str) -> str:
 
 
 # ----------------------------- Redis store (source of truth) -----------------------------
+def _safe_num_str(x: float, max_decimals: int = 12) -> str:
+    """
+    float -> Decimal(str(float))로 변환 후 소수 자릿수 제한(버림)하여
+    Redis에 저장할 '깨끗한' 문자열 생성.
+    """
+    try:
+        d = Decimal(str(float(x)))
+    except Exception:
+        return "0"
+
+    if d.is_nan() or d.is_infinite():
+        return "0"
+
+    q = Decimal("1").scaleb(-max_decimals)  # 10^-max_decimals
+    d = d.quantize(q, rounding=ROUND_DOWN)
+
+    s = format(d.normalize(), "f")
+    if s == "-0":
+        s = "0"
+    return s
+
 
 def open_lot(
     *,
@@ -45,6 +66,7 @@ def open_lot(
     entry_price: float,
     qty_total: float,
     entry_signal_id: Optional[str] = None,
+    ex_lot_id: Optional[int] = None,   # ✅ 추가
 ) -> str:
     """
     ✅ 체결 확정 후에만 호출해야 함.
@@ -62,9 +84,10 @@ def open_lot(
         "symbol": symbol,
         "side": side,
         "entry_ts_ms": str(int(entry_ts_ms)),
-        "entry_price": str(float(entry_price)),
-        "qty_total": str(float(qty_total)),
+        "entry_price": _safe_num_str(entry_price, max_decimals=8),
+        "qty_total": _safe_num_str(qty_total, max_decimals=12),
         "entry_signal_id": entry_signal_id or "",
+        "ex_lot_id": str(int(ex_lot_id or 0)),      # ✅ 추가
         "created_ts_ms": str(_now_ms()),
     }
 
@@ -155,6 +178,15 @@ def get_lot_qty_total(*, namespace: str = "bybit", lot_id: str) -> Optional[floa
     except Exception:
         return None
 
+def get_lot_ex_lot_id(*, namespace: str = "bybit", lot_id: str) -> Optional[int]:
+    v = redis_client.hget(_lot_key(namespace, lot_id), "ex_lot_id")
+    if not v:
+        return None
+    try:
+        x = int(float(v.decode()))
+        return x if x > 0 else None
+    except Exception:
+        return None
 
 # ----------------------------- LotsIndex (in-memory cache) -----------------------------
 
@@ -165,6 +197,7 @@ class LotCacheItem:
     qty_total: float
     entry_price: float
     entry_signal_id: str = ""
+    ex_lot_id: int = 0          # ✅ 추가
 
 
 class LotsIndex:
@@ -222,6 +255,7 @@ class LotsIndex:
                         qty_total = float(_get("qty_total") or "0")
                         entry_price = float(_get("entry_price") or "0")
                         entry_signal_id = _get("entry_signal_id") or ""
+                        ex_lot_id = int(float(_get("ex_lot_id") or "0"))   # ✅ 추가
                     except Exception:
                         continue
 
@@ -231,6 +265,7 @@ class LotsIndex:
                         qty_total=qty_total,
                         entry_price=entry_price,
                         entry_signal_id=entry_signal_id,
+                        ex_lot_id=ex_lot_id if ex_lot_id > 0 else 0,      # ✅ 추가
                     )
                     arr.append(item)
                     self._rev[lot_id] = (sym, side)
@@ -258,6 +293,7 @@ class LotsIndex:
         qty_total: float,
         entry_price: float,
         entry_signal_id: str = "",
+        ex_lot_id: int = 0,     # ✅ 추가
     ) -> None:
         k = (symbol, side)
         arr = list(self._items.get(k) or [])
@@ -270,6 +306,7 @@ class LotsIndex:
             qty_total=float(qty_total),
             entry_price=float(entry_price),
             entry_signal_id=entry_signal_id or "",
+            ex_lot_id=int(ex_lot_id or 0),     # ✅ 추가
         )
         arr.insert(0, item)
 

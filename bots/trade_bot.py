@@ -21,6 +21,7 @@ from bots.state.lots import (
     close_lot_full,
     get_lot_qty_total,
     LotsIndex,
+    get_lot_ex_lot_id
 )
 import json  # trade_bot.py 상단에 추가 (없으면)
 
@@ -33,8 +34,8 @@ _TZ = ZoneInfo("Asia/Seoul")
 class TradeBot:
     def __init__(
             self,
-            bybit_websocket_controller,
-            bybit_rest_controller,
+            ws_controller,
+            rest_controller,
             manual_queue,
             system_logger=None,
             trading_logger=None,
@@ -42,8 +43,8 @@ class TradeBot:
             signal_only: bool = False,
             config: TradeConfig | None = None,
     ):
-        self.ws = bybit_websocket_controller
-        self.rest = bybit_rest_controller
+        self.ws = ws_controller
+        self.rest = rest_controller
         self.manual_queue = manual_queue
         self.system_logger = system_logger
         self.trading_logger = trading_logger
@@ -130,6 +131,8 @@ class TradeBot:
             asset=self.state.asset,
         )
 
+        self._warmup_symbol_rules()
+
         self.open_signals_index = OpenSignalsIndex()
         self.open_signals_index.load_from_redis(
             namespace=self.namespace,
@@ -149,9 +152,10 @@ class TradeBot:
                 is_signal_only=lambda: self.signal_only,
                 get_asset=lambda: self.state.asset,
                 set_asset=lambda a: setattr(self.state, "asset", a),
-                get_entry_percent=lambda: self.entry_percent,
+                get_entry_percent=lambda sym: self._get_entry_percent_for_symbol(sym),
 
-                open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None: open_lot(
+                open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
+                                ex_lot_id=None: open_lot(
                     namespace=self.namespace,
                     symbol=symbol,
                     side=side,
@@ -159,6 +163,7 @@ class TradeBot:
                     entry_price=entry_price,
                     qty_total=qty_total,
                     entry_signal_id=entry_signal_id,
+                    ex_lot_id=ex_lot_id,  # ✅ 추가
                 ),
                 close_lot_full=lambda *, lot_id: close_lot_full(
                     namespace=self.namespace,
@@ -169,15 +174,23 @@ class TradeBot:
                     lot_id=lot_id,
                 ),
 
-                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price,
-                                   entry_signal_id: self.lots_index.on_open(
+                # ✅ 추가: lot_id -> ex_lot_id
+                get_lot_ex_lot_id=lambda lot_id: get_lot_ex_lot_id(
+                    namespace=self.namespace,
+                    lot_id=lot_id,
+                ),
+
+                # ✅ on_lot_open: ex_lot_id까지 받도록
+                on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id,
+                                   ex_lot_id: self.lots_index.on_open(
                     sym,
                     side,
                     lot_id,
                     entry_ts_ms=entry_ts_ms,
                     qty_total=qty_total,
                     entry_price=entry_price,
-                    entry_signal_id=entry_signal_id
+                    entry_signal_id=entry_signal_id,
+                    ex_lot_id=int(ex_lot_id or 0),  # ✅ 추가
                 ),
                 on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
             ),
@@ -298,6 +311,53 @@ class TradeBot:
                 get_min_ma_threshold=lambda: self.state.min_ma_threshold,
             ),
         )
+
+    def _warmup_symbol_rules(self) -> None:
+        """
+        rest controller의 _symbol_rules를 심볼별로 미리 채워둔다.
+        - 있으면 get_symbol_rules / fetch_symbol_rules 호출
+        - 없으면 로그만 남김(TradeExecutor가 rules 없으면 주문/lot 스킵함)
+        """
+        rest = self.rest
+        syms = [str(s).upper().strip() for s in (self.symbols or []) if s]
+
+        get_fn = getattr(rest, "get_symbol_rules", None)
+        fetch_fn = getattr(rest, "fetch_symbol_rules", None)
+
+        for sym in syms:
+            try:
+                if callable(get_fn):
+                    get_fn(sym)
+                elif callable(fetch_fn):
+                    fetch_fn(sym)
+                else:
+                    # 함수가 없으면 rules는 외부에서 채워져야 함
+                    if self.system_logger:
+                        self.system_logger.warning(
+                            f"[rules] no get_symbol_rules/fetch_symbol_rules on rest (sym={sym})"
+                        )
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.warning(f"[rules] warmup failed (sym={sym}) err={e}")
+
+        # 최종 상태 로그(선택)
+        try:
+            m = getattr(rest, "_symbol_rules", None)
+            if self.system_logger and isinstance(m, dict):
+                self.system_logger.debug(f"[rules] warmed: {sorted(list(m.keys()))[:20]}")
+        except Exception:
+            pass
+
+    def _get_entry_percent_for_symbol(self, symbol: str) -> float:
+        sym = (symbol or "").upper().strip()
+        m = getattr(self.config, "entry_percent_by_symbol", None) or {}
+        v = m.get(sym)
+        if v is None:
+            return float(self.entry_percent)
+        try:
+            return max(0.001, float(v))
+        except Exception:
+            return float(self.entry_percent)
 
     def _apply_config(self, cfg: TradeConfig) -> None:
         self.ws_stale_sec = cfg.ws_stale_sec

@@ -26,7 +26,6 @@ class ExecutionEngine:
 
     async def execute_and_sync(self, fn, position_detail, symbol, *args, **kwargs):
         def _extract_side_hint(fn, args, kwargs):
-            # 1) 시그니처 바인딩으로 side 추출 (positional/keyword 둘 다 처리)
             try:
                 sig = inspect.signature(fn)
                 bound = sig.bind_partial(*args, **kwargs)
@@ -43,7 +42,6 @@ class ExecutionEngine:
             fn_name = getattr(fn, "__name__", "").lower()
             expected = "CLOSE" if "close" in fn_name else "OPEN"
 
-            # ✅ 엔진 내부 힌트용 키는 fn()에 전달되면 안 됨
             side_hint = _extract_side_hint(fn, args, kwargs)
             expected_override = kwargs.pop("expected", None)  # OPEN/CLOSE 강제
             if expected_override in ("OPEN", "CLOSE"):
@@ -80,7 +78,14 @@ class ExecutionEngine:
                 return result
             order_id = str(order_id)
 
-            deal_ticket = int(result.get("deal") or 0) or None
+            raw_hint = result.get("match_hint") or result.get("deal") or result.get("order") or None
+            match_hint = None
+            try:
+                if raw_hint is not None:
+                    match_hint = int(raw_hint)
+            except Exception:
+                match_hint = None
+
             # 3) wait_order_fill (Bybit/MT5 공통)
             filled = self.rest.wait_order_fill(
                 symbol,
@@ -88,8 +93,12 @@ class ExecutionEngine:
                 expected=expected,
                 side=(str(side_hint).upper() if side_hint else None),
                 before_qty=before_qty,
-                deal_ticket=deal_ticket,  # ✅ 있으면 히스토리 매칭을 빠르게/확실하게
+                match_hint=match_hint,
+                expected_qty=result.get("qty"),   # ✅ 이게 핵심
             )
+            result["_filled"] = filled or {}
+            if isinstance(filled, dict) and filled.get("ex_lot_id"):
+                result["ex_lot_id"] = filled.get("ex_lot_id")
 
             orderStatus = (filled or {}).get("orderStatus", "").upper()
 
@@ -189,11 +198,12 @@ class ExecutionEngine:
         filled_avg_price = float(filled.get("avgPrice") or 0.0)
         exec_qty = float(filled.get("cumExecQty") or filled.get("qty") or 0.0)
 
+        qty_str = f"{exec_qty:.8f}".rstrip("0").rstrip(".")
         # --- OPEN 체결 ---
         if action == "OPEN":
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 주문 체결 완료 | id:{order_tail} | avg:{filled_avg_price:.2f} | qty:{exec_qty}"
+                    f"✅ {side} 주문 체결 완료 | id:{order_tail} | avg:{filled_avg_price:.2f} | qty:{qty_str}"
                 )
             return
 
@@ -201,11 +211,29 @@ class ExecutionEngine:
         if not position_detail or "avg_price" not in position_detail:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | id:{order_tail} | filled:{filled_avg_price:.2f} | qty:{exec_qty} | (avg_price 없음)"
+                    f"✅ {side} 청산 | id:{order_tail} | filled:{filled_avg_price:.2f} | qty:{qty_str} | (avg_price 없음)"
                 )
             return
 
         avg_price = float(position_detail.get("avg_price") or 0.0)
+
+        # ✅ 체결수량도 없으면 PnL 계산 스킵
+        if exec_qty <= 0:
+            if self.trading_logger:
+                self.trading_logger.info(
+                    f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
+                    f"qty:{qty_str} | PnL 스킵(qty missing)"
+                )
+            return
+
+        # ✅ 체결가 못받은 케이스(=0.0)이면 PnL 계산 스킵
+        if filled_avg_price <= 0:
+            if self.trading_logger:
+                self.trading_logger.info(
+                    f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:UNKNOWN | "
+                    f"qty:{qty_str} | PnL 스킵(avgPrice missing)"
+                )
+            return
 
         if side == "LONG":
             profit_gross = (filled_avg_price - avg_price) * exec_qty
@@ -219,6 +247,6 @@ class ExecutionEngine:
         if self.trading_logger:
             self.trading_logger.info(
                 f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
-                f"qty:{exec_qty} | PnL(net):{profit_net:.2f} | gross:{profit_gross:.2f}, fee:{total_fee:.2f} | "
+                f"qty:{qty_str} | PnL(net):{profit_net:.2f} | gross:{profit_gross:.2f}, fee:{total_fee:.2f} | "
                 f"rate:{profit_rate:.2f}%"
             )
