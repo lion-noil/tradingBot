@@ -315,6 +315,10 @@ def make_bybit_config(
     # 이 설정이 다루는 심볼 목록
     symbols: list[str] | tuple[str, ...] | None = None,
     min_ma_threshold: float = 0.0051,
+
+    # ✅ 추가: 심볼별 entry% 맵
+    entry_percent_by_symbol: dict[str, float] | None = None,
+
 ) -> "TradeConfig":
     """
     Bybit용 기본 트레이딩 설정 팩토리.
@@ -322,6 +326,12 @@ def make_bybit_config(
     """
     if symbols is None:
         symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
+
+    if entry_percent_by_symbol is None:
+        entry_percent_by_symbol = {
+            "SOLUSDT": 1.0,
+            "XRPUSDT": 1.0,
+        }
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스
@@ -332,7 +342,9 @@ def make_bybit_config(
 
         leverage=leverage,
         entry_percent=entry_percent,
+        entry_percent_by_symbol=entry_percent_by_symbol,
         max_effective_leverage=max_effective_leverage,
+
 
         indicator_min_thr=indicator_min_thr,
         indicator_max_thr=indicator_max_thr,
