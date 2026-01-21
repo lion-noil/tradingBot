@@ -366,20 +366,33 @@ def get_exit_signal(
         rep_id = newest_id
         mode = "NEAR_TOUCH"
     else:
-        # ✅ 일반(NORMAL): profit 무시, oldest부터 "절반(ceil)" 트림
+        # ✅ 일반(NORMAL):
+        # k = max(이득 lot 개수, 절반(ceil))
+        # oldest부터 k개 청산
         trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
         trigger_name = "일반"
         band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
 
-        n = len(items)
-        k = max(1, (n + 1) // 2)  # ✅ ceil(n/2) : 3개면 2개 청산
+        def _is_profit(entry_price: float) -> bool:
+            ep = float(entry_price)
+            if side == "LONG":
+                return price > ep
+            if side == "SHORT":
+                return price < ep
+            return False
 
-        # oldest -> newest 정렬이 이미 되어 있으니 앞에서부터 k개
-        targets = [sid for (sid, _, _) in items[:k]]
+        n = len(items)
+        half_k = max(1, (n + 1) // 2)  # ceil(n/2)
+        profit_cnt = sum(1 for (_, _, ep) in items if _is_profit(ep))
+
+        k = max(profit_cnt, half_k)
+        k = min(k, n)  # 안전
+
+        targets = [sid for (sid, _, _) in items[:k]]  # oldest부터 k개
 
         rep_id = targets[0]
         mode = "NORMAL"
-        normal_trim_label = f"HALF_TRIM_OLDEST {k}/{n}"
+        normal_trim_label = f"NORMAL_OLDEST_TRIM k={k} (profit={profit_cnt}, half={half_k}, n={n})"
 
     # 3) 터치 판정
     if side == "LONG":
