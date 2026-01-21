@@ -34,7 +34,6 @@ class TelegramLogHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = record.getMessage()
-            # SIG JSON 라인을 텔레그램용으로 예쁘게 변환
             if isinstance(msg, str) and msg.lstrip().startswith("SIG "):
                 try:
                     obj = json.loads(msg.split(" ", 1)[1])
@@ -47,6 +46,15 @@ class TelegramLogHandler(logging.Handler):
                     ma100 = obj.get("ma100")
                     d_pct = obj.get("ma_delta_pct") or 0
 
+                    # ✅ reasons[0] 추출
+                    reasons = obj.get("reasons") or []
+                    reason0 = ""
+                    if isinstance(reasons, list) and reasons:
+                        reason0 = str(reasons[0])
+                    elif isinstance(reasons, str) and reasons:
+                        reason0 = reasons.split(",")[0].strip()
+                    reason_tag = f"({reason0})" if reason0 else ""
+
                     # ✅ 플랫폼/엔진(네임스페이스) 표시
                     engine = (obj.get("engine") or obj.get("namespace") or obj.get("source") or "").upper()
                     engine_tag = f"[{engine}]" if engine else ""
@@ -54,7 +62,9 @@ class TelegramLogHandler(logging.Handler):
                     badge = "🟢" if side=="LONG" else "🔴"
                     title = "진입" if kind=="ENTRY" else "청산"
                     side_kr = "롱" if side=="LONG" else "숏"
-                    headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
+
+                    # ✅ 헤드라인에 reason0 표시
+                    headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호 {reason_tag}"
 
                     # 값 포맷 안전화
                     def _fmt1(x):
@@ -80,8 +90,6 @@ class TelegramLogHandler(logging.Handler):
                     return
                 except Exception as e:
                     print(f"[Telegram prettify failed] {e} | raw={msg}")
-                    # 여기서 그냥 내려가면 아래 폴백(원문 전송) 실행됨
-            # 일반 라인은 포맷 그대로
             send_telegram_message(self.bot_token, self.chat_id, self.format(record))
         except Exception as e:
             print(f"TelegramLogHandler Error: {e}")
