@@ -319,14 +319,14 @@ def get_exit_signal(
         if side == "LONG":
             ma_ok = price >= ma100 * (1 + mom_thr)  # MA 기준 유리(매도)
             mom_ok = mom > mom_thr  # 모멘텀
-            entry_ok = price >= newest_entry_price * (1 + ma_thr)  # ✅ entry 기준은 ma_thr
+            entry_ok = price >= newest_entry_price * (1 + mom_thr)
             sign_ma = "+"
             sign_mom = "+"
             sign_ep = "+"
         elif side == "SHORT":
             ma_ok = price <= ma100 * (1 - mom_thr)
             mom_ok = mom < -mom_thr
-            entry_ok = price <= newest_entry_price * (1 - ma_thr)  # ✅ entry 기준은 ma_thr
+            entry_ok = price <= newest_entry_price * (1 - mom_thr)
             sign_ma = "-"
             sign_mom = "-"
             sign_ep = "-"
