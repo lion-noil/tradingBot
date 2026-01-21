@@ -125,7 +125,7 @@ def get_long_entry_signal(
 
         adverse = price < float(newest_entry_price)  # LONG: 더 낮아야(유리)
         mom_ok = (-mom) > float(momentum_threshold)  # 3m 하락 모멘텀
-        ma_ok = price <= ma100 * (1 - float(momentum_threshold))  # ✅ MA100 - mom_thr%
+        ma_ok = price <= ma100 * (1 - ma_threshold/2)  # ✅ MA100 - mom_thr%
 
         if not (adverse and mom_ok and ma_ok):
             return None
@@ -205,7 +205,7 @@ def get_short_entry_signal(
 
         adverse = price > float(newest_entry_price)  # SHORT: 더 높아야(유리)
         mom_ok = mom > float(momentum_threshold)  # 3m 상승 모멘텀
-        ma_ok = price >= ma100 * (1 + float(momentum_threshold))  # ✅ MA100 + mom_thr%
+        ma_ok = price >= ma100 * (1 + ma_threshold/2)  # ✅ MA100 + mom_thr%
 
         if not (adverse and mom_ok and ma_ok):
             return None
@@ -317,16 +317,16 @@ def get_exit_signal(
         newest_entry_price = float(newest_entry_price)
 
         if side == "LONG":
-            ma_ok = price >= ma100 * (1 + mom_thr)  # MA 기준 유리(매도)
+            ma_ok = price >= ma100 * (1 + ma_thr/3)  # MA 기준 유리(매도)
             mom_ok = mom > mom_thr  # 모멘텀
-            entry_ok = price >= newest_entry_price * (1 + mom_thr)
+            entry_ok = price >= newest_entry_price * (1 + ma_thr/3)
             sign_ma = "+"
             sign_mom = "+"
             sign_ep = "+"
         elif side == "SHORT":
-            ma_ok = price <= ma100 * (1 - mom_thr)
+            ma_ok = price <= ma100 * (1 - ma_thr/3)
             mom_ok = mom < -mom_thr
-            entry_ok = price <= newest_entry_price * (1 - mom_thr)
+            entry_ok = price <= newest_entry_price * (1 - ma_thr/3)
             sign_ma = "-"
             sign_mom = "-"
             sign_ep = "-"
