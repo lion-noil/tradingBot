@@ -292,21 +292,17 @@ def get_exit_signal(
     y = int(time_limit_sec)
 
     # 1) 절대 종료: newest 기준 (전체 청산)
-    if newest_elapsed_sec > y:
-        targets = [sid for sid, _, _ in items]
+    if oldest_elapsed_sec > y:
         age_label = f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
         return {
             "kind": "EXIT",
             "mode": "TIME_LIMIT",
-            "targets": targets,
-            "anchor_open_signal_id": newest_id,
-            "reasons": ["TIME_LIMIT", age_label],
+            "targets": [oldest_id],  # ✅ oldest 1개만
+            "anchor_open_signal_id": oldest_id,  # ✅ anchor도 oldest
+            "reasons": ["TIME_LIMIT", "CLOSE_OLDEST_ONLY", age_label],
             "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
         }
 
-    # ------------------------------------------------------------
-    # ✅ 1.5) 최신 진입 lot 일부 청산 (TRIM_LATEST)
-    # ------------------------------------------------------------
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
     if mom is not None:
         mom_thr = float(momentum_threshold)
@@ -369,29 +365,21 @@ def get_exit_signal(
         targets = [newest_id]
         rep_id = newest_id
         mode = "NEAR_TOUCH"
-        profit_only = False
     else:
-        # ✅ 일반: "이득인 item만" 청산
+        # ✅ 일반(NORMAL): profit 무시, oldest부터 "절반(ceil)" 트림
         trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
         trigger_name = "일반"
         band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
 
-        def _is_profit(entry_price: float) -> bool:
-            ep = float(entry_price)
-            if side == "LONG":
-                return price > ep
-            if side == "SHORT":
-                return price < ep
-            return False
+        n = len(items)
+        k = max(1, (n + 1) // 2)  # ✅ ceil(n/2) : 3개면 2개 청산
 
-        profit_items = [(sid, ts, ep) for (sid, ts, ep) in items if _is_profit(ep)]
-        targets = [sid for sid, _, _ in profit_items]
-        if not targets:
-            return None  # 이득인 게 없으면 NORMAL 청산 자체를 안 함
+        # oldest -> newest 정렬이 이미 되어 있으니 앞에서부터 k개
+        targets = [sid for (sid, _, _) in items[:k]]
 
         rep_id = targets[0]
         mode = "NORMAL"
-        profit_only = True
+        normal_trim_label = f"HALF_TRIM_OLDEST {k}/{n}"
 
     # 3) 터치 판정
     if side == "LONG":
@@ -415,8 +403,9 @@ def get_exit_signal(
     # ✅ reasons: 간결 + 너가 원한 핵심 라벨 유지
     label = "NEAR_TOUCH" if mode == "NEAR_TOUCH" else "NORMAL"
     reasons = [label, head, band_label]
-    if profit_only:
-        reasons.append("profit_only")
+    if mode == "NORMAL":
+        reasons.append(normal_trim_label)  # ✅ "HALF_TRIM_OLDEST 2/3" 같은 라벨
+
     reasons.append(
         f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
     )
