@@ -302,19 +302,61 @@ def get_exit_signal(
             "reasons": ["TIME_LIMIT", "CLOSE_OLDEST_ONLY", age_label],
             "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
         }
+    # ------------------------------------------------------------
+    # 2) 구간(touch) 판정만 먼저 계산 (return은 아직!)
+    # ------------------------------------------------------------
+    if newest_elapsed_sec <= x:
+        band = "NEAR"
+        trigger_pct = -float(exit_easing)
+        trigger_name = "근접"
+        band_label = f"⛳ 0~{fmt_dur_smh_d(x)}"
+    else:
+        band = "NORMAL"
+        trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
+        trigger_name = "일반"
+        band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
 
+    if side == "LONG":
+        touched = price >= ma100 * (1 + trigger_pct)
+    elif side == "SHORT":
+        touched = price <= ma100 * (1 - trigger_pct)
+    else:
+        return None
+
+    pct_abs_txt = fmt_pct2(abs(trigger_pct))
+    sign = ("-" if side == "LONG" else "+") if band == "NEAR" else ("+" if side == "LONG" else "-")
+    head = f"MA100 {sign}{pct_abs_txt} {trigger_name}"
+
+    # ------------------------------------------------------------
+    # ✅ 3) NORMAL 터치면 무조건 전량 청산 (SCALE_OUT보다 우선)
+    # ------------------------------------------------------------
+    if band == "NORMAL" and touched:
+        targets = [sid for (sid, _, _) in items]  # 전부
+        reasons = ["NORMAL", "CLOSE_ALL", head, band_label,
+                   f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"]
+        return {
+            "kind": "EXIT",
+            "mode": "NORMAL",
+            "targets": targets,
+            "anchor_open_signal_id": oldest_id,
+            "reasons": reasons,
+            "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
+        }
+
+    # ------------------------------------------------------------
+    # ✅ 4) SCALE_OUT: 터치와 무관하게 언제든 발생 가능
+    #    (단, 위에서 NORMAL 전량이 먼저 먹었으니 NORMAL 터치에 뺏기지 않음)
+    # ------------------------------------------------------------
     mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
     if mom is not None:
         mom_thr = float(momentum_threshold)
-        ma_thr = float(ma_threshold)  # ✅ entry 비교에 쓸 기준
+        ma_thr = float(ma_threshold)
 
-        # 최신 lot entry
-        _newest_id, _newest_ts, newest_entry_price = items[-1]
-        newest_entry_price = float(newest_entry_price)
+        newest_entry_price = float(items[-1][2])
 
         if side == "LONG":
-            ma_ok = price >= ma100 * (1 + ma_thr/3)  # MA 기준 유리(매도)
-            mom_ok = mom > mom_thr  # 모멘텀
+            ma_ok = price >= ma100 * (1 + ma_thr/3)
+            mom_ok = mom > mom_thr
             entry_ok = price >= newest_entry_price * (1 + ma_thr/3)
             sign_ma = "+"
             sign_mom = "+"
@@ -340,7 +382,7 @@ def get_exit_signal(
                     "SCALE_OUT",
                     f"MA100 {sign_ma}{mom_thr * 100:.2f}%",
                     f"3m {sign_mom}{mom_thr * 100:.2f}%",
-                    f"EP {sign_ep}{ma_thr * 100:.2f}%",  # ✅ entry 기준은 ma_thr 라벨
+                    f"EP {sign_ep}{ma_thr * 100:.2f}%",
                     f"⏱ new:{fmt_dur_smh_d(newest_elapsed_sec)}",
                 ],
                 "thresholds": {
@@ -356,78 +398,19 @@ def get_exit_signal(
                 },
             }
 
-    # 2) 구간별 타겟/트리거
-    if newest_elapsed_sec <= x:
-        # ✅ 근접: newest 1개만
-        trigger_pct = -float(exit_easing)
-        trigger_name = "근접"
-        band_label = f"⛳ 0~{fmt_dur_smh_d(x)}"
-        targets = [newest_id]
-        rep_id = newest_id
-        mode = "NEAR_TOUCH"
-    else:
-        # ✅ 일반(NORMAL):
-        # k = max(이득 lot 개수, 절반(ceil))
-        # oldest부터 k개 청산
-        trigger_pct = max(0.0, float(ma_threshold) - float(exit_easing))
-        trigger_name = "일반"
-        band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
+    # ------------------------------------------------------------
+    # ✅ 5) NEAR_TOUCH: NEAR 구간에서만, touched일 때 newest 1개 청산
+    # ------------------------------------------------------------
+    if band == "NEAR" and touched:
+        reasons = ["NEAR_TOUCH", head, band_label,
+                   f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"]
+        return {
+            "kind": "EXIT",
+            "mode": "NEAR_TOUCH",
+            "targets": [newest_id],
+            "anchor_open_signal_id": newest_id,
+            "reasons": reasons,
+            "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
+        }
 
-        def _is_profit(entry_price: float) -> bool:
-            ep = float(entry_price)
-            if side == "LONG":
-                return price > ep
-            if side == "SHORT":
-                return price < ep
-            return False
-
-        n = len(items)
-        half_k = max(1, (n + 1) // 2)  # ceil(n/2)
-        profit_cnt = sum(1 for (_, _, ep) in items if _is_profit(ep))
-
-        k = max(profit_cnt, half_k)
-        k = min(k, n)  # 안전
-
-        targets = [sid for (sid, _, _) in items[:k]]  # oldest부터 k개
-
-        rep_id = targets[0]
-        mode = "NORMAL"
-        normal_trim_label = f"NORMAL_OLDEST_TRIM k={k} (profit={profit_cnt}, half={half_k}, n={n})"
-
-    # 3) 터치 판정
-    if side == "LONG":
-        touched = price >= ma100 * (1 + trigger_pct)
-    elif side == "SHORT":
-        touched = price <= ma100 * (1 - trigger_pct)
-    else:
-        return None
-
-    if not touched:
-        return None
-
-    pct_abs_txt = fmt_pct2(abs(trigger_pct))  # "0.02%"
-
-    if mode == "NEAR_TOUCH":
-        sign = "-" if side == "LONG" else "+"
-    else:
-        sign = "+" if side == "LONG" else "-"
-    head = f"MA100 {sign}{pct_abs_txt} {trigger_name}"
-
-    # ✅ reasons: 간결 + 너가 원한 핵심 라벨 유지
-    label = "NEAR_TOUCH" if mode == "NEAR_TOUCH" else "NORMAL"
-    reasons = [label, head, band_label]
-    if mode == "NORMAL":
-        reasons.append(normal_trim_label)  # ✅ "HALF_TRIM_OLDEST 2/3" 같은 라벨
-
-    reasons.append(
-        f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
-    )
-
-    return {
-        "kind": "EXIT",
-        "mode": mode,
-        "targets": targets,
-        "anchor_open_signal_id": rep_id,
-        "reasons": reasons,
-        "thresholds": {"ma": ma_threshold, "exit_easing": exit_easing, "x": x, "y": y},
-    }
+    return None
