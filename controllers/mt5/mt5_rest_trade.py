@@ -165,7 +165,7 @@ class Mt5RestTradeMixin:
             # ✅ 추가: Market closed 재시도 옵션
             retry_on_market_closed: bool = True,
             market_closed_wait_sec: float = 30.0,
-            market_closed_max_retries: int = 2,  # "추가 시도 횟수" (총 시도 = 1 + retries)
+            market_closed_max_retries: int = 6,  # "추가 시도 횟수" (총 시도 = 1 + retries)
     ) -> Optional[Dict[str, Any]]:
         """
         MT5 시장가 주문 전송.
