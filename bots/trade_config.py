@@ -337,6 +337,7 @@ def make_bybit_config(
 
     if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
+            "ETHUSDT": 2.0,
             "SOLUSDT": 1.0,
             "XRPUSDT": 1.0,
         }
