@@ -44,7 +44,6 @@ class Mt5RestTradeMixin:
                 total += abs(vol)
         return float(total)
 
-
     def _ensure_mt5(self) -> bool:
         if mt5.initialize():
             return True
@@ -148,155 +147,191 @@ class Mt5RestTradeMixin:
     # -------------------------
     # 주문 생성/청산 래퍼
     # -------------------------
+    import time
+    from typing import Optional, Dict, Any
+
     def submit_market_order(
-        self,
-        symbol: str,
-        order_side: str,  # "Buy"/"Sell"
-        qty: float,
-        position_idx: int = 0,  # 호환용(무시)
-        reduce_only: bool = False,
-        ex_lot_id: int | None = None,   # ✅ 추가
-        deviation: int = 20,
-        magic: int = 20251213,
-        comment: str = "mt5-market",
+            self,
+            symbol: str,
+            order_side: str,  # "Buy"/"Sell"
+            qty: float,
+            position_idx: int = 0,  # 호환용(무시)
+            reduce_only: bool = False,
+            ex_lot_id: int | None = None,
+            deviation: int = 20,
+            magic: int = 20251213,
+            comment: str = "mt5-market",
+            *,
+            # ✅ 추가: Market closed 재시도 옵션
+            retry_on_market_closed: bool = True,
+            market_closed_wait_sec: float = 30.0,
+            market_closed_max_retries: int = 2,  # "추가 시도 횟수" (총 시도 = 1 + retries)
     ) -> Optional[Dict[str, Any]]:
         """
         MT5 시장가 주문 전송.
         reduce_only=True면 현재 포지션(ticket) 지정해서 반대매매로 청산 시도.
+
+        ✅ retcode=10018 (Market closed) 발생 시:
+           30초 대기 후 1~2회 재시도(옵션)
         """
         if not self._ensure_mt5():
             return None
 
         sym = symbol.upper()
-
         if not mt5.symbol_select(sym, True):
             if getattr(self, "system_logger", None):
                 self.system_logger.error(f"[ERROR] symbol_select({sym}) failed: {mt5.last_error()}")
             return None
 
-        vol = self.normalize_qty(sym, qty, mode="floor")
-        if vol <= 0:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] normalized qty is 0 (raw={qty}) for {sym}")
-            return None
+        # --- 내부: '실제 1회 주문 시도'를 함수로 분리 ---
+        def _try_once() -> Optional[Dict[str, Any]]:
+            vol = self.normalize_qty(sym, qty, mode="floor")
+            if vol <= 0:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(f"[ERROR] normalized qty is 0 (raw={qty}) for {sym}")
+                return None
 
-        tick = mt5.symbol_info_tick(sym)
-        if tick is None:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] symbol_info_tick({sym}) failed: {mt5.last_error()}")
-            return None
+            tick = mt5.symbol_info_tick(sym)
+            if tick is None:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(f"[ERROR] symbol_info_tick({sym}) failed: {mt5.last_error()}")
+                return None
 
-        side = (order_side or "").strip().lower()
-        if side == "buy":
-            otype = mt5.ORDER_TYPE_BUY
-            price = float(tick.ask or 0.0)
-            closing_position_type = mt5.POSITION_TYPE_SELL
-        elif side == "sell":
-            otype = mt5.ORDER_TYPE_SELL
-            price = float(tick.bid or 0.0)
-            closing_position_type = mt5.POSITION_TYPE_BUY
-        else:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] invalid order_side: {order_side}")
-            return None
-
-
-        req = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": sym,
-            "type": otype,
-            "volume": float(vol),
-            "price": float(price),
-            "deviation": int(deviation),
-            "magic": int(magic),
-            "comment": str(comment),
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-
-        if reduce_only:
-            poss = mt5.positions_get(symbol=sym) or []
-
-            # 1) ex_lot_id가 있으면 그 포지션만 대상으로
-            if ex_lot_id:
-                p = next((x for x in poss if int(getattr(x, "ticket", 0) or 0) == int(ex_lot_id)), None)
-                if not p:
-                    if getattr(self, "system_logger", None):
-                        self.system_logger.warning(
-                            f"[WARN] ex_lot_id not found in positions: {sym} ex_lot_id={ex_lot_id}")
-                    return None
+            side = (order_side or "").strip().lower()
+            if side == "buy":
+                otype = mt5.ORDER_TYPE_BUY
+                price = float(tick.ask or 0.0)
+                closing_position_type = mt5.POSITION_TYPE_SELL
+            elif side == "sell":
+                otype = mt5.ORDER_TYPE_SELL
+                price = float(tick.bid or 0.0)
+                closing_position_type = mt5.POSITION_TYPE_BUY
             else:
-                # 2) 기존 로직: 반대 포지션 중 가장 큰 1개
-                targets = [p for p in poss if int(getattr(p, "type", -1)) == closing_position_type]
-                if not targets:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(f"[ERROR] invalid order_side: {order_side}")
+                return None
+
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": sym,
+                "type": otype,
+                "volume": float(vol),
+                "price": float(price),
+                "deviation": int(deviation),
+                "magic": int(magic),
+                "comment": str(comment),
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            if reduce_only:
+                poss = mt5.positions_get(symbol=sym) or []
+
+                if ex_lot_id:
+                    p = next((x for x in poss if int(getattr(x, "ticket", 0) or 0) == int(ex_lot_id)), None)
+                    if not p:
+                        if getattr(self, "system_logger", None):
+                            self.system_logger.warning(
+                                f"[WARN] ex_lot_id not found in positions: {sym} ex_lot_id={ex_lot_id}"
+                            )
+                        return None
+                else:
+                    targets = [p for p in poss if int(getattr(p, "type", -1)) == closing_position_type]
+                    if not targets:
+                        if getattr(self, "system_logger", None):
+                            self.system_logger.warning(f"[WARN] reduce_only but no opposite position to close: {sym}")
+                        return None
+                    p = max(targets, key=lambda x: float(getattr(x, "volume", 0.0) or 0.0))
+
+                req["position"] = int(getattr(p, "ticket", 0) or 0)
+                pos_vol = float(getattr(p, "volume", 0.0) or 0.0)
+                if req["volume"] > pos_vol:
+                    req["volume"] = float(self.normalize_qty(sym, pos_vol, mode="floor"))
+                    if req["volume"] <= 0:
+                        return None
+
+            last_res = None
+            for tf in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+                req["type_filling"] = tf
+                res = mt5.order_send(req)
+                last_res = res
+                if res is None:
+                    continue
+
+                last_retcode = int(getattr(res, "retcode", -1))
+                last_comment = str(getattr(res, "comment", ""))
+
+                if last_retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                    break
+
+                if last_retcode == 10030 or "filling" in (last_comment or "").lower():
                     if getattr(self, "system_logger", None):
-                        self.system_logger.warning(f"[WARN] reduce_only but no opposite position to close: {sym}")
-                    return None
-                p = max(targets, key=lambda x: float(getattr(x, "volume", 0.0) or 0.0))
+                        self.system_logger.debug(
+                            f"[MT5] {sym} filling={tf} rejected: ret={last_retcode} {last_comment}")
+                    continue
 
-            # ✅ 지정된 포지션 ticket으로 닫기
-            req["position"] = int(getattr(p, "ticket", 0) or 0)
-
-            pos_vol = float(getattr(p, "volume", 0.0) or 0.0)
-            if vol > pos_vol:
-                req["volume"] = float(self.normalize_qty(sym, pos_vol, mode="floor"))
-                if req["volume"] <= 0:
-                    return None
-
-        for tf in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
-            req["type_filling"] = tf
-            res = mt5.order_send(req)
-            last_res = res
-
-            if res is None:
-                continue
-
-            last_retcode = int(getattr(res, "retcode", -1))
-            last_comment = str(getattr(res, "comment", ""))
-
-            # 성공 코드면 즉시 종료
-            if last_retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                 break
 
-            # filling mode 미지원이면 다음 모드로 계속
-            if last_retcode == 10030 or "filling" in (last_comment or "").lower():
+            res = last_res
+            if res is None:
                 if getattr(self, "system_logger", None):
-                    self.system_logger.debug(f"[MT5] {sym} filling={tf} rejected: ret={last_retcode} {last_comment}")
-                continue
+                    self.system_logger.error(f"[ERROR] order_send returned None: {mt5.last_error()}")
+                return None
 
-            # 그 외 실패는 루프 끊고 실패 처리
-            break
+            retcode = int(getattr(res, "retcode", -1))
+            ok = retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
 
-        res = last_res
+            out = {
+                "ok": bool(ok),
+                "retcode": retcode,
+                "comment": str(getattr(res, "comment", "")),
+                "order": int(getattr(res, "order", 0) or 0),
+                "deal": int(getattr(res, "deal", 0) or 0),
+                "symbol": sym,
+                "side": "Buy" if otype == mt5.ORDER_TYPE_BUY else "Sell",
+                "qty": float(req["volume"]),
+                "price": float(req["price"]),
+                "reduce_only": bool(reduce_only),
+                "time_ms": int(time.time() * 1000),
+            }
+            order_id = int(out.get("order") or 0) or int(out.get("deal") or 0) or int(out.get("time_ms") or 0)
+            out["orderId"] = str(order_id)
+            out["match_hint"] = int(out.get("deal") or 0) or int(out.get("order") or 0) or None
 
+            if not ok and getattr(self, "system_logger", None):
+                self.system_logger.error(f"[ERROR] mt5 order failed: {out}")
 
-        if res is None:
+            return out
+
+        # --- ✅ 여기서 Market closed 재시도 ---
+        attempts_total = 1 + (market_closed_max_retries if retry_on_market_closed else 0)
+
+        last_out: Optional[Dict[str, Any]] = None
+        for attempt in range(1, attempts_total + 1):
+            last_out = _try_once()
+            if last_out is None:
+                return None
+
+            if last_out.get("ok"):
+                return last_out
+
+            retcode = int(last_out.get("retcode", -1) or -1)
+            comment_s = str(last_out.get("comment", "") or "").lower()
+
+            is_market_closed = (retcode == 10018) or ("market closed" in comment_s)
+            if not (retry_on_market_closed and is_market_closed and attempt < attempts_total):
+                return last_out
+
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] order_send returned None: {mt5.last_error()}")
-            return None
+                self.system_logger.warning(
+                    f"[WARN] market closed ({sym}) - retry in {market_closed_wait_sec:.1f}s "
+                    f"({attempt}/{attempts_total}) ret={retcode} comment={last_out.get('comment')}"
+                )
 
-        retcode = int(getattr(res, "retcode", -1))
-        ok = retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
+            time.sleep(float(market_closed_wait_sec))
+            # 다음 시도에서 tick/price는 _try_once()가 다시 읽음
 
-        out = {
-            "ok": bool(ok),
-            "retcode": retcode,
-            "comment": str(getattr(res, "comment", "")),
-            "order": int(getattr(res, "order", 0) or 0),
-            "deal": int(getattr(res, "deal", 0) or 0),
-            "symbol": sym,
-            "side": "Buy" if otype == mt5.ORDER_TYPE_BUY else "Sell",
-            "qty": float(req["volume"]),
-            "price": float(req["price"]),
-            "reduce_only": bool(reduce_only),
-            "time_ms": int(time.time() * 1000),
-        }
-        order_id = int(out.get("order") or 0) or int(out.get("deal") or 0) or int(out.get("time_ms") or 0)
-        out["orderId"] = str(order_id)
-        out["match_hint"] = int(out.get("deal") or 0) or int(out.get("order") or 0) or None
-        if not ok and getattr(self, "system_logger", None):
-            self.system_logger.error(f"[ERROR] mt5 order failed: {out}")
-        return out
+        return last_out
 
     def _pick_balance(self, wallet: dict) -> tuple[str, float]:
         """
@@ -471,7 +506,6 @@ class Mt5RestTradeMixin:
             "method": "notional",
         }
         return float(raw_lot), meta
-
 
     def open_market(self, symbol: str, side: str, price: float, percent: float, wallet: dict):
         if not symbol or wallet is None:
@@ -845,6 +879,3 @@ class Mt5RestTradeMixin:
             "last_deals_count": int(last_seen["deals"] or 0),
             "last_window_min": int(last_seen["minutes"] or 0),
         }
-
-
-
