@@ -265,6 +265,9 @@ def make_mt5_signal_config(
             "SOLUSD": 0.5,   # leverage 50이면 50% 진입(=50 x 1%)
             "XNGUSD":0.5,
             "XRPUSD":0.5,
+            "BTCUSD": 0.5,
+            "ETHUSD": 0.5,
+            "WTI": 0.5,
         }
 
     cfg = TradeConfig(
