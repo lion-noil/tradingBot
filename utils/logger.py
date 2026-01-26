@@ -24,6 +24,15 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
         timeout=10,
     ).raise_for_status()
 
+def _guess_dp_from_price(px, min_dp=1, max_dp=4):
+    try:
+        s = f"{float(px):.10f}".rstrip("0").rstrip(".")
+        if "." not in s:
+            return min_dp
+        dp = len(s.split(".", 1)[1])
+        return max(min_dp, min(max_dp, dp))
+    except Exception:
+        return min_dp
 
 class TelegramLogHandler(logging.Handler):
     def __init__(self, bot_token: str, chat_id: str, level=logging.WARNING):
@@ -46,6 +55,9 @@ class TelegramLogHandler(logging.Handler):
                     ma100 = obj.get("ma100")
                     d_pct = obj.get("ma_delta_pct") or 0
 
+                    sym_u = (symbol or "").upper()
+                    dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
+
                     # ✅ reasons[0] 추출
                     reasons = obj.get("reasons") or []
                     reason0 = ""
@@ -67,9 +79,9 @@ class TelegramLogHandler(logging.Handler):
                     headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호 {reason_tag}"
 
                     # 값 포맷 안전화
-                    def _fmt1(x):
+                    def _fmt1(x, dp=1):
                         try:
-                            return f"{float(x):,.1f}"
+                            return f"{float(x):,.{int(dp)}f}"
                         except Exception:
                             return "N/A"
 
@@ -81,8 +93,8 @@ class TelegramLogHandler(logging.Handler):
 
                     text = (
                         f"{headline}\n"
-                        f"p: {_fmt1(price)}  "
-                        f"M100: {_fmt1(ma100)}  "
+                        f"p: {_fmt1(price, dp)}  "
+                        f"M100: {_fmt1(ma100, dp)}  "
                         f"({pct_txt})"
                     )
 
