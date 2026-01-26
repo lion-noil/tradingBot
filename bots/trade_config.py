@@ -333,7 +333,8 @@ def make_bybit_config(
     - 기존 TradeConfig 기본값을 그대로 사용하면서, 필요시 인자만 살짝 바꿔서 재사용.
     """
     if symbols is None:
-        symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","XAUTUSDT")
+        # symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","XAUTUSDT")
+        symbols = ("BTCUSDT",)
 
     if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {

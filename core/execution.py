@@ -135,41 +135,6 @@ class ExecutionEngine:
 
             self._just_traded_until = time.monotonic() + 0.8
             return result
-
-    def _normalize_from_result(self, result: dict, symbol: str, expected: str, side_hint: str | None) -> Optional[dict]:
-        """
-        주문 응답(result/out) → _log_fill이 이해하는 filled 포맷으로 정규화
-        (MT5 즉시체결 경로에서 사용)
-        """
-        order_id = str(result.get("orderId") or result.get("order") or result.get("deal") or "")
-        if not order_id:
-            return None
-
-        sh = (str(side_hint).upper() if side_hint else "")
-        pos_idx = 1 if sh == "LONG" else 2 if sh == "SHORT" else 0
-        reduce_only = (expected == "CLOSE")
-
-        # Bybit 분류 규칙 동일
-        side_bs = ""
-        if pos_idx == 1:  # LONG
-            side_bs = "SELL" if reduce_only else "BUY"
-        elif pos_idx == 2:  # SHORT
-            side_bs = "BUY" if reduce_only else "SELL"
-
-        avg_price = float(result.get("avgPrice") or result.get("price") or 0.0)
-        qty = float(result.get("cumExecQty") or result.get("qty") or 0.0)
-
-        return {
-            "orderId": order_id,
-            "orderStatus": "FILLED",
-            "symbol": symbol,
-            "positionIdx": pos_idx,
-            "reduceOnly": reduce_only,
-            "side": side_bs,          # BUY/SELL
-            "avgPrice": avg_price,
-            "cumExecQty": qty,
-        }
-
     # --- 체결 로그 & 손익 ---
     def _classify_intent(self, filled: dict) -> Optional[str]:
         side = (filled.get("side") or "").upper()   # BUY/SELL
@@ -187,6 +152,15 @@ class ExecutionEngine:
                 return "SHORT_OPEN"
         return None
 
+    def _short_ex_lot_id(self, filled: dict) -> str:
+        ex_lot_id = filled.get("ex_lot_id")
+        if ex_lot_id is not None:
+            s = str(ex_lot_id).strip()
+            if s:
+                return s[:6]  # ✅ 앞 6자리
+
+        return "UNKNOWN"
+
     def _log_fill(self, filled: dict, position_detail: dict | None = None):
         intent = self._classify_intent(filled)
         if not intent:
@@ -194,7 +168,7 @@ class ExecutionEngine:
 
         side, action = intent.split("_")  # side: LONG/SHORT, action: OPEN/CLOSE
 
-        order_tail = (filled.get("orderId") or "")[-6:] or "UNKNOWN"
+        ex_lot_id = self._short_ex_lot_id(filled)
         filled_avg_price = float(filled.get("avgPrice") or 0.0)
         exec_qty = float(filled.get("cumExecQty") or filled.get("qty") or 0.0)
 
@@ -203,7 +177,7 @@ class ExecutionEngine:
         if action == "OPEN":
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 주문 체결 완료 | id:{order_tail} | avg:{filled_avg_price:.2f} | qty:{qty_str}"
+                    f"✅ {side} 주문 체결 완료 | ex_lot_id:{ex_lot_id} | avg:{filled_avg_price:.2f} | qty:{qty_str}"
                 )
             return
 
@@ -211,7 +185,7 @@ class ExecutionEngine:
         if not position_detail or "avg_price" not in position_detail:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | id:{order_tail} | filled:{filled_avg_price:.2f} | qty:{qty_str} | (avg_price 없음)"
+                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | filled:{filled_avg_price:.2f} | qty:{qty_str} | (avg_price 없음)"
                 )
             return
 
@@ -221,7 +195,7 @@ class ExecutionEngine:
         if exec_qty <= 0:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
+                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
                     f"qty:{qty_str} | PnL 스킵(qty missing)"
                 )
             return
@@ -230,7 +204,7 @@ class ExecutionEngine:
         if filled_avg_price <= 0:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:UNKNOWN | "
+                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:UNKNOWN | "
                     f"qty:{qty_str} | PnL 스킵(avgPrice missing)"
                 )
             return
@@ -246,7 +220,7 @@ class ExecutionEngine:
 
         if self.trading_logger:
             self.trading_logger.info(
-                f"✅ {side} 청산 | id:{order_tail} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
+                f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
                 f"qty:{qty_str} | PnL(net):{profit_net:.2f} | gross:{profit_gross:.2f}, fee:{total_fee:.2f} | "
                 f"rate:{profit_rate:.2f}%"
             )

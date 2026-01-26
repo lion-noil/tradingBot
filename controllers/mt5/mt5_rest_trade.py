@@ -12,9 +12,6 @@ KST = timezone(timedelta(hours=9))
 
 
 class Mt5RestTradeMixin:
-    # -------------------------
-    # 내부: MT5 연결 보장
-    # -------------------------
 
     def _get_position_qty(self, symbol: str, side: str | None = None) -> float:
         """
@@ -184,7 +181,7 @@ class Mt5RestTradeMixin:
             return None
 
         # --- 내부: '실제 1회 주문 시도'를 함수로 분리 ---
-        def _try_once() -> Optional[Dict[str, Any]]:
+        def _try_once(*, log_fail: bool = True) -> Optional[Dict[str, Any]]:
             vol = self.normalize_qty(sym, qty, mode="floor")
             if vol <= 0:
                 if getattr(self, "system_logger", None):
@@ -298,9 +295,6 @@ class Mt5RestTradeMixin:
             out["orderId"] = str(order_id)
             out["match_hint"] = int(out.get("deal") or 0) or int(out.get("order") or 0) or None
 
-            if not ok and getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] mt5 order failed: {out}")
-
             return out
 
         # --- ✅ 여기서 Market closed 재시도 ---
@@ -308,7 +302,7 @@ class Mt5RestTradeMixin:
 
         last_out: Optional[Dict[str, Any]] = None
         for attempt in range(1, attempts_total + 1):
-            last_out = _try_once()
+            last_out = _try_once(log_fail=False)
             if last_out is None:
                 return None
 
@@ -319,14 +313,13 @@ class Mt5RestTradeMixin:
             comment_s = str(last_out.get("comment", "") or "").lower()
 
             is_market_closed = (retcode == 10018) or ("market closed" in comment_s)
-            if not (retry_on_market_closed and is_market_closed and attempt < attempts_total):
-                return last_out
+            will_retry = retry_on_market_closed and is_market_closed and attempt < attempts_total
 
-            if getattr(self, "system_logger", None):
-                self.system_logger.warning(
-                    f"[WARN] market closed ({sym}) - retry in {market_closed_wait_sec:.1f}s "
-                    f"({attempt}/{attempts_total}) ret={retcode} comment={last_out.get('comment')}"
-                )
+            if not will_retry:
+                # ✅ 최종 실패인 경우에만 에러 로그
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(f"[ERROR] mt5 order failed: {last_out}")
+                return last_out
 
             time.sleep(float(market_closed_wait_sec))
             # 다음 시도에서 tick/price는 _try_once()가 다시 읽음
