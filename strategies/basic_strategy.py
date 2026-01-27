@@ -378,15 +378,10 @@ def get_exit_signal(
     # ✅ 4) SCALE_OUT: 터치와 무관하게 언제든 발생 가능
     #    (단, 위에서 NORMAL 전량이 먼저 먹었으니 NORMAL 터치에 뺏기지 않음)
     # ------------------------------------------------------------
-    if len(items) < 2:
-        mom = None  # scale_out 비활성
-    elif _scaleout_on_cooldown():
-        mom = None  # 또는 그냥 pass 처리
-    else:
+    if len(items) >= 2 and (not _scaleout_on_cooldown()):
         mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
         if mom is not None:
             mom_thr = float(momentum_threshold)
-
             if side == "LONG":
                 ma_ok = price >= ma100 * (1 + ma_thr_eff / 3)
                 mom_ok = mom > mom_thr
