@@ -1,14 +1,17 @@
 # bots/market/bootstrap.py
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
+
 
 def bootstrap_trading_state_for_symbol(
-    rest_client,
-    symbol: str,
-    leverage: int,
-    asset: Dict[str, Any],
-    system_logger=None,
+        rest_client,
+        symbol: str,
+        leverage: int,
+        asset: Dict[str, Any],
+        *,
+        save_asset: Optional[Callable[[Dict[str, Any], Optional[str]], None]] = None,
+        system_logger=None,
 ) -> Dict[str, Any]:
     """
     지갑/포지션, 레버리지, 주문 동기화만 담당.
@@ -16,10 +19,19 @@ def bootstrap_trading_state_for_symbol(
     """
     # 지갑/포지션 동기화
     try:
-        asset = rest_client.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
+        asset = rest_client.build_asset(asset=asset, symbol=symbol)
     except Exception as e:
         if system_logger:
             system_logger.warning(f"[{symbol}] 자산/포지션 동기화 실패: {e}")
+        return asset  # ✅ build_asset 실패면 저장/레버리지/주문 sync 의미가 애매하니 여기서 종료
+
+    # ✅ 저장 (redis 등) - executor로 옮긴 정책과 일치
+    if callable(save_asset):
+        try:
+            save_asset(asset, symbol)
+        except Exception as e:
+            if system_logger:
+                system_logger.warning(f"[{symbol}] 자산 저장 실패: {e}")
 
     # 레버리지 설정 (MT5 환경에서는 no-op일 수도 있음)
     try:
@@ -41,12 +53,12 @@ def bootstrap_trading_state_for_symbol(
 
 
 def bootstrap_candles_for_symbol(
-    rest_client,
-    candle_engine,
-    refresh_indicators: Callable[[str], None],
-    symbol: str,
-    candles_num: int,
-    system_logger=None,
+        rest_client,
+        candle_engine,
+        refresh_indicators: Callable[[str], None],
+        symbol: str,
+        candles_num: int,
+        system_logger=None,
 ) -> None:
     """
     과거 캔들 백필 + 인디케이터(MA100 등) 갱신만 담당.
@@ -64,17 +76,17 @@ def bootstrap_candles_for_symbol(
             system_logger.warning(f"[{symbol}] 초기 캔들/인디케이터 부트스트랩 실패: {e}")
 
 
-
-
 def bootstrap_all_symbols(
-    rest_client,
-    candle_engine,
-    refresh_indicators: Callable[[str], None],
-    symbols: List[str],
-    leverage: int,
-    asset: Dict[str, Any],
-    candles_num: int,
-    system_logger=None,
+        rest_client,
+        candle_engine,
+        refresh_indicators: Callable[[str], None],
+        symbols: List[str],
+        leverage: int,
+        asset: Dict[str, Any],
+        candles_num: int,
+        *,
+        save_asset: Optional[Callable[[Dict[str, Any], Optional[str]], None]] = None,
+        system_logger=None,
 ) -> Dict[str, Any]:
     """
     모든 심볼에 대해:
@@ -89,6 +101,7 @@ def bootstrap_all_symbols(
             symbol=sym,
             leverage=leverage,
             asset=asset,
+            save_asset=save_asset,  # ✅ 추가
             system_logger=system_logger,
         )
         bootstrap_candles_for_symbol(

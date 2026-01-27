@@ -74,7 +74,6 @@ class TradeBot:
         )
 
         self._apply_config(self.config)
-
         # state
         self.state = BotState(
             symbols=self.symbols,
@@ -122,12 +121,43 @@ class TradeBot:
             get_ma_threshold=lambda s: self.state.ma_threshold.get(s),
         )
 
+        # market sync 만들고 난 다음, bootstrap 호출 전에 추가
+
+        def _save_asset(asset: dict, symbol: str | None):
+            try:
+                key_fn = getattr(self.rest, "_asset_key", None)
+                if callable(key_fn):
+                    asset_key = key_fn()
+                else:
+                    asset_key = getattr(self.rest, "REDIS_ASSET_KEY", None) or f"trading:{self.namespace}:asset"
+
+                wallet = asset.get("wallet") or {}
+                for ccy, v in wallet.items():
+                    try:
+                        redis_client.hset(asset_key, f"wallet.{ccy}", f"{float(v):.10f}")
+                    except Exception:
+                        pass
+
+                if symbol:
+                    sym = str(symbol).upper().strip()
+                    pos_sym = ((asset.get("positions") or {}).get(sym))
+                    payload = "[]"
+                    if pos_sym is not None:
+                        payload = json.dumps(pos_sym, separators=(",", ":"), ensure_ascii=False, default=str)
+                    redis_client.hset(asset_key, f"positions.{sym}", payload)
+
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.warning(f"[save_asset] failed (symbol={symbol}): {e}")
+
+        self.save_asset = _save_asset
         # bootstrap
         self.state.asset = self.market.bootstrap(
             symbols=self.symbols,
             signal_only=self.signal_only,
             leverage=self.leverage,
             asset=self.state.asset,
+            save_asset=self.save_asset,  # ✅ 추가
         )
 
         self._warmup_symbol_rules()
@@ -154,6 +184,9 @@ class TradeBot:
                 get_asset=lambda: self.state.asset,
                 set_asset=lambda a: setattr(self.state, "asset", a),
                 get_entry_percent=lambda sym: self._get_entry_percent_for_symbol(sym),
+
+                get_max_effective_leverage=lambda: float(self.max_effective_leverage),  # ✅ 추가
+                save_asset=self.save_asset,  # ✅ 추가
 
                 open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
                                 ex_lot_id=None: open_lot(
@@ -196,7 +229,6 @@ class TradeBot:
                 on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
             ),
         )
-
 
         def _extract_open_signal_id(payload):
             if not isinstance(payload, dict):
@@ -273,7 +305,6 @@ class TradeBot:
         self.signal_processor = SignalProcessor(
             system_logger=self.system_logger,
             deps=SignalProcessorDeps(
-                get_asset=lambda: self.state.asset,
                 get_now_ma100=lambda s: self.state.now_ma100.get(s),
                 get_prev3_candle=lambda s: self.state.prev3_candle.get(s),
                 get_ma_threshold=lambda s: (
@@ -283,8 +314,6 @@ class TradeBot:
                 ),
                 get_momentum_threshold=lambda s: self.state.momentum_threshold.get(s),
 
-                is_signal_only=lambda: self.signal_only,
-                get_max_effective_leverage=lambda: self.max_effective_leverage,
                 get_position_max_hold_sec=lambda: self.config.position_max_hold_sec,
                 get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
                 get_open_signal_items=lambda sym, side: self.open_signals_index.list_open(
@@ -295,7 +324,6 @@ class TradeBot:
                     ((sym or "").upper(), (side or "").upper())),
                 set_last_scaleout_ts_ms=lambda sym, side, ts_ms: self._last_scaleout_ts_ms.__setitem__(
                     ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
-
 
                 log_signal=_log_signal,
             ),
@@ -375,6 +403,7 @@ class TradeBot:
             return out
 
         for sid, fields in rows:
+            is_scaleout = False  # ✅ 매 루프마다 초기화
 
             f = decode_fields(fields)
             kind = (f.get("kind") or "").upper()

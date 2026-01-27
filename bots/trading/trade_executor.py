@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from bots.state.balances import get_total_balance_usd
 import math
 
 
@@ -13,6 +14,8 @@ class TradeExecutorDeps:
     get_asset: Callable[[], Dict[str, Any]]
     set_asset: Callable[[Dict[str, Any]], None]
     get_entry_percent: Callable[[str], float]  # ✅ 심볼별
+    get_max_effective_leverage: Callable[[], float]
+    save_asset: Callable[[Dict[str, Any], Optional[str]], None]
 
     # lots_store hooks (keyword 호출로 통일)
     # lots.py 시그니처
@@ -31,7 +34,6 @@ class TradeExecutorDeps:
 
 class TradeExecutor:
     """
-    주문 실행 + 체결 후 asset 동기화(getNsav_asset)
     + 주문 성공 시 lots_store + lots_index(cache) 갱신(open/close)
 
     설계 원칙:
@@ -60,19 +62,6 @@ class TradeExecutor:
         except Exception:
             return 0.0
 
-    @staticmethod
-    def _get_pos_ref(asset: Dict[str, Any], symbol: str, side: str) -> Optional[Dict[str, Any]]:
-        """
-        asset["positions"][symbol][side] 를 안전하게 가져옴 (없으면 None)
-        execute_and_sync에 넘길 포지션 ref
-        """
-        try:
-            pos_map = asset.get("positions") or {}
-            sym_map = pos_map.get(symbol) or {}
-            ref = sym_map.get(side)
-            return ref if isinstance(ref, dict) else None
-        except Exception:
-            return None
 
     @staticmethod
     def _ensure_pos_ref(asset: Dict[str, Any], symbol: str, side: str) -> Dict[str, Any]:
@@ -84,6 +73,13 @@ class TradeExecutor:
             asset["positions"][symbol][side] = ref
         return ref
 
+    def _calc_eff_x(self, asset: Dict[str, Any], symbol: str, side: str, price: float) -> float:
+        wallet = asset.get("wallet") or {}
+        total_balance = get_total_balance_usd(wallet)
+        if total_balance <= 0:
+            return 0.0
+        qty = self._get_pos_qty(asset, symbol, side)
+        return (qty * float(price)) / float(total_balance)
 
     def _get_rules(self, symbol: str) -> dict:
         sym = (symbol or "").upper().strip()
@@ -203,8 +199,13 @@ class TradeExecutor:
             return
 
         # asset refresh
-        new_asset = self.rest.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
+        new_asset = self.rest.build_asset(asset=asset, symbol=symbol)
         self.deps.set_asset(new_asset)
+        try:
+            self.deps.save_asset(new_asset, symbol)
+        except Exception as e:
+            if self.system_logger:
+                self.system_logger.error(f"[WARN] save_asset failed ({symbol}): {e}")
 
         # lot close (주문 성공 후)
         ok = False
@@ -236,6 +237,7 @@ class TradeExecutor:
         OPEN 주문 성공 후 lot OPEN 기록 + cache 반영
         - qty_total은 포지션 qty 변화량(diff)으로 추정
         """
+
         if self.deps.is_signal_only():
             if self.system_logger:
                 self.system_logger.info(f"[signal_only] OPEN 스킵 ({symbol} {side} price={price})")
@@ -246,6 +248,21 @@ class TradeExecutor:
             side_u = side
 
         asset = self.deps.get_asset()
+
+        # ✅ 최대 진입(노출) 게이트: 현재 같은 방향 노출이 max_eff 이상이면 추가 진입 금지
+        try:
+            max_eff = float(self.deps.get_max_effective_leverage() or 0.0)
+        except Exception:
+            max_eff = 0.0
+        if max_eff > 0:
+            eff_x = self._calc_eff_x(asset, symbol, side_u, float(price))
+            if eff_x >= max_eff:
+                if self.system_logger:
+                    self.system_logger.info(
+                        f"[OPEN] max_eff block ({symbol} {side_u}) eff_x={eff_x:.4f} >= max_eff={max_eff:.4f}"
+                    )
+                return
+
         entry_percent = float(self.deps.get_entry_percent(symbol))
 
         before_qty = self._get_pos_qty(asset, symbol, side_u)
@@ -278,8 +295,13 @@ class TradeExecutor:
         except Exception:
             ex_lot_id = None
 
-        new_asset = self.rest.getNsav_asset(asset=asset, symbol=symbol, save_redis=True)
+        new_asset = self.rest.build_asset(asset=asset, symbol=symbol)
         self.deps.set_asset(new_asset)
+        try:
+            self.deps.save_asset(new_asset, symbol)
+        except Exception as e:
+            if self.system_logger:
+                self.system_logger.error(f"[WARN] save_asset failed ({symbol}): {e}")
 
         after_qty = self._get_pos_qty(new_asset, symbol, side_u)
         raw_delta = max(0.0, abs(after_qty) - abs(before_qty))

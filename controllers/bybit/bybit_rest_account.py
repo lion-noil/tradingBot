@@ -2,9 +2,6 @@
 
 import json
 
-from core.redis_client import redis_client
-
-
 class BybitRestAccountMixin:
     # -------------------------
     # 지갑 잔고 조회 (거래용: private)
@@ -69,39 +66,41 @@ class BybitRestAccountMixin:
             return "[]"
         return json.dumps(inpobj, separators=(",", ":"), ensure_ascii=False)
 
+
     # -------------------------
     # 자산 + 포지션/엔트리 구성 & Redis 저장 (거래용)
     # -------------------------
-    def getNsav_asset(self, asset, symbol: str = None, save_redis: bool = True):
+
+    def build_asset(self, asset: dict | None = None, symbol: str | None = None) -> dict:
+        """
+        - wallet/positions를 구성해서 asset dict로 반환
+        - ✅ Redis 저장(side-effect) 없음
+        """
+        asset = dict(asset or {})
+        wallet = dict(asset.get("wallet") or {})
+        positions = dict(asset.get("positions") or {})
+
         # ---- 1) wallet ----
         result = self.get_usdt_balance()
-
-        if result and save_redis:
+        if result:
             try:
-                prev = float((asset.get("wallet") or {}).get("USDT") or 0.0)
-                newv = float(result.get("wallet_balance") or 0.0)
-                if prev != newv:
-                    redis_client.hset(
-                        self._asset_key(),
-                        f"wallet.{result['coin']}",
-                        f"{newv:.10f}",
-                    )
-                    asset.setdefault("wallet", {})
-                    asset["wallet"]["USDT"] = newv
-            except Exception as e:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[WARN] Redis 저장 실패(wallet): {e}")
+                wallet["USDT"] = float(result.get("wallet_balance") or 0.0)
+            except Exception:
+                wallet["USDT"] = wallet.get("USDT", 0.0)
 
-        # symbol 없으면 포지션/엔트리 구성은 스킵 (호출부 실수 방어)
+        asset["wallet"] = wallet
+        asset["positions"] = positions
+
+        # symbol 없으면 포지션 구성 스킵
         if not symbol:
             return asset
 
-        asset.setdefault("positions", {})
-        asset["positions"].setdefault(symbol, {"LONG": None, "SHORT": None})
+        sym = str(symbol).upper().strip()
+        positions.setdefault(sym, {"LONG": None, "SHORT": None})
 
-        # ---- 2) positions (private: trade) ----
+        # ---- 2) positions (broker 조회) ----
         try:
-            resp = self.get_positions(symbol=symbol)  # BybitRestMarketMixin
+            resp = self.get_positions(symbol=sym)  # BybitRestMarketMixin
             rows = (resp.get("result") or {}).get("list") or []
         except Exception:
             rows = []
@@ -121,7 +120,6 @@ class BybitRestAccountMixin:
             elif idx == 2:
                 short_pos = {"qty": size, "avg_price": avg_price}
             else:
-                # 보험 처리
                 side = (r.get("side") or "").upper()
                 if side == "BUY":
                     long_pos = {"qty": size, "avg_price": avg_price}
@@ -130,127 +128,22 @@ class BybitRestAccountMixin:
 
         # ---- 3) entries build (local orders) ----
         try:
-            local_orders = self.load_orders(symbol)  # BybitRestOrdersMixin
+            local_orders = self.load_orders(sym)  # BybitRestOrdersMixin
         except Exception:
             local_orders = []
 
         if long_pos is not None:
             long_pos["entries"] = self._build_entries_from_orders(
-                local_orders, symbol, "LONG", long_pos["qty"]
+                local_orders, sym, "LONG", long_pos["qty"]
             )
         if short_pos is not None:
             short_pos["entries"] = self._build_entries_from_orders(
-                local_orders, symbol, "SHORT", short_pos["qty"]
+                local_orders, sym, "SHORT", short_pos["qty"]
             )
 
-        asset["positions"][symbol]["LONG"] = long_pos
-        asset["positions"][symbol]["SHORT"] = short_pos
-
-        # ---- 4) redis save ----
-        if save_redis:
-            try:
-                redis_client.hset(
-                    self._asset_key(),
-                    f"positions.{symbol}",
-                    self._json_or_empty_list(asset["positions"][symbol]),
-                )
-            except Exception as e:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[WARN] Redis 저장 실패({symbol}): {e}")
+        positions[sym]["LONG"] = long_pos
+        positions[sym]["SHORT"] = short_pos
+        asset["positions"] = positions
 
         return asset
-
-
-if __name__ == "__main__":
-    from pprint import pprint
-
-    try:
-        from bots.trade_config import make_bybit_config
-        cfg_bybit = make_bybit_config()
-    except Exception:
-        cfg_bybit = None
-
-    print("\n[0-1] redis ping test")
-    try:
-        print("redis ping:", redis_client.ping())
-    except Exception as e:
-        print("redis ping failed:", e)
-
-    # symbols: 리스트/문자열 둘 다 지원
-    raw_symbols = None
-    if cfg_bybit is not None:
-        raw_symbols = getattr(cfg_bybit, "symbols", None)
-
-    if not raw_symbols:
-        raw_symbols = ["BTCUSDT"]
-
-    if isinstance(raw_symbols, str):
-        symbols = [raw_symbols]
-    else:
-        symbols = list(raw_symbols)
-
-    symbols = [str(s).strip().upper() for s in symbols if s and str(s).strip()]
-
-    try:
-        from controllers.bybit.bybit_rest_base import BybitRestBase
-    except Exception:
-        BybitRestBase = object
-
-    try:
-        from controllers.bybit.bybit_rest_market import BybitRestMarketMixin
-    except Exception:
-        BybitRestMarketMixin = object
-
-    try:
-        from controllers.bybit.bybit_rest_orders import BybitRestOrdersMixin
-    except Exception:
-        BybitRestOrdersMixin = object
-
-    class _Tester(BybitRestBase, BybitRestMarketMixin, BybitRestOrdersMixin, BybitRestAccountMixin):
-        system_logger = None
-
-    t = _Tester()
-
-    print("\n[0] CONFIG SNAPSHOT")
-    print("SYMBOLS:", symbols)
-    print("REDIS_ASSET_KEY:", t.REDIS_ASSET_KEY)
-
-    print("\n[1] wallet balance (USDT)")
-    wb = t.get_usdt_balance()
-    pprint(wb)
-
-    # positions는 심볼별로 조회
-    for sym in symbols:
-        print(f"\n[2] positions (symbol={sym})")
-        try:
-            resp = t.get_positions(symbol=sym)
-            rows = (resp.get("result") or {}).get("list") or []
-        except Exception as e:
-            print("get_positions failed:", e)
-            rows = []
-
-        print(f"positions count = {len(rows)}")
-        if rows:
-            pprint(rows[0])
-
-    # getNsav_asset도 심볼별로 저장(한 asset dict에 누적)
-    print("\n[3] getNsav_asset + redis save test (with entries)")
-    asset = {}
-    out = None
-    for sym in symbols:
-        out = t.getNsav_asset(asset, symbol=sym, save_redis=True)
-
-    pprint(out)
-
-    # entries 확인용 출력
-    for sym in symbols:
-        p = ((out.get("positions") or {}).get(sym) or {}) if out else {}
-        if p.get("LONG"):
-            print(f"\n[CHECK] {sym} LONG entries:")
-            pprint(p["LONG"].get("entries"))
-        if p.get("SHORT"):
-            print(f"\n[CHECK] {sym} SHORT entries:")
-            pprint(p["SHORT"].get("entries"))
-
-    print("\nDONE")
 

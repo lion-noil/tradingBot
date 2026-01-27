@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, List, Optional
 from strategies.basic_strategy import (
     get_short_entry_signal, get_long_entry_signal, get_exit_signal
 )
-from bots.state.balances import get_total_balance_usd
 
 
 @dataclass
@@ -29,20 +28,16 @@ Item = Tuple[str, int, float]  # (signal_id, ts_ms, entry_price)
 @dataclass
 class SignalProcessorDeps:
     # --- state getters ---
-    get_asset: Callable[[], Dict[str, Any]]
     get_now_ma100: Callable[[str], Optional[float]]
     get_prev3_candle: Callable[[str], Optional[dict]]
     get_ma_threshold: Callable[[str], Optional[float]]
     get_momentum_threshold: Callable[[str], Optional[float]]
 
     # --- config getters ---
-    is_signal_only: Callable[[], bool]
-    get_max_effective_leverage: Callable[[], float]
     get_position_max_hold_sec: Callable[[], int]
     get_near_touch_window_sec: Callable[[], int]
 
     get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
-    # (symbol, side) -> last_scaleout_ts_ms (없으면 None)
     get_last_scaleout_ts_ms: Callable[[str, str], Optional[int]]
     set_last_scaleout_ts_ms: Callable[[str, str, int], None]
 
@@ -159,69 +154,52 @@ class SignalProcessor:
             now_ma100: float,
             thr: float,
     ) -> List[TradeAction]:
-        asset = self.deps.get_asset()
-        signal_only = self.deps.is_signal_only()
-
-        wallet = (asset.get("wallet") or {})
-        pos = ((asset.get("positions") or {}).get(symbol) or {})
-
-        total_balance = get_total_balance_usd(wallet)
-        max_eff = self.deps.get_max_effective_leverage()
-
         actions: List[TradeAction] = []
 
         # --- Short ---
-        short_amt = abs(float(((pos.get("SHORT") or {}).get("qty")) or 0.0))
-        short_eff_x = (short_amt * price / total_balance) if (total_balance and not signal_only) else 0.0
+        open_items = self.deps.get_open_signal_items(symbol, "SHORT")  # ✅ 추가
 
-        if signal_only or short_eff_x < max_eff:
-            open_items = self.deps.get_open_signal_items(symbol, "SHORT")  # ✅ 추가
-
-            sig_s = get_short_entry_signal(
+        sig_s = get_short_entry_signal(
+            price=price,
+            ma100=now_ma100,
+            prev3_candle=self.deps.get_prev3_candle(symbol),
+            open_items=open_items,  # ✅ 추가
+            ma_threshold=float(thr),  # ✅ 원본 thr 그대로
+            momentum_threshold=self.deps.get_momentum_threshold(symbol),
+            reentry_cooldown_sec=30 * 60,  # ✅ 30분
+        )
+        if sig_s:
+            signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
+            actions.append(TradeAction(
+                action="ENTRY",
+                symbol=symbol,
+                side="SHORT",
                 price=price,
-                ma100=now_ma100,
-                prev3_candle=self.deps.get_prev3_candle(symbol),
-                open_items=open_items,  # ✅ 추가
-                ma_threshold=float(thr),  # ✅ 원본 thr 그대로
-                momentum_threshold=self.deps.get_momentum_threshold(symbol),
-                reentry_cooldown_sec=30 * 60,  # ✅ 30분
-            )
-            if sig_s:
-                signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
-                actions.append(TradeAction(
-                    action="ENTRY",
-                    symbol=symbol,
-                    side="SHORT",
-                    price=price,
-                    sig=sig_s,
-                    signal_id=signal_id,
-                ))
+                sig=sig_s,
+                signal_id=signal_id,
+            ))
 
         # --- Long ---
-        long_amt = abs(float(((pos.get("LONG") or {}).get("qty")) or 0.0))
-        long_eff_x = (long_amt * price / total_balance) if (total_balance and not signal_only) else 0.0
+        open_items = self.deps.get_open_signal_items(symbol, "LONG")  # ✅ 추가
 
-        if signal_only or long_eff_x < max_eff:
-            open_items = self.deps.get_open_signal_items(symbol, "LONG")  # ✅ 추가
-
-            sig_l = get_long_entry_signal(
+        sig_l = get_long_entry_signal(
+            price=price,
+            ma100=now_ma100,
+            prev3_candle=self.deps.get_prev3_candle(symbol),
+            open_items=open_items,  # ✅ 추가
+            ma_threshold=float(thr),  # ✅ 원본 thr 그대로
+            momentum_threshold=self.deps.get_momentum_threshold(symbol),
+            reentry_cooldown_sec=30 * 60,  # ✅ 30분
+        )
+        if sig_l:
+            signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
+            actions.append(TradeAction(
+                action="ENTRY",
+                symbol=symbol,
+                side="LONG",
                 price=price,
-                ma100=now_ma100,
-                prev3_candle=self.deps.get_prev3_candle(symbol),
-                open_items=open_items,  # ✅ 추가
-                ma_threshold=float(thr),  # ✅ 원본 thr 그대로
-                momentum_threshold=self.deps.get_momentum_threshold(symbol),
-                reentry_cooldown_sec=30 * 60,  # ✅ 30분
-            )
-            if sig_l:
-                signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
-                actions.append(TradeAction(
-                    action="ENTRY",
-                    symbol=symbol,
-                    side="LONG",
-                    price=price,
-                    sig=sig_l,
-                    signal_id=signal_id,
-                ))
+                sig=sig_l,
+                signal_id=signal_id,
+            ))
 
         return actions

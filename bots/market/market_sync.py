@@ -11,6 +11,7 @@ import time  # 파일 상단에 추가
 OnPriceFn = Callable[[str, float, Optional[float]], None]
 RefreshFn = Callable[[str], None]
 GetThrFn = Callable[[str], Optional[float]]
+SaveAssetFn = Callable[[Dict[str, Any], Optional[str]], None]  # ✅ 있으면 가독성 좋아짐
 
 @dataclass
 class MarketSyncConfig:
@@ -55,10 +56,8 @@ class MarketSync:
         self.get_ma_threshold = get_ma_threshold
         self.cfg = cfg
         self._subscribed = set()
-        self._last_backfill_at = {}   # ✅ symbol -> time.time() (epoch sec)
-        self._started_at = time.time()   # ✅ 추가
-
-
+        self._last_backfill_at = {}  # ✅ symbol -> time.time() (epoch sec)
+        self._started_at = time.time()  # ✅ 추가
 
         # 내부 상태(TradeBot에서 빼기 대상)
         self._rest_fallback_on = {}
@@ -72,6 +71,7 @@ class MarketSync:
             signal_only: bool,
             leverage: float,
             asset: Dict[str, Any],
+            save_asset: Optional[SaveAssetFn] = None
     ) -> Dict[str, Any]:
         """
         TradeBot의 부트스트랩(초기 캔들/지표 + 자산/포지션 로드)을 여기로 이관.
@@ -115,6 +115,7 @@ class MarketSync:
             leverage=leverage,
             asset=asset,
             candles_num=self.cfg.candles_num,
+            save_asset=save_asset,  # ✅ 추가
             system_logger=self.system_logger,
         )
         if self.system_logger:
@@ -125,7 +126,7 @@ class MarketSync:
         self._rest_fallback_on.setdefault(symbol, False)
         self._stale_counts.setdefault(symbol, 0)
         self._last_closed_minute.setdefault(symbol, None)
-        self._last_backfill_at.setdefault(symbol, 0.0)   # ✅ 추가
+        self._last_backfill_at.setdefault(symbol, 0.0)  # ✅ 추가
 
     def apply_config(self, cfg: MarketSyncConfig) -> None:
         self.cfg = cfg
@@ -198,7 +199,6 @@ class MarketSync:
             if self.system_logger:
                 self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
 
-
         # ✅ 쿨다운: 너무 자주 REST 때리지 않기
         if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
             return
@@ -253,7 +253,7 @@ class MarketSync:
         # (이하 쿨다운/로그/REST 동일)
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
-        self.ensure_symbol(symbol)   # ✅ 여기 추가
+        self.ensure_symbol(symbol)  # ✅ 여기 추가
         price = self.get_price(symbol, now_ts)
         self._backfill_or_accumulate(symbol, price, now_ts)
 

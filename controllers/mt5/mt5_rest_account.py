@@ -1,11 +1,7 @@
 # controllers/mt5/mt5_rest_account.py
 
 import json
-from datetime import timezone, timedelta
-
 import MetaTrader5 as mt5
-
-from core.redis_client import redis_client
 
 
 class Mt5RestAccountMixin:
@@ -14,11 +10,6 @@ class Mt5RestAccountMixin:
 
     - get_account_balance(): MT5 계좌 balance/equity/free_margin 등 조회
     - get_positions(symbol): 특정 심볼 포지션 조회
-    - getNsav_asset(asset, symbol=None, save_redis=True): 자산 + 포지션 구성 & Redis 저장
-
-    ✅ Bybit과 호환을 위해:
-    - (Mt5RestOrdersMixin이 함께 믹스인 되어 있으면)
-      load_orders + _build_entries_from_orders로 entries를 구성한다.
     """
 
     REDIS_ASSET_KEY = "trading:mt5_signal:asset"
@@ -89,38 +80,28 @@ class Mt5RestAccountMixin:
                 self.system_logger.error(f"[ERROR] positions_get 실패: {e}")
             return []
 
-    # -------------------------
-    # 자산 + 포지션 구성 & Redis 저장
-    # -------------------------
-    def getNsav_asset(self, asset, symbol: str = None, save_redis: bool = True):
-        # ---- 1) account wallet ----
-        result = self.get_account_balance()
+    def build_asset(self, asset: dict | None = None, symbol: str | None = None) -> dict:
+        asset = dict(asset or {})
+        wallet = dict(asset.get("wallet") or {})
+        positions = dict(asset.get("positions") or {})
 
-        if result and save_redis:
+        # ---- 1) wallet ----
+        result = self.get_account_balance()
+        if result:
             try:
                 ccy = result.get("currency") or "ACC"
-                prev = float((asset.get("wallet") or {}).get(ccy) or 0.0)
-                newv = float(result.get("balance") or 0.0)
+                wallet[ccy] = float(result.get("balance") or 0.0)
+            except Exception:
+                pass
 
-                if prev != newv:
-                    redis_client.hset(self._asset_key(), f"wallet.{ccy}", f"{newv:.10f}")
-                    asset.setdefault("wallet", {})
-                    asset["wallet"][ccy] = newv
-
-                # (선택) equity/free_margin도 저장하고 싶으면 켜도 됨
-                redis_client.hset(self._asset_key(), f"equity.{ccy}", f"{float(result.get('equity') or 0.0):.10f}")
-                redis_client.hset(self._asset_key(), f"free_margin.{ccy}", f"{float(result.get('free_margin') or 0.0):.10f}")
-
-            except Exception as e:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[WARN] Redis 저장 실패(wallet): {e}")
+        asset["wallet"] = wallet
+        asset["positions"] = positions
 
         if not symbol:
             return asset
 
-        sym = symbol.upper()
-        asset.setdefault("positions", {})
-        asset["positions"].setdefault(sym, {"LONG": None, "SHORT": None})
+        sym = str(symbol).upper().strip()
+        positions.setdefault(sym, {"LONG": None, "SHORT": None})
 
         # ---- 2) positions ----
         rows = self.get_positions(symbol=sym) or []
@@ -153,10 +134,7 @@ class Mt5RestAccountMixin:
                         short_pos["avg_price"] = (short_pos["avg_price"] * short_pos["qty"] + price_open * volume) / tot
                     short_pos["qty"] = tot
 
-        # ---- 3) entries build (✅ Bybit 방식 그대로) ----
-        # Mt5RestOrdersMixin이 같이 믹스인되어 있으면:
-        # - load_orders(symbol)
-        # - _build_entries_from_orders(local_orders, symbol, "LONG"/"SHORT", qty)
+        # ---- 3) entries build (기존 방식 유지) ----
         local_orders = []
         can_build_entries = hasattr(self, "load_orders") and hasattr(self, "_build_entries_from_orders")
 
@@ -184,92 +162,9 @@ class Mt5RestAccountMixin:
             else:
                 short_pos["entries"] = []
 
-        asset["positions"][sym]["LONG"] = long_pos
-        asset["positions"][sym]["SHORT"] = short_pos
-
-        # ---- 4) redis save ----
-        if save_redis:
-            try:
-                redis_client.hset(
-                    self._asset_key(),
-                    f"positions.{sym}",
-                    self._json_or_empty_list(asset["positions"][sym]),
-                )
-            except Exception as e:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[WARN] Redis 저장 실패({sym}): {e}")
+        positions[sym]["LONG"] = long_pos
+        positions[sym]["SHORT"] = short_pos
+        asset["positions"] = positions
 
         return asset
 
-
-if __name__ == "__main__":
-    from pprint import pprint
-    from bots.trade_config import make_mt5_signal_config
-
-    cfg_mt5 = make_mt5_signal_config()
-
-    print("\n[0-1] redis ping test")
-    try:
-        print("redis ping:", redis_client.ping())
-    except Exception as e:
-        print("redis ping failed:", e)
-
-    # symbols: 리스트 or 단일 문자열 모두 처리
-    raw_symbols = getattr(cfg_mt5, "symbols", None) or ["BTCUSD"]
-    if isinstance(raw_symbols, str):
-        symbols = [raw_symbols]
-    else:
-        symbols = list(raw_symbols)
-
-    # 공백/None 제거 + 대문자 표준화
-    symbols = [str(s).strip().upper() for s in symbols if s and str(s).strip()]
-
-    # ✅ Orders mixin까지 같이 붙여야 entries가 채워짐
-    try:
-        from controllers.mt5.mt5_rest_orders import Mt5RestOrdersMixin
-    except Exception:
-        Mt5RestOrdersMixin = object
-
-    class _Tester(Mt5RestAccountMixin, Mt5RestOrdersMixin):
-        system_logger = None
-
-    t = _Tester()
-
-    print("\n[0] CONFIG SNAPSHOT")
-    print("SYMBOLS:", symbols)
-    print("REDIS_ASSET_KEY:", t.REDIS_ASSET_KEY)
-
-    print("\n[1] MT5 initialize / account info")
-    acc = t.get_account_balance()
-    pprint(acc)
-
-    # positions는 심볼별로 조회
-    for sym in symbols:
-        print(f"\n[2] positions (symbol={sym})")
-        pos = t.get_positions(sym)
-        print(f"positions count = {len(pos)}")
-        if pos:
-            try:
-                pprint(pos[0]._asdict())
-            except Exception:
-                pprint(pos[0])
-
-    # getNsav_asset도 심볼별로 저장(한 asset dict에 누적)
-    print("\n[3] getNsav_asset + redis save test (with entries)")
-    asset = {}
-    for sym in symbols:
-        out = t.getNsav_asset(asset, symbol=sym, save_redis=True)
-
-    pprint(out)
-
-    # entries 확인용 출력
-    for sym in symbols:
-        p = ((out.get("positions") or {}).get(sym) or {})
-        if p.get("LONG"):
-            print(f"\n[CHECK] {sym} LONG entries:")
-            pprint(p["LONG"].get("entries"))
-        if p.get("SHORT"):
-            print(f"\n[CHECK] {sym} SHORT entries:")
-            pprint(p["SHORT"].get("entries"))
-
-    print("\nDONE")

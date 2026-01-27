@@ -8,8 +8,6 @@ from typing import Any, Dict, List, Optional
 class BotState:
     symbols: List[str]
 
-    # ✅ 진입/청산 둘 다에서 쓰는 easing (기본값)
-    # ma_threshold gate 최소값
     min_ma_threshold: float
 
     # 자산/포지션
