@@ -9,8 +9,6 @@ class BotState:
     symbols: List[str]
 
     # ✅ 진입/청산 둘 다에서 쓰는 easing (기본값)
-    default_ma_easing: float
-
     # ma_threshold gate 최소값
     min_ma_threshold: float
 
@@ -25,9 +23,6 @@ class BotState:
     thr_quantized: Dict[str, Optional[float]] = field(default_factory=dict)
     prev3_candle: Dict[str, Optional[dict]] = field(default_factory=dict)
     ma_check_enabled: Dict[str, bool] = field(default_factory=dict)
-
-    # ✅ 심볼별 easing (없으면 default_ma_easing 사용)
-    ma_easing: Dict[str, float] = field(default_factory=dict)
 
     def init_defaults(self) -> None:
         # asset 기본
@@ -46,9 +41,3 @@ class BotState:
             self.prev3_candle.setdefault(s, None)
             self.ma_check_enabled.setdefault(s, False)
 
-            # ✅ easing 기본 세팅
-            self.ma_easing.setdefault(s, float(self.default_ma_easing))
-
-    def get_ma_easing(self, symbol: str) -> float:
-        v = self.ma_easing.get(symbol)
-        return float(v) if v is not None else float(self.default_ma_easing)

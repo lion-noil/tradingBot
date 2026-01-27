@@ -78,7 +78,6 @@ class TradeBot:
         # state
         self.state = BotState(
             symbols=self.symbols,
-            default_ma_easing=self.config.default_ma_easing,
             min_ma_threshold=self.config.min_ma_threshold,
         )
         self.state.init_defaults()
@@ -132,6 +131,8 @@ class TradeBot:
         )
 
         self._warmup_symbol_rules()
+        self._last_scaleout_ts_ms: dict[tuple[str, str], int] = {}
+        self._warmup_last_scaleout_ts()
 
         self.open_signals_index = OpenSignalsIndex()
         self.open_signals_index.load_from_redis(
@@ -195,6 +196,7 @@ class TradeBot:
                 on_lot_close=lambda sym, side, lot_id: self.lots_index.on_close(sym, side, lot_id),
             ),
         )
+
 
         def _extract_open_signal_id(payload):
             if not isinstance(payload, dict):
@@ -285,11 +287,15 @@ class TradeBot:
                 get_max_effective_leverage=lambda: self.max_effective_leverage,
                 get_position_max_hold_sec=lambda: self.config.position_max_hold_sec,
                 get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
-                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
-                get_ma_easing=lambda s: self.state.get_ma_easing(s),
                 get_open_signal_items=lambda sym, side: self.open_signals_index.list_open(
                     namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True
                 ),
+
+                get_last_scaleout_ts_ms=lambda sym, side: self._last_scaleout_ts_ms.get(
+                    ((sym or "").upper(), (side or "").upper())),
+                set_last_scaleout_ts_ms=lambda sym, side, ts_ms: self._last_scaleout_ts_ms.__setitem__(
+                    ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
+
 
                 log_signal=_log_signal,
             ),
@@ -347,6 +353,58 @@ class TradeBot:
                 self.system_logger.debug(f"[rules] warmed: {sorted(list(m.keys()))[:20]}")
         except Exception:
             pass
+
+    def _warmup_last_scaleout_ts(self, *, lookback_sec: int = 30 * 60, count: int = 2000):
+        key = f"trading:{self.namespace}:signals"
+        now_ms = int(time.time() * 1000)
+        min_ms = now_ms - int(lookback_sec) * 1000
+
+        # 최신부터 역순으로 긁기
+        # stream id는 "ms-seq" 형태라 대략 ms와 비슷
+        min_id = f"{min_ms}-0"
+        rows = redis_client.xrevrange(key, max="+", min=min_id, count=count) or []
+
+        def decode_fields(fields: dict) -> dict[str, str]:
+            out = {}
+            for k, v in (fields or {}).items():
+                if isinstance(k, (bytes, bytearray)):
+                    k = k.decode("utf-8", "ignore")
+                if isinstance(v, (bytes, bytearray)):
+                    v = v.decode("utf-8", "ignore")
+                out[str(k)] = str(v)
+            return out
+
+        for sid, fields in rows:
+
+            f = decode_fields(fields)
+            kind = (f.get("kind") or "").upper()
+            if kind != "EXIT":
+                continue
+            rj = f.get("reasons_json") or ""
+            if "SCALE_OUT" in rj:
+                is_scaleout = True
+
+            sym = (f.get("symbol") or "").upper()
+            side = (f.get("side") or "").upper()
+            ts_ms = f.get("ts_ms")
+            if ts_ms is None:
+                continue
+
+            try:
+                ts_ms_i = int(ts_ms)
+            except Exception:
+                continue
+
+            if not is_scaleout:
+                continue
+
+            if sym and side:
+                k = (sym, side)
+                # 최신부터 읽으니까, 처음 발견한 게 최신임
+                if k not in self._last_scaleout_ts_ms:
+                    self._last_scaleout_ts_ms[k] = ts_ms_i
+
+            # 모든 심볼/사이드가 채워졌으면 early break 하고 싶으면 여기서 조건 걸어도 됨
 
     def _get_entry_percent_for_symbol(self, symbol: str) -> float:
         sym = (symbol or "").upper().strip()

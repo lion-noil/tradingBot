@@ -22,7 +22,8 @@ class TradeAction:
 
     close_open_signal_id: Optional[str] = None
 
-Item = Tuple[str, int, float]   # (signal_id, ts_ms, entry_price)
+
+Item = Tuple[str, int, float]  # (signal_id, ts_ms, entry_price)
 
 
 @dataclass
@@ -38,16 +39,15 @@ class SignalProcessorDeps:
     is_signal_only: Callable[[], bool]
     get_max_effective_leverage: Callable[[], float]
     get_position_max_hold_sec: Callable[[], int]
-    get_ma_easing: Callable[[str], float]
     get_near_touch_window_sec: Callable[[], int]
-    get_min_ma_threshold: Callable[[], Optional[float]]
-
 
     get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
+    # (symbol, side) -> last_scaleout_ts_ms (없으면 None)
+    get_last_scaleout_ts_ms: Callable[[str, str], Optional[int]]
+    set_last_scaleout_ts_ms: Callable[[str, str, int], None]
 
     # --- logging / signal store ---
     log_signal: Callable[[str, str, str, Optional[float], Dict[str, Any]], tuple[str, int]]
-
 
 
 class SignalProcessor:
@@ -76,15 +76,13 @@ class SignalProcessor:
         if thr is None:
             return []
 
-        easing = float(self.deps.get_ma_easing(symbol) or 0.0)
-
         # 1) EXIT 먼저
-        exit_actions = self._decide_exits(symbol, price, now_ma100, thr, easing)
+        exit_actions = self._decide_exits(symbol, price, now_ma100, thr)
         if exit_actions:
             return exit_actions  # ✅ EXIT만 (여러 개 가능)
 
         # 2) EXIT 없으면 ENTRY
-        entry_actions = self._decide_entries(symbol, price, now_ma100, thr, easing)
+        entry_actions = self._decide_entries(symbol, price, now_ma100, thr)
         if entry_actions:
             return [entry_actions[0]]
 
@@ -96,10 +94,8 @@ class SignalProcessor:
             price: float,
             now_ma100: float,
             thr: float,
-            easing: float,
     ) -> List[TradeAction]:
         actions: List[TradeAction] = []
-        exit_easing = easing
 
         for side in ("LONG", "SHORT"):
             open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts, entry_price), newest-first]
@@ -115,13 +111,14 @@ class SignalProcessor:
                 open_items=open_items,  # [(open_signal_id, ts_ms, entry_price), ...]
 
                 ma_threshold=float(thr),
-                exit_easing=float(exit_easing),
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
                 near_touch_window_sec=self.deps.get_near_touch_window_sec(),
 
                 momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),  # ✅ 추가
+                last_scaleout_ts_ms=self.deps.get_last_scaleout_ts_ms(symbol, side),
+                scaleout_cooldown_sec=30 * 60,
             )
-            
+
             if not sig:
                 continue
 
@@ -137,7 +134,8 @@ class SignalProcessor:
                     "ma100": now_ma100,
                     "ma_delta_pct": (price - now_ma100) / max(now_ma100, 1e-12) * 100.0,
                 }
-                signal_id, _ = self._record(symbol, side, "EXIT", price, payload)
+                signal_id, ts_ms  = self._record(symbol, side, "EXIT", price, payload)
+
 
                 actions.append(TradeAction(
                     action="EXIT",
@@ -148,6 +146,10 @@ class SignalProcessor:
                     close_open_signal_id=target_open_id,
                 ))
 
+                # ✅ SCALE_OUT이면 쿨다운 캐시 갱신
+                if payload.get("mode") == "SCALE_OUT":
+                    self.deps.set_last_scaleout_ts_ms(symbol, side, int(ts_ms))
+
         return actions
 
     def _decide_entries(
@@ -156,15 +158,12 @@ class SignalProcessor:
             price: float,
             now_ma100: float,
             thr: float,
-            easing: float,
     ) -> List[TradeAction]:
         asset = self.deps.get_asset()
         signal_only = self.deps.is_signal_only()
 
         wallet = (asset.get("wallet") or {})
         pos = ((asset.get("positions") or {}).get(symbol) or {})
-
-        entry_ma_thr = max(0.0, float(thr) - float(easing))
 
         total_balance = get_total_balance_usd(wallet)
         max_eff = self.deps.get_max_effective_leverage()
@@ -183,7 +182,7 @@ class SignalProcessor:
                 ma100=now_ma100,
                 prev3_candle=self.deps.get_prev3_candle(symbol),
                 open_items=open_items,  # ✅ 추가
-                ma_threshold=entry_ma_thr,
+                ma_threshold=float(thr),  # ✅ 원본 thr 그대로
                 momentum_threshold=self.deps.get_momentum_threshold(symbol),
                 reentry_cooldown_sec=30 * 60,  # ✅ 30분
             )
@@ -210,7 +209,7 @@ class SignalProcessor:
                 ma100=now_ma100,
                 prev3_candle=self.deps.get_prev3_candle(symbol),
                 open_items=open_items,  # ✅ 추가
-                ma_threshold=entry_ma_thr,
+                ma_threshold=float(thr),  # ✅ 원본 thr 그대로
                 momentum_threshold=self.deps.get_momentum_threshold(symbol),
                 reentry_cooldown_sec=30 * 60,  # ✅ 30분
             )

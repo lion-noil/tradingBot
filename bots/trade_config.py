@@ -183,8 +183,6 @@ class TradeConfig:
     # 슬라이딩 윈도우(캔들 개수)
     candles_num: int = 10080  # (예: 1분봉 7일치)
 
-    # 기본 청산 스레시홀드(심볼별 커스텀은 별도 해시)
-    default_ma_easing: float = 0.0002
 
     # signal_only (True면 시그널만, 실제 주문 X)
     signal_only: bool = False
@@ -235,7 +233,6 @@ class TradeConfig:
             position_max_hold_sec=max(600, int(self.position_max_hold_sec)),
             near_touch_window_sec=max(0, int(self.near_touch_window_sec)),
             min_ma_threshold=max(0.0, float(self.min_ma_threshold)),
-            default_ma_easing=max(0.0, float(self.default_ma_easing)),
             symbols=list(self.symbols),
         )
 
@@ -292,7 +289,6 @@ def make_mt5_signal_config(
         target_cross=target_cross,
 
         candles_num=candles_num,
-        default_ma_easing=0.0002,
 
         min_ma_threshold=min_ma_threshold,
         signal_only=False,
@@ -361,7 +357,6 @@ def make_bybit_config(
         target_cross=target_cross,
 
         candles_num=candles_num,
-        default_ma_easing=0.0002,
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
