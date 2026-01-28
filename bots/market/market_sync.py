@@ -128,8 +128,6 @@ class MarketSync:
         self._last_closed_minute.setdefault(symbol, None)
         self._last_backfill_at.setdefault(symbol, 0.0)  # ✅ 추가
 
-    def apply_config(self, cfg: MarketSyncConfig) -> None:
-        self.cfg = cfg
 
     def _can_backfill_now(self, symbol: str, now_ts: float, cooldown_sec: float = 30.0) -> bool:
         last = float(self._last_backfill_at.get(symbol, 0.0) or 0.0)

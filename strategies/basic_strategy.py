@@ -421,6 +421,56 @@ def get_exit_signal(
                         "momentum_pct": mom,
                     },
                 }
+    # ------------------------------------------------------------
+    # ✅ 4.5) INIT_OUT: 1개일 때만 + (최근 30분 scaleout 없을 때만)
+    #    - MA 기준은 1/2
+    #    - mom 조건은 scaleout과 동일
+    # ------------------------------------------------------------
+    if len(items) == 1 and (not _scaleout_on_cooldown()):
+        mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
+        if mom is not None:
+            mom_thr = float(momentum_threshold)
+
+            if side == "LONG":
+                ma_ok = price >= ma100 * (1 + ma_thr_eff / 2)  # ✅ 1/2
+                mom_ok = mom > mom_thr
+                sign_ma = "+"
+                sign_mom = "+"
+            elif side == "SHORT":
+                ma_ok = price <= ma100 * (1 - ma_thr_eff / 2)  # ✅ 1/2
+                mom_ok = mom < -mom_thr
+                sign_ma = "-"
+                sign_mom = "-"
+            else:
+                ma_ok = mom_ok = False
+                sign_ma = sign_mom = ""
+
+            if ma_ok and mom_ok:
+                only_id, _, _ = items[0]
+                return {
+                    "kind": "EXIT",
+                    "mode": "INIT_OUT",
+                    "targets": [only_id],
+                    "anchor_open_signal_id": only_id,
+                    "reasons": [
+                        "INIT_OUT",
+                        f"MA100 {sign_ma}{(ma_thr_eff / 2) * 100:.2f}%",
+                        f"3m {sign_mom}{mom_thr * 100:.2f}%",
+                        f"⏱ held:{fmt_dur_smh_d(newest_elapsed_sec)}",
+                        f"CD {scaleout_cooldown_sec}s" if scaleout_cooldown_sec else "",
+                    ],
+                    "thresholds": {
+                        "ma": ma_thr_eff,
+                        "exit_easing": exit_easing,
+                        "momentum": mom_thr,
+                        "scaleout_cooldown_sec": int(scaleout_cooldown_sec),
+                        "x": x, "y": y,
+                    },
+                    "extra": {
+                        "momentum_pct": mom,
+                        "init_out": True,
+                    },
+                }
 
     # ------------------------------------------------------------
     # ✅ 5) NEAR_TOUCH: NEAR 구간에서만, touched일 때 newest 1개 청산
