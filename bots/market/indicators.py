@@ -91,7 +91,7 @@ def xadd_pct_log(
         "msg": msg,
         "cross_times": ct_json,
     }
-    redis_client.xadd(stream_key, fields, maxlen=30, approximate=False)
+    redis_client.xadd(stream_key, fields, maxlen=300, approximate=False)
 
 # 2-1) 지표 계산 (순수)
 def compute_indicators_for_symbol(candle_engine, indicator_engine, symbol: str):
