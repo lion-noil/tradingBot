@@ -328,7 +328,7 @@ def get_exit_signal(
         momentum_threshold: float = 0.001,
 
         # ✅ 추가
-        scaleout_cooldown_sec: int = 60 * 60,
+        scaleout_cooldown_sec: int = 30 * 60,
         last_scaleout_ts_ms: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     if ma_threshold is None:
@@ -395,14 +395,15 @@ def get_exit_signal(
             hit = False
             profit_sign = ""
         if hit:
+            target_id = oldest_id
             return {
                 "kind": "EXIT",
                 "mode": "RISK_CONTROL",
-                "targets": [newest_id],
-                "anchor_open_signal_id": newest_id,
+                "targets": [target_id],
+                "anchor_open_signal_id": target_id,
                 "reasons": [
                     "RISK_CONTROL",
-                    f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",
+                    f"#EXIT {fmt_targets_idx(open_idx, [target_id])}/{total_n}",
                     f"AVG_ENTRY {profit_sign}{PROFIT_TAKE_PCT * 100:.2f}%",
                 ],
                 "thresholds": {
@@ -416,7 +417,7 @@ def get_exit_signal(
                     "avg_entry_price": float(avg_entry),
                     "profit_take_pct": PROFIT_TAKE_PCT,
                     "risk_control": True,
-                    "close_latest_only": True,
+                    "close_oldest_only": True,
                 },
             }
 

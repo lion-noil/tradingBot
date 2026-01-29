@@ -111,7 +111,7 @@ class SignalProcessor:
 
                 momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),  # ✅ 추가
                 last_scaleout_ts_ms=self.deps.get_last_scaleout_ts_ms(symbol, side),
-                scaleout_cooldown_sec=60 * 60,
+                scaleout_cooldown_sec=30 * 60,
             )
 
             if not sig:
