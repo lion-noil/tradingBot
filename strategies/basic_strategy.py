@@ -21,6 +21,25 @@ class Signal:
     thresholds: Dict[str, float]
     extra: Dict[str, Any] = field(default_factory=dict)
 
+def build_open_index(sorted_items: List[Item]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for i, (sid, _, _) in enumerate(sorted_items or [], start=1):
+        out[str(sid)] = i
+    return out
+
+
+def fmt_targets_idx(open_idx: Dict[str, int], targets: List[str]) -> str:
+    """
+    targets의 순번을 "2,4,5" 형태로
+    """
+    nums = []
+    for sid in targets or []:
+        n = open_idx.get(str(sid))
+        if n is not None:
+            nums.append(n)
+    nums = sorted(set(nums))
+    return ",".join(str(x) for x in nums) if nums else "—"
+
 
 def fmt_dur_smh_d(sec: int) -> str:
     try:
@@ -131,6 +150,9 @@ def get_long_entry_signal(
         return None
 
     items = _sorted_items(open_items)
+
+    next_no = len(items) + 1
+
     now_ms = int(time.time() * 1000)
     entry_easing = easing_from_thr(ma_threshold)  # ✅ 내부 계산
     ma_thr_eff = max(0.0, float(ma_threshold) - float(entry_easing))
@@ -156,6 +178,7 @@ def get_long_entry_signal(
             side="LONG",
             reasons=[
                 "SCALE_IN",
+                f"#ENTRY {next_no}",
                 f"MA100 -{momentum_threshold * 100:.2f}%",
                 f"3m -{momentum_threshold * 100:.2f}%",
             ],
@@ -181,6 +204,7 @@ def get_long_entry_signal(
         side="LONG",
         reasons=[
             "INIT",
+            f"#ENTRY {next_no}",
             f"MA100 -{ma_thr_eff * 100:.2f}%",
             f"3m -{momentum_threshold * 100:.2f}%",
         ],
@@ -211,6 +235,9 @@ def get_short_entry_signal(
         return None
     entry_easing = easing_from_thr(ma_threshold)
     items = _sorted_items(open_items)
+
+    next_no = len(items) + 1
+
     now_ms = int(time.time() * 1000)
     ma_thr_eff = max(0.0, float(ma_threshold) - float(entry_easing))
     # ✅ 물타기(SCALE_IN): adverse + MOM + (MA100에서 mom_thr 만큼 유리)
@@ -235,6 +262,7 @@ def get_short_entry_signal(
             side="SHORT",
             reasons=[
                 "SCALE_IN",
+                f"#ENTRY {next_no}",
                 f"MA100 +{momentum_threshold * 100:.2f}%",
                 f"3m +{momentum_threshold * 100:.2f}%",
             ],
@@ -261,6 +289,7 @@ def get_short_entry_signal(
         side="SHORT",
         reasons=[
             "INIT",
+            f"#ENTRY {next_no}",
             f"MA100 +{ma_threshold * 100:.2f}%",
             f"3m +{momentum_threshold * 100:.2f}%",
         ],
@@ -310,6 +339,9 @@ def get_exit_signal(
         return (now_ms - int(last_scaleout_ts_ms)) < int(scaleout_cooldown_sec) * 1000
 
     items = _sorted_items(open_items)  # oldest -> newest
+    open_idx = build_open_index(items)
+    total_n = len(items)
+
     oldest_id, oldest_ts, _ = items[0]
     newest_id, newest_ts, _ = items[-1]
 
@@ -329,7 +361,7 @@ def get_exit_signal(
             "mode": "TIME_LIMIT",
             "targets": [oldest_id],  # ✅ oldest 1개만
             "anchor_open_signal_id": oldest_id,  # ✅ anchor도 oldest
-            "reasons": ["TIME_LIMIT", "CLOSE_OLDEST_ONLY", age_label],
+            "reasons": ["TIME_LIMIT", "CLOSE_OLDEST_ONLY", f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}" ,age_label],
             "thresholds": {"ma": ma_thr_eff, "exit_easing": exit_easing, "x": x, "y": y},
         }
 
@@ -363,7 +395,7 @@ def get_exit_signal(
     # ------------------------------------------------------------
     if band == "NORMAL" and touched:
         targets = [sid for (sid, _, _) in items]  # 전부
-        reasons = ["NORMAL", "CLOSE_ALL", head, band_label,
+        reasons = ["NORMAL", "CLOSE_ALL", f"#EXIT {fmt_targets_idx(open_idx, targets)}/{total_n}", head, band_label,
                    f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"]
         return {
             "kind": "EXIT",
@@ -404,6 +436,7 @@ def get_exit_signal(
                     "anchor_open_signal_id": newest_id,
                     "reasons": [
                         "SCALE_OUT",
+                        f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",
                         f"MA100 {sign_ma}{(ma_thr_eff / 3) * 100:.2f}%",
                         f"3m {sign_mom}{mom_thr * 100:.2f}%",
                         f"⏱ new:{fmt_dur_smh_d(newest_elapsed_sec)}",
@@ -454,6 +487,7 @@ def get_exit_signal(
                     "anchor_open_signal_id": only_id,
                     "reasons": [
                         "INIT_OUT",
+                        f"#EXIT {fmt_targets_idx(open_idx, [only_id])}/{total_n}",
                         f"MA100 {sign_ma}{(ma_thr_eff / 2) * 100:.2f}%",
                         f"3m {sign_mom}{mom_thr * 100:.2f}%",
                         f"⏱ held:{fmt_dur_smh_d(newest_elapsed_sec)}",
@@ -476,7 +510,7 @@ def get_exit_signal(
     # ✅ 5) NEAR_TOUCH: NEAR 구간에서만, touched일 때 newest 1개 청산
     # ------------------------------------------------------------
     if band == "NEAR" and touched:
-        reasons = ["NEAR_TOUCH", head, band_label,
+        reasons = ["NEAR_TOUCH", f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",head, band_label,
                    f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"]
         return {
             "kind": "EXIT",
