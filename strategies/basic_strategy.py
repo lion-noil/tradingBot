@@ -395,8 +395,6 @@ def get_exit_signal(
             hit = False
             profit_sign = ""
         if hit:
-            # ✅ 전량이 아니라 마지막 진입 1개만
-            newest_id, _, _ = items[-1]
             return {
                 "kind": "EXIT",
                 "mode": "RISK_CONTROL",
