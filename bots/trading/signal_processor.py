@@ -111,7 +111,7 @@ class SignalProcessor:
 
                 momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),  # ✅ 추가
                 last_scaleout_ts_ms=self.deps.get_last_scaleout_ts_ms(symbol, side),
-                scaleout_cooldown_sec=30 * 60,
+                scaleout_cooldown_sec=60 * 60,
             )
 
             if not sig:
@@ -166,7 +166,7 @@ class SignalProcessor:
             open_items=open_items,  # ✅ 추가
             ma_threshold=float(thr),  # ✅ 원본 thr 그대로
             momentum_threshold=self.deps.get_momentum_threshold(symbol),
-            reentry_cooldown_sec=30 * 60,  # ✅ 30분
+            reentry_cooldown_sec=60 * 60,  # ✅ 30분
         )
         if sig_s:
             signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
@@ -189,7 +189,7 @@ class SignalProcessor:
             open_items=open_items,  # ✅ 추가
             ma_threshold=float(thr),  # ✅ 원본 thr 그대로
             momentum_threshold=self.deps.get_momentum_threshold(symbol),
-            reentry_cooldown_sec=30 * 60,  # ✅ 30분
+            reentry_cooldown_sec=60 * 60,  # ✅ 30분
         )
         if sig_l:
             signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)

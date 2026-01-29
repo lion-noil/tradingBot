@@ -140,7 +140,7 @@ def get_long_entry_signal(
         open_items: List[Item],
         ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
-        reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
+        reentry_cooldown_sec: int = 60 * 60,
 ) -> Optional[Dict[str, Any]]:
 
 
@@ -231,7 +231,7 @@ def get_short_entry_signal(
         open_items: List[Item],
         ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
-        reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
+        reentry_cooldown_sec: int = 60 * 60,
 ) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
@@ -328,7 +328,7 @@ def get_exit_signal(
         momentum_threshold: float = 0.001,
 
         # ✅ 추가
-        scaleout_cooldown_sec: int = 30 * 60,
+        scaleout_cooldown_sec: int = 60 * 60,
         last_scaleout_ts_ms: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     if ma_threshold is None:
