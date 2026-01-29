@@ -395,15 +395,26 @@ def get_exit_signal(
             hit = False
             profit_sign = ""
         if hit:
-            target_id = oldest_id
+            if len(items) == 3:
+                # ✅ 3개면 oldest 1개만 털기
+                target_ids = [oldest_id]
+                mode = "RISK_CONTROL_3"
+                extra = {"risk_control": True, "close_oldest_only": True}
+
+            else:
+                # ✅ 4개면 전량 청산
+                target_ids = [sid for (sid, _, _) in items]
+                mode = "RISK_CONTROL_4"
+                extra = {"risk_control": True, "close_all": True}
+
             return {
                 "kind": "EXIT",
-                "mode": "RISK_CONTROL",
-                "targets": [target_id],
-                "anchor_open_signal_id": target_id,
+                "mode": mode,
+                "targets": target_ids,
+                "anchor_open_signal_id": target_ids[0],
                 "reasons": [
                     "RISK_CONTROL",
-                    f"#EXIT {fmt_targets_idx(open_idx, [target_id])}/{total_n}",
+                    f"#EXIT {fmt_targets_idx(open_idx, target_ids)}/{total_n}",
                     f"AVG_ENTRY {profit_sign}{PROFIT_TAKE_PCT * 100:.2f}%",
                 ],
                 "thresholds": {
@@ -416,8 +427,7 @@ def get_exit_signal(
                 "extra": {
                     "avg_entry_price": float(avg_entry),
                     "profit_take_pct": PROFIT_TAKE_PCT,
-                    "risk_control": True,
-                    "close_oldest_only": True,
+                    **extra,
                 },
             }
 
