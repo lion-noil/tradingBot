@@ -380,7 +380,7 @@ def get_exit_signal(
     # ------------------------------------------------------------
     # ✅ (NEW) RISK_CONTROL: open 3~4개면 평균진입가 대비 +0.3% 익절시 "마지막 진입 1개" 정리
     # ------------------------------------------------------------
-    PROFIT_TAKE_PCT = 0.003  # 0.3%
+    PROFIT_TAKE_PCT = 0.002  # 0.2%
 
     if len(items) in (3, 4):
         avg_entry = sum(float(ep) for (_, _, ep) in items) / max(len(items), 1)
