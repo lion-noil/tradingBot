@@ -142,6 +142,8 @@ def get_long_entry_signal(
         momentum_threshold: float = 0.001,
         reentry_cooldown_sec: int = 30 * 60,  # 30분 (첫진입/물타기 공통)
 ) -> Optional[Dict[str, Any]]:
+
+
     if price is None or ma100 is None or prev3_candle is None:
         return None
 
@@ -150,6 +152,10 @@ def get_long_entry_signal(
         return None
 
     items = _sorted_items(open_items)
+
+    MAX_OPEN = 4
+    if len(items) >= MAX_OPEN:
+        return None
 
     next_no = len(items) + 1
 
@@ -235,6 +241,10 @@ def get_short_entry_signal(
         return None
     entry_easing = easing_from_thr(ma_threshold)
     items = _sorted_items(open_items)
+
+    MAX_OPEN = 4
+    if len(items) >= MAX_OPEN:
+        return None
 
     next_no = len(items) + 1
 
@@ -353,6 +363,8 @@ def get_exit_signal(
     exit_easing = easing_from_thr(ma_threshold)  # ✅ 내부 계산
     ma_thr_eff = max(0.0, float(ma_threshold) - float(exit_easing))
 
+
+
     # 1) 절대 종료: newest 기준 (전체 청산)
     if oldest_elapsed_sec > y:
         age_label = f"⏱ old:{fmt_dur_smh_d(oldest_elapsed_sec)} new:{fmt_dur_smh_d(newest_elapsed_sec)}"
@@ -364,6 +376,52 @@ def get_exit_signal(
             "reasons": ["TIME_LIMIT", "CLOSE_OLDEST_ONLY", f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}" ,age_label],
             "thresholds": {"ma": ma_thr_eff, "exit_easing": exit_easing, "x": x, "y": y},
         }
+
+    # ------------------------------------------------------------
+    # ✅ (NEW) RISK_CONTROL: open 3~4개면 평균진입가 대비 +0.3% 익절시 "마지막 진입 1개" 정리
+    # ------------------------------------------------------------
+    PROFIT_TAKE_PCT = 0.003  # 0.3%
+
+    if len(items) in (3, 4):
+        avg_entry = sum(float(ep) for (_, _, ep) in items) / max(len(items), 1)
+
+        if side == "LONG":
+            hit = price >= avg_entry * (1 + PROFIT_TAKE_PCT)
+            profit_sign = "+"
+        elif side == "SHORT":
+            hit = price <= avg_entry * (1 - PROFIT_TAKE_PCT)
+            profit_sign = "-"
+        else:
+            hit = False
+            profit_sign = ""
+        if hit:
+            # ✅ 전량이 아니라 마지막 진입 1개만
+            newest_id, _, _ = items[-1]
+            return {
+                "kind": "EXIT",
+                "mode": "RISK_CONTROL",
+                "targets": [newest_id],
+                "anchor_open_signal_id": newest_id,
+                "reasons": [
+                    "RISK_CONTROL",
+                    f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",
+                    f"AVG_ENTRY {profit_sign}{PROFIT_TAKE_PCT * 100:.2f}%",
+                ],
+                "thresholds": {
+                    "profit_take_pct": PROFIT_TAKE_PCT,
+                    "avg_entry_price": float(avg_entry),
+                    "x": x, "y": y,
+                    "ma": ma_thr_eff,
+                    "exit_easing": exit_easing,
+                },
+                "extra": {
+                    "avg_entry_price": float(avg_entry),
+                    "profit_take_pct": PROFIT_TAKE_PCT,
+                    "risk_control": True,
+                    "close_latest_only": True,
+                },
+            }
+
 
     # ------------------------------------------------------------
     # 2) 구간(touch) 판정만 먼저 계산 (return은 아직!)
