@@ -114,7 +114,7 @@ def _sorted_items(open_items: List[Item]) -> List[Item]:
     return sorted(open_items or [], key=lambda x: x[1])
 
 
-def easing_from_thr(thr: float, *, div: float = 15.0, lo: float = 0.0, hi: float = 0.002) -> float:
+def easing_from_thr(thr: float, *, div: float = 15.0, lo: float = 0.0, hi: float = 0.003) -> float:
     """
     easing = thr / 30
     thr=0.006(0.6%) -> 0.0002(0.02%)
