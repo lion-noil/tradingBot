@@ -434,6 +434,10 @@ def build_ctx(engine: str) -> ExecContext:
         sym = (symbol or "").upper().strip()
         m = getattr(cfg, "entry_percent_by_symbol", None) or {}
         v = m.get(sym)
+        if v is None:
+            v = getattr(cfg, "entry_percent", None)  # ✅ 없으면 전역 entry_percent로 fallback
+        if v is None:
+            v = DEFAULT_ENTRY_PERCENT  # ✅ 최후 fallback
         return max(0.001, float(v))
 
     trade_executor = TradeExecutor(
@@ -624,6 +628,34 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         await writer.wait_closed()
         log.debug(f"[disconnect] {addr}")
 
+def _warmup_all_symbols(ctx: ExecContext) -> None:
+    # 가능한 심볼 목록: 실행/수신 필터에 걸린 것 + cfg.symbols
+    cfg = load_engine_config(ctx.engine)
+
+    symbols = set()
+    symbols.update(EX or set())
+    symbols.update(RX or set())
+    symbols.update((cfg.symbols or []))
+
+    symbols = sorted({s.upper().strip() for s in symbols if s and s.strip()})
+    if not symbols:
+        system_logger.info(f"[rules] warmup skipped: no symbols (engine={ctx.engine})")
+        return
+
+    ok, fail = [], []
+    for sym in symbols:
+        try:
+            warmup_symbol_rules(ctx, sym)
+            ok.append(sym)
+        except Exception as e:
+            fail.append((sym, str(e)))
+
+    system_logger.info(
+        f"[rules] warmup done engine={ctx.engine} ok={len(ok)} fail={len(fail)} "
+        f"ok_syms={ok[:10]}{'...' if len(ok) > 10 else ''}"
+    )
+    if fail:
+        system_logger.warning(f"[rules] warmup failed details={fail[:10]}")
 
 async def main():
     log.debug("=== Local Executor ===")
@@ -637,6 +669,9 @@ async def main():
     # ✅ 여기서 초기 snapshot
     try:
         ctx = get_ctx(DEFAULT_ENGINE)
+    # ✅ 부팅 시 rules warmup 강제 + 확인 로그
+        _warmup_all_symbols(ctx)
+
         system_logger.debug(
             build_asset_log_with_lots(
                 wallet=(ctx.asset.get("wallet") or {}),
