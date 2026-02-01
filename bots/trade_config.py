@@ -255,7 +255,6 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
-        symbols = ("BTCUSD",)
 
     entry_percent = 1.0
     if entry_percent_by_symbol is None:
