@@ -77,7 +77,7 @@ class BurstWarningTerminator(logging.Handler):
         _kill()
 
 
-tg_bot = os.getenv("TELEGRAM_BOT_TOKEN_bybitSignal")
+tg_bot = os.getenv("EXEC_A1_TELEGRAM_BOT_TOKEN")
 tg_chat = os.getenv("TELEGRAM_CHAT_ID")
 # ── 로거 설정 ───────────────────────────────────
 system_logger = setup_logger(

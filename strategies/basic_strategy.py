@@ -116,9 +116,9 @@ def _sorted_items(open_items: List[Item]) -> List[Item]:
 
 def easing_from_thr(thr: float, *, div: float = 15.0, lo: float = 0.0, hi: float = 0.003) -> float:
     """
-    easing = thr / 30
-    thr=0.006(0.6%) -> 0.0002(0.02%)
-    thr=0.03(3.0%)  -> 0.001 (0.10%)
+    easing = thr / 15
+    thr=0.006(0.6%) -> 0.0002(0.04%)
+    thr=0.03(3.0%)  -> 0.001 (0.20%)
     """
     try:
         t = float(thr)
