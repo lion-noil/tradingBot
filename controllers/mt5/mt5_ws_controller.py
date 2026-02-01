@@ -379,7 +379,7 @@ if __name__ == "__main__":
 
     print("\n[1] Mt5WebSocketController init test (starts background thread)")
     try:
-        symbols = ("EURUSD", "XAUUSD")  # 필요하면 바꿔
+        symbols = ("EURUSD", "XAUUSD")
         ws = Mt5WebSocketController(symbols=symbols, system_logger=None)
 
         print("ws_url:", ws.ws_url)

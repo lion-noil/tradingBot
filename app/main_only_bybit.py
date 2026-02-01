@@ -11,6 +11,7 @@ if sys.platform.startswith("win"):
 from fastapi import FastAPI
 from pydantic import BaseModel
 from asyncio import Queue
+from utils.local_action_sender import LocalActionSender
 
 from bots.trade_bot import TradeBot
 from bots.trade_config import make_bybit_config, SecretsConfig
@@ -76,6 +77,8 @@ class BurstWarningTerminator(logging.Handler):
         _kill()
 
 
+tg_bot = os.getenv("TELEGRAM_BOT_TOKEN_bybitSignal")
+tg_chat = os.getenv("TELEGRAM_CHAT_ID")
 # ── 로거 설정 ───────────────────────────────────
 system_logger = setup_logger(
     "system",
@@ -86,6 +89,8 @@ system_logger = setup_logger(
     telegram_level=logging.INFO,
     exclude_sig_in_file=False,
     telegram_mode="both",
+    telegram_bot_token=tg_bot,      # ✅ 주입
+    telegram_chat_id=tg_chat,       # ✅ 주입
 )
 system_logger.addHandler(BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2))
 
@@ -100,6 +105,8 @@ trading_logger = setup_logger(
     signals_filename="signals.jsonl",
     exclude_sig_in_file=False,
     telegram_mode="both",
+    telegram_bot_token=tg_bot,      # ✅ 주입
+    telegram_chat_id=tg_chat,       # ✅ 주입
 )
 
 # ── FastAPI 앱 ───────────────────────────────────
@@ -168,6 +175,7 @@ async def startup_event():
 
     bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger)
     bybit_rest_controller = BybitRestController(system_logger=system_logger)
+    local_sender = LocalActionSender(host="127.0.0.1", port=9009)
 
     bot_bybit = TradeBot(
         bybit_ws_controller,
@@ -178,6 +186,7 @@ async def startup_event():
         symbols=symbols_bybit,
         signal_only=getattr(cfg_bybit, "signal_only", False),
         config=cfg_bybit,
+        action_sender=local_sender,   # ✅ 이거 추가
     )
 
     asyncio.create_task(bot_loop(bot_bybit, bybit_ws_controller, "BYBIT"))

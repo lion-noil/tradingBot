@@ -12,7 +12,7 @@ _HEADER_MA_RE = re.compile(
 
 # disabled 헤더: [SYM] 🚫 disabled (...)
 _HEADER_DISABLED_RE = re.compile(
-    r"^\[(?P<sym>[A-Z0-9]+)\]\s+🚫\s+disabled\b"
+    r"^\[(?P<sym>[A-Z0-9]+)\]\s+🚫\s+disabled(?:\s+\(thr\((?P<thr>[0-9.]+)\%\))?"
 )
 
 KST = timezone(timedelta(hours=9))
@@ -165,8 +165,33 @@ def build_full_status_log(
     ma_check_enabled: Optional[Dict[str, bool]] = None,  # ✅ 추가
     min_ma_threshold: Optional[Union[Dict[str, Optional[float]], float]] = None,  # ✅ 추가
 ) -> str:
-    lines: List[str] = [f"\n💰 총 자산: {total_usdt:.2f} {currency}"]
+    return build_market_status_log(
+        symbols=symbols,
+        jump_state=jump_state,
+        ma_threshold=ma_threshold,
+        now_ma100=now_ma100,
+        get_price=get_price,
+        ma_check_enabled=ma_check_enabled,
+        min_ma_threshold=min_ma_threshold,
+    )
 
+
+def extract_status_summary(text: str, fallback_ma_threshold_pct=None) -> Dict[str, Any]:
+    return extract_market_status_summary(text, fallback_ma_threshold_pct=fallback_ma_threshold_pct)
+
+def should_log_update(old_summary, new_summary, *_, **__) -> Tuple[bool, Optional[str]]:
+    return should_log_update_market(old_summary, new_summary)
+
+def build_market_status_log(
+    symbols: List[str],
+    jump_state: Dict[str, Dict[str, Any]],
+    ma_threshold: Dict[str, Optional[float]],
+    now_ma100: Dict[str, Optional[float]],
+    get_price: Callable[[str], Optional[float]],
+    ma_check_enabled: Optional[Dict[str, bool]] = None,
+    min_ma_threshold: Optional[Union[Dict[str, Optional[float]], float]] = None,
+) -> str:
+    lines: List[str] = ["\n📡 MARKET STATUS"]
     for sym in symbols:
         lines.append(
             make_status_line(
@@ -179,22 +204,11 @@ def build_full_status_log(
                 min_ma_threshold=min_ma_threshold,
             )
         )
-
-        pos_lines = format_position_lines(
-            get_price=get_price,
-            taker_fee_rate=taker_fee_rate,
-            positions_for_symbol=(positions_by_symbol or {}).get(sym, {}),
-            symbol=sym,
-        ).rstrip("\n")
-
-        lines.append(pos_lines)
-
     return "\n".join(lines).rstrip()
 
-
-def extract_status_summary(
+def extract_market_status_summary(
     text: str,
-    fallback_ma_threshold_pct: Optional[Union[Dict[str, Optional[float]], float]] = None
+    fallback_ma_threshold_pct: Optional[Union[Dict[str, Optional[float]], float]] = None,
 ) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
     cur_sym: Optional[str] = None
@@ -205,19 +219,14 @@ def extract_status_summary(
         md = _HEADER_DISABLED_RE.match(line)
         if md:
             cur_sym = md.group("sym")
-            summary.setdefault(
-                cur_sym, {"jump": "—", "enabled": None, "ma_thr": None, "LONG": None, "SHORT": None}
-            )
+            summary.setdefault(cur_sym, {"jump": "—", "enabled": None, "ma_thr": None})
             summary[cur_sym]["enabled"] = False
-            # disabled 라인에서는 ma_thr 파싱하지 않음(원하면 regex 확장 가능)
             continue
 
         m = _HEADER_MA_RE.match(line)
         if m:
             cur_sym = m.group("sym")
-            summary.setdefault(
-                cur_sym, {"jump": m.group("emoji"), "enabled": None, "ma_thr": None, "LONG": None, "SHORT": None}
-            )
+            summary.setdefault(cur_sym, {"jump": m.group("emoji"), "enabled": None, "ma_thr": None})
             summary[cur_sym]["enabled"] = True
             summary[cur_sym]["jump"] = m.group("emoji")
             try:
@@ -226,32 +235,12 @@ def extract_status_summary(
                 summary[cur_sym]["ma_thr"] = None
             continue
 
-        if cur_sym:
-            pm = _POS_RE.match(line)
-            if pm:
-                side = pm.group("side")
-                qty = float(pm.group("qty") or 0.0)
-                pct = float(pm.group("pct") or 0.0)
-                summary[cur_sym][side] = {"q": round(qty, 6), "pr": round(pct, 1)}
-
-    # fallback(단위: %). 기존 로직 유지.
-    if fallback_ma_threshold_pct:
-        if isinstance(fallback_ma_threshold_pct, dict):
-            for sym, v in summary.items():
-                if v.get("ma_thr") is None:
-                    raw_val = fallback_ma_threshold_pct.get(sym)
-                    if raw_val is not None:
-                        v["ma_thr"] = float(raw_val) * 1.0
-        # float인 경우는 기존 코드의 타입 힌트와 불일치라서 그냥 무시
-
     return summary
 
 
-def should_log_update(
+def should_log_update_market(
     old_summary: Optional[Dict[str, Any]],
     new_summary: Dict[str, Any],
-    qty_thr: float = 0.0001,
-    rate_thr: float = 1.0,
 ) -> Tuple[bool, Optional[str]]:
     if old_summary is None:
         return True, "initial snapshot"
@@ -264,39 +253,18 @@ def should_log_update(
 
     symbols = set(new_summary.keys()) | set(old_summary.keys())
     for sym in symbols:
-        n = new_summary.get(sym, {"jump": "—", "enabled": None, "ma_thr": None, "LONG": None, "SHORT": None})
-        o = old_summary.get(sym, {"jump": "—", "enabled": None, "ma_thr": None, "LONG": None, "SHORT": None})
+        n = new_summary.get(sym, {"jump": "—", "enabled": None, "ma_thr": None})
+        o = old_summary.get(sym, {"jump": "—", "enabled": None, "ma_thr": None})
 
-        # ✅ enabled/disabled 토글 감지
         ne, oe = n.get("enabled"), o.get("enabled")
         if (ne is None) != (oe is None) or (ne is not None and oe is not None and bool(ne) != bool(oe)):
             return True, f"{sym} MA check {'ENABLED' if ne else 'DISABLED'}"
 
-        # MA threshold 값 변화(단위: %)
         nth, oth = _as_float(n.get("ma_thr")), _as_float(o.get("ma_thr"))
         if (nth is None) != (oth is None) or (nth is not None and oth is not None and nth != oth):
             return True, f"{sym} MA threshold Δ=({oth}→{nth}%)"
 
-        # jump emoji 변화
         if n.get("jump") != o.get("jump"):
             return True, f"{sym} jump {o.get('jump')}→{n.get('jump')}"
-
-        # 포지션 등장/소멸
-        for side in ("LONG", "SHORT"):
-            if (n.get(side) is None) != (o.get(side) is None):
-                mode = "appeared" if n.get(side) else "disappeared"
-                return True, f"{sym} {side} position {mode}"
-
-        # qty / 수익률(%) 변화
-        for side in ("LONG", "SHORT"):
-            npos, opos = n.get(side), o.get(side)
-            if not npos or not opos:
-                continue
-            nq, npr = npos.get("q"), npos.get("pr")
-            oq, opr = opos.get("q"), opos.get("pr")
-            if nq is not None and oq is not None and abs(float(nq) - float(oq)) >= qty_thr:
-                return True, f"{sym} {side} qty Δ=({oq}→{nq})"
-            if npr is not None and opr is not None and abs(float(npr) - float(opr)) >= rate_thr:
-                return True, f"{sym} {side} PnL Δ=({opr}%→{npr}%)"
 
     return False, None

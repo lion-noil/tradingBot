@@ -177,7 +177,7 @@ class ExecutionEngine:
         if action == "OPEN":
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 주문 체결 완료 | ex_lot_id:{ex_lot_id} | avg:{filled_avg_price:.2f} | qty:{qty_str}"
+                    f"➕ {side} 진입 완료 | ex_lot_id:{ex_lot_id} | avg:{filled_avg_price:.2f} | qty:{qty_str}"
                 )
             return
 
@@ -185,7 +185,7 @@ class ExecutionEngine:
         if not position_detail or "avg_price" not in position_detail:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | filled:{filled_avg_price:.2f} | qty:{qty_str} | (avg_price 없음)"
+                    f"➖ {side} 청산 완료| ex_lot_id:{ex_lot_id} | filled:{filled_avg_price:.2f} | qty:{qty_str} | (avg_price 없음)"
                 )
             return
 
@@ -195,7 +195,7 @@ class ExecutionEngine:
         if exec_qty <= 0:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
+                    f"➖ {side} 청산 완료| ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
                     f"qty:{qty_str} | PnL 스킵(qty missing)"
                 )
             return
@@ -204,7 +204,7 @@ class ExecutionEngine:
         if filled_avg_price <= 0:
             if self.trading_logger:
                 self.trading_logger.info(
-                    f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:UNKNOWN | "
+                    f"➖ {side} 청산 완료| ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:UNKNOWN | "
                     f"qty:{qty_str} | PnL 스킵(avgPrice missing)"
                 )
             return
@@ -220,7 +220,7 @@ class ExecutionEngine:
 
         if self.trading_logger:
             self.trading_logger.info(
-                f"✅ {side} 청산 | ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
+                f"➖ {side} 청산 완료| ex_lot_id:{ex_lot_id} | avg:{avg_price:.2f} / filled:{filled_avg_price:.2f} | "
                 f"qty:{qty_str} | PnL(net):{profit_net:.2f} | gross:{profit_gross:.2f}, fee:{total_fee:.2f} | "
                 f"rate:{profit_rate:.2f}%"
             )

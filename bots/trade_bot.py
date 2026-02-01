@@ -13,6 +13,12 @@ from .market.indicators import IndicatorState, bind_refresher
 from .market.jump_reporting import JumpService
 from .market.market_sync import MarketSync, MarketSyncConfig
 from .state.bot_state import BotState
+from .reporting.reporting import (
+    build_market_status_log,
+    extract_market_status_summary,
+    should_log_update_market,
+)
+
 from .reporting.status_reporter import StatusReporter, StatusReporterDeps
 from .trading.signal_processor import SignalProcessor, SignalProcessorDeps, TradeAction
 from .trading.trade_executor import TradeExecutor, TradeExecutorDeps
@@ -37,6 +43,7 @@ class TradeBot:
             ws_controller,
             rest_controller,
             manual_queue,
+            action_sender=None,
             system_logger=None,
             trading_logger=None,
             symbols=("BTCUSDT",),
@@ -46,6 +53,7 @@ class TradeBot:
         self.ws = ws_controller
         self.rest = rest_controller
         self.manual_queue = manual_queue
+        self.action_sender = action_sender
         self.system_logger = system_logger
         self.trading_logger = trading_logger
         self.symbols: List[str] = list(symbols)
@@ -333,17 +341,17 @@ class TradeBot:
         self.reporter = StatusReporter(
             system_logger=self.system_logger,
             deps=StatusReporterDeps(
-                get_wallet=lambda: (self.state.asset.get("wallet") or {}),
                 get_symbols=lambda: self.symbols,
                 get_jump_state=lambda: self.jump_service.get_state_map(),
                 get_ma_threshold=lambda: self.state.ma_threshold,
                 get_now_ma100=lambda: self.state.now_ma100,
-                get_positions_by_symbol=lambda: (self.state.asset.get("positions") or {}),
                 get_price=lambda s, now_ts: self.market.get_price(s, now_ts),
-                get_taker_fee_rate=lambda: getattr(self.exec, "TAKER_FEE_RATE", 0.00055),
                 get_ma_check_enabled=lambda: self.state.ma_check_enabled,
                 get_min_ma_threshold=lambda: self.state.min_ma_threshold,
             ),
+            build_fn=build_market_status_log,
+            extract_fn=extract_market_status_summary,
+            should_fn=should_log_update_market,
         )
 
     def _warmup_symbol_rules(self) -> None:
@@ -462,6 +470,19 @@ class TradeBot:
                 actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
                 for act in actions:
+
+                    # ✅ 로컬로 액션 발행 (테스트용)
+                    if self.action_sender is not None:
+                        await self.action_sender.send({
+                            "ts_ms": int(time.time() * 1000),
+                            "symbol": act.symbol,
+                            "action": act.action,  # ENTRY/EXIT
+                            "side": (act.side or "").upper() if act.side else None,
+                            "price": act.price,
+                            "signal_id": act.signal_id,
+                            "close_open_signal_id": getattr(act, "close_open_signal_id", None),
+                        })
+                    """
                     if act.action == "ENTRY":
                         if act.price is None:
                             continue
@@ -495,6 +516,8 @@ class TradeBot:
                         await self.trade_executor.close_position(
                             act.symbol, act.side, lot_id, exit_signal_id=act.signal_id
                         )
+                    """
+
             except Exception as e:
                 if self.system_logger:
                     self.system_logger.exception(f"[{symbol}] run_once error: {e}")

@@ -170,7 +170,7 @@ class TradeConfig:
     # 레버리지/진입
     leverage: int = 50
     entry_percent: float = 3  # leverage * entry_percent 가 한번 진입 퍼센트: 50 x 3 = 150% 진입
-    max_effective_leverage: float = 30.0   # 보유노션/지갑 최대 배수 (가드)
+    max_effective_leverage: float = 10.0   # 보유노션/지갑 최대 배수 (가드)
 
     # ✅ 심볼별 진입 퍼센트 (없으면 entry_percent 사용)
     entry_percent_by_symbol: Dict[str, float] = field(default_factory=dict)
@@ -255,6 +255,7 @@ def make_mt5_signal_config(
     """
     if symbols is None:
         symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
+        symbols = ("BTCUSD",)
 
     entry_percent = 1.0
     if entry_percent_by_symbol is None:
@@ -270,7 +271,7 @@ def make_mt5_signal_config(
         }
 
     cfg = TradeConfig(
-        name="mt5_signal",
+        name="mt5",
         symbols=list(symbols),
 
         ws_stale_sec=30.0,
@@ -281,7 +282,7 @@ def make_mt5_signal_config(
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
 
-        max_effective_leverage=30.0,
+        max_effective_leverage=10.0,
 
         # 인디케이터 관련
         indicator_min_thr=indicator_min_thr,
@@ -311,7 +312,7 @@ def make_bybit_config(
     # 레버리지/진입 관련 (기존 Bybit 기본값)
     leverage: int = 50,
     entry_percent: float = 3.0,
-    max_effective_leverage: float = 30.0,
+    max_effective_leverage: float = 10.0,
 
     # Bybit는 기본적으로 주문까지 수행하므로 기본 False
     signal_only: bool = False,

@@ -124,6 +124,11 @@ def setup_logger(
     telegram_level: int = logging.INFO,
     write_signals_file: bool = False,             # ✅ trading 전용으로만 True
     signals_filename: str = "signals.jsonl",
+
+    # ✅ 추가: 호출부에서 주입
+    telegram_bot_token: str | None = None,
+    telegram_chat_id: str | None = None,
+
     exclude_sig_in_file: bool = True,           # ✅ 추가
     telegram_mode: str = "sig_only",            # ✅ 추가: 'sig_only' | 'human_only' | 'both'
 ) -> logging.Logger:
@@ -167,20 +172,14 @@ def setup_logger(
 
     # 텔레그램
     if enable_telegram:
-        bot = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat = os.getenv("TELEGRAM_CHAT_ID")
+        bot = telegram_bot_token
+        chat = telegram_chat_id
+
         if bot and chat:
             th = TelegramLogHandler(bot, chat, level=telegram_level)
             th.setFormatter(logging.Formatter("%(message)s"))
             if telegram_mode == "sig_only":
                 th.addFilter(OnlySIG())
-            elif telegram_mode == "human_only":
-                th.addFilter(ExcludeSIG())
-            elif telegram_mode == "both":
-                pass  # 필터 없음 → 둘 다
-            else:
-                # 잘못된 값이면 안전하게 사람용만
-                th.addFilter(ExcludeSIG())
             logger.addHandler(th)
 
     return logger

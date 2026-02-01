@@ -331,3 +331,12 @@ class LotsIndex:
         entry_signal_id = self._entry_by_lot.pop(lot_id, "")
         if entry_signal_id:
             self._by_entry_signal.pop((symbol, side, entry_signal_id), None)
+
+    def list_open_items(self, symbol: str, side: str) -> List[LotCacheItem]:
+        sym = (symbol or "").upper().strip()
+        sd = (side or "").upper().strip()
+        return list(self._items.get((sym, sd)) or [])
+
+    def list_open_symbols(self) -> List[str]:
+        syms = {sym for (sym, _side) in (self._items.keys() or [])}
+        return sorted(list(syms))

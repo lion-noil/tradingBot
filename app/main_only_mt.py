@@ -3,6 +3,7 @@ import sys
 from typing import Literal
 import signal, os, asyncio, logging, threading, time
 from collections import deque
+from utils.local_action_sender import LocalActionSender
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -72,6 +73,8 @@ class BurstWarningTerminator(logging.Handler):
             pass
         _kill()
 
+tg_bot = os.getenv("TELEGRAM_BOT_TOKEN_mt5Signal")
+tg_chat = os.getenv("TELEGRAM_CHAT_ID")
 
 system_logger = setup_logger(
     "system",
@@ -82,8 +85,10 @@ system_logger = setup_logger(
     telegram_level=logging.INFO,
     exclude_sig_in_file=False,
     telegram_mode="both",
+    telegram_bot_token=tg_bot,      # ✅ 주입
+    telegram_chat_id=tg_chat,       # ✅ 주입
 )
-system_logger.addHandler(BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2))
+system_logger.addHandler(BurstWarningTerminator(threshold=10, window_sec=10.0, grace_sec=0.2))
 
 trading_logger = setup_logger(
     "trading",
@@ -96,6 +101,8 @@ trading_logger = setup_logger(
     signals_filename="signals.jsonl",
     exclude_sig_in_file=False,
     telegram_mode="both",
+    telegram_bot_token=tg_bot,      # ✅ 주입
+    telegram_chat_id=tg_chat,       # ✅ 주입
 )
 
 app = FastAPI()
@@ -160,6 +167,7 @@ async def startup_event():
 
     mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger)
     mt5_rest_controller = Mt5RestController(system_logger=system_logger)
+    local_sender = LocalActionSender(host="127.0.0.1", port=9010)
 
     bot_mt5 = TradeBot(
         mt5_ws_controller,
@@ -170,6 +178,7 @@ async def startup_event():
         symbols=symbols_mt5,
         signal_only=getattr(cfg_mt5, "signal_only", True),  # ✅ 너의 최신 main과 동일하게
         config=cfg_mt5,
+        action_sender=local_sender,  # ✅ 추가
     )
 
     asyncio.create_task(bot_loop(bot_mt5, mt5_ws_controller, "MT5"))
@@ -177,4 +186,5 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app.main_only_mt:app", host="127.0.0.1", port=8002, reload=False)
