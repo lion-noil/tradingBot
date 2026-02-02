@@ -639,7 +639,7 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
 
     symbols = sorted({s.upper().strip() for s in symbols if s and s.strip()})
     if not symbols:
-        system_logger.info(f"[rules] warmup skipped: no symbols (engine={ctx.engine})")
+        system_logger.debug(f"[rules] warmup skipped: no symbols (engine={ctx.engine})")
         return
 
     ok, fail = [], []
@@ -650,7 +650,7 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
         except Exception as e:
             fail.append((sym, str(e)))
 
-    system_logger.info(
+    system_logger.debug(
         f"[rules] warmup done engine={ctx.engine} ok={len(ok)} fail={len(fail)} "
         f"ok_syms={ok[:10]}{'...' if len(ok) > 10 else ''}"
     )
