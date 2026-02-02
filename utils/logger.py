@@ -55,7 +55,6 @@ class TelegramLogHandler(logging.Handler):
                     ma100 = obj.get("ma100")
                     d_pct = obj.get("ma_delta_pct") or 0
 
-                    sym_u = (symbol or "").upper()
                     dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
 
                     # ✅ reasons[0] 추출
