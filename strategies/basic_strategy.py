@@ -392,17 +392,17 @@ def get_exit_signal(
     except Exception:
         oldest_entry = 0.0
 
-    def _sl_tp_factor_by_age(elapsed_sec: int) -> float:
+    def _sl_tp_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
         s = int(elapsed_sec or 0)
-        if s < 60 * 60:  # < 1h  → SL/TP 안함
-            return 0.0
-        if s >= 3 * 24 * 60 * 60:  # 3d+
-            return 1.0 / 3.0
-        if s >= 24 * 60 * 60:  # 24h+
-            return 1.0 / 2.0
-        return 1.0  # 1h~24h
+        if s < 60 * 60:
+            return ("NO_SLTP", 0.0)
+        if s >= 3 * 24 * 60 * 60:
+            return ("3D", 1.0 / 3.0)
+        if s >= 24 * 60 * 60:
+            return ("1D", 1.0 / 2.0)
+        return ("1H", 1.0)
 
-    age_factor = _sl_tp_factor_by_age(oldest_elapsed_sec)
+    age_band, age_factor = _sl_tp_policy_by_age(oldest_elapsed_sec)
 
     # ✅ 1시간 이전이면 SL/TP 스킵
     if age_factor > 0.0 and oldest_entry > 0 and price is not None:
@@ -417,6 +417,8 @@ def get_exit_signal(
         tp_pct = float(ma_thr_eff) * float(age_factor)
         sl_pct = float(ma_thr_eff) * float(age_factor)
 
+        held_txt = fmt_dur_smh_d(oldest_elapsed_sec)
+
         # 손절 우선
         if pnl_pct <= -sl_pct:
             return {
@@ -426,16 +428,19 @@ def get_exit_signal(
                 "anchor_open_signal_id": oldest_id,
                 "reasons": [
                     "STOP_LOSS",
+                    f"SL({age_band})",
                     "CLOSE_OLDEST_ONLY",
                     f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
+                    f"held={held_txt}",
                     f"OLDEST_PNL -{fmt_pct2(sl_pct)}",
                     f"pnl={fmt_pct2(pnl_pct)}",
-                    f"age_factor={age_factor:.4f}",
                 ],
                 "thresholds": {
                     "sl_pct": sl_pct,
                     "tp_pct": tp_pct,
                     "age_factor": float(age_factor),
+                    "age_band": age_band,  # ✅ "1H"/"1D"/"3D"
+                    "held_sec": int(oldest_elapsed_sec),
                     "oldest_entry_price": oldest_entry,
                     "ma": ma_thr_eff,
                     "exit_easing": exit_easing,
@@ -446,6 +451,9 @@ def get_exit_signal(
                     "pnl_pct": pnl_pct,
                     "close_oldest_only": True,
                     "age_factor": float(age_factor),
+                    "age_band": age_band,  # ✅ "1H"/"1D"/"3D"
+                    "held_sec": int(oldest_elapsed_sec),
+                    "sl_tp_tag": f"SL({age_band})",  # ✅ 로그/분석용(선택)
                 },
             }
 
@@ -457,16 +465,19 @@ def get_exit_signal(
                 "anchor_open_signal_id": oldest_id,
                 "reasons": [
                     "TAKE_PROFIT",
+                    f"TP({age_band})",
                     "CLOSE_OLDEST_ONLY",
                     f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
+                    f"held={held_txt}",
                     f"OLDEST_PNL +{fmt_pct2(tp_pct)}",
                     f"pnl={fmt_pct2(pnl_pct)}",
-                    f"age_factor={age_factor:.4f}",
                 ],
                 "thresholds": {
                     "sl_pct": sl_pct,
                     "tp_pct": tp_pct,
                     "age_factor": float(age_factor),
+                    "age_band": age_band,  # ✅ "1H"/"1D"/"3D"
+                    "held_sec": int(oldest_elapsed_sec),
                     "oldest_entry_price": oldest_entry,
                     "ma": ma_thr_eff,
                     "exit_easing": exit_easing,
@@ -477,6 +488,9 @@ def get_exit_signal(
                     "pnl_pct": pnl_pct,
                     "close_oldest_only": True,
                     "age_factor": float(age_factor),
+                    "age_band": age_band,  # ✅ "1H"/"1D"/"3D"
+                    "held_sec": int(oldest_elapsed_sec),
+                    "sl_tp_tag": f"TP({age_band})",  # ✅ 로그/분석용(선택)
                 },
             }
 
