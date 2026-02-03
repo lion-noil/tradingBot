@@ -491,7 +491,7 @@ def build_ctx(engine: str) -> ExecContext:
         system_logger=system_logger,
         trading_logger=trading_logger,
         taker_fee_rate=0.00055,
-        engine_name=engine,   # BYBIT / MT5
+        engine_tag=engine,
     )
 
     ctx.trade_executor = trade_executor
