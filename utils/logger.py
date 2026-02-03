@@ -1,5 +1,22 @@
 import logging, os, json, html, requests
 from pathlib import Path
+
+import time
+from collections import defaultdict
+
+class _TelegramRateLimiter:
+    def __init__(self, cooldown_sec: float = 10.0):
+        self.cooldown_sec = cooldown_sec
+        self._last_sent = defaultdict(float)
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        last = self._last_sent[key]
+        if now - last < self.cooldown_sec:
+            return False
+        self._last_sent[key] = now
+        return True
+
 class OnlySIG(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -39,6 +56,7 @@ class TelegramLogHandler(logging.Handler):
         super().__init__(level)
         self.bot_token = bot_token
         self.chat_id = chat_id
+        self._rl = _TelegramRateLimiter(cooldown_sec=10.0)  # ✅ 추가
 
     def emit(self, record):
         try:
@@ -97,10 +115,18 @@ class TelegramLogHandler(logging.Handler):
                         f"({pct_txt})"
                     )
 
+                    key = f"SIG:{symbol}:{kind}:{side}"
+                    if not self._rl.allow(key):
+                        return
+
                     send_telegram_message(self.bot_token, self.chat_id, text)
                     return
                 except Exception as e:
                     print(f"[Telegram prettify failed] {e} | raw={msg}")
+            key = f"LOG:{record.levelname}"
+            if not self._rl.allow(key):
+                return
+
             send_telegram_message(self.bot_token, self.chat_id, self.format(record))
         except Exception as e:
             print(f"TelegramLogHandler Error: {e}")

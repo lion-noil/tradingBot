@@ -56,6 +56,11 @@ class MarketSync:
         self._subscribed = set()
         self._last_backfill_at = {}  # ✅ symbol -> time.time() (epoch sec)
 
+        # ✅ 전역 백필 폭주 방지 (최소 변경)
+        self._global_last_backfill_at = 0.0   # 전역 쿨다운(초)
+        self._backfill_inflight = set()       # 심볼 중복 백필 방지
+
+
         # 내부 상태(TradeBot에서 빼기 대상)
         self._rest_fallback_on = {}
         self._stale_counts = {}
@@ -103,6 +108,30 @@ class MarketSync:
             return False
         self._last_backfill_at[symbol] = float(now_ts)
         return True
+
+
+    def _can_backfill_global_now(self, now_ts: float, cooldown_sec: float = 3.0) -> bool:
+        """
+        심볼이 여러 개일 때 stale가 동시에 터지면
+        REST 백필이 연달아/다발로 나가면서 네트워크/DNS를 더 악화시킬 수 있음.
+        -> 프로세스 내 전역 쿨다운으로 '버스트'를 줄인다.
+        """
+        last = float(self._global_last_backfill_at or 0.0)
+        if (now_ts - last) < float(cooldown_sec):
+            return False
+        self._global_last_backfill_at = float(now_ts)
+        return True
+
+    def _enter_backfill(self, symbol: str) -> bool:
+        """같은 심볼에 대한 중복 백필 방지"""
+        if symbol in self._backfill_inflight:
+            return False
+        self._backfill_inflight.add(symbol)
+        return True
+
+    def _exit_backfill(self, symbol: str) -> None:
+        self._backfill_inflight.discard(symbol)
+
 
     def _infer_last_closed_minute_from_engine(self, symbol: str) -> Optional[int]:
         try:
@@ -165,16 +194,39 @@ class MarketSync:
             if self.system_logger:
                 self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
 
-        # ✅ 쿨다운: 너무 자주 REST 때리지 않기
+        # ✅ 심볼별 쿨다운
         if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
             return
 
-        self.rest.update_candles(
-            self.candle.get_candles(symbol),
-            symbol=symbol,
-            count=self.cfg.candles_num
-        )
-        self.refresh_indicators(symbol)
+        # ✅ 전역 쿨다운 (연쇄 백필 버스트 방지)
+        if not self._can_backfill_global_now(now_ts, cooldown_sec=3.0):
+            return
+
+        # ✅ 같은 심볼 중복 백필 방지
+        if not self._enter_backfill(symbol):
+            return
+
+        try:
+            self.rest.update_candles(
+                self.candle.get_candles(symbol),
+                symbol=symbol,
+                count=self.cfg.candles_num
+            )
+            try:
+                self.refresh_indicators(symbol)
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.warning(
+                        f"[{symbol}] refresh_indicators failed: {e}"
+                    )
+        except Exception as e:
+            # 네트워크/DNS 흔들릴 때 예외가 바깥으로 퍼지는 걸 방지
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"❌ [REST backfill] ({symbol}) failed: {e}"
+                )
+        finally:
+            self._exit_backfill(symbol)
 
     def _apply_confirmed_kline_if_any(self, symbol: str) -> bool:
         get_ck = getattr(self.ws, "get_last_confirmed_kline", None)
