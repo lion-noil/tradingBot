@@ -184,7 +184,6 @@ async def startup_event():
         system_logger=system_logger,
         trading_logger=trading_logger,
         symbols=symbols_bybit,
-        signal_only=getattr(cfg_bybit, "signal_only", False),
         config=cfg_bybit,
         action_sender=local_sender,   # ✅ 이거 추가
     )

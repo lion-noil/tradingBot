@@ -4,14 +4,13 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Any, Dict, List
 
 from .ws_freshness import ws_is_fresh
-from .bootstrap import bootstrap_candles_for_symbol, bootstrap_all_symbols  # ✅ 추가
+from .bootstrap import bootstrap_candles_for_symbol
 import uuid
 import time  # 파일 상단에 추가
 
 OnPriceFn = Callable[[str, float, Optional[float]], None]
 RefreshFn = Callable[[str], None]
 GetThrFn = Callable[[str], Optional[float]]
-SaveAssetFn = Callable[[Dict[str, Any], Optional[str]], None]  # ✅ 있으면 가독성 좋아짐
 
 @dataclass
 class MarketSyncConfig:
@@ -45,7 +44,6 @@ class MarketSync:
             jump_service: Optional[Any] = None,  # ✅ 추가
             get_ma_threshold: Optional[GetThrFn] = None,  # ✅ 추가
     ):
-        self._id = uuid.uuid4().hex[:6]
         self.ws = ws
         self.rest = rest
         self.candle = candle_engine
@@ -57,27 +55,13 @@ class MarketSync:
         self.cfg = cfg
         self._subscribed = set()
         self._last_backfill_at = {}  # ✅ symbol -> time.time() (epoch sec)
-        self._started_at = time.time()  # ✅ 추가
 
         # 내부 상태(TradeBot에서 빼기 대상)
         self._rest_fallback_on = {}
         self._stale_counts = {}
         self._last_closed_minute = {}
 
-    def bootstrap(
-            self,
-            *,
-            symbols: List[str],
-            signal_only: bool,
-            leverage: float,
-            asset: Dict[str, Any],
-            save_asset: Optional[SaveAssetFn] = None
-    ) -> Dict[str, Any]:
-        """
-        TradeBot의 부트스트랩(초기 캔들/지표 + 자산/포지션 로드)을 여기로 이관.
-        - signal_only=True : 캔들/지표만
-        - signal_only=False: 자산/포지션 + 캔들/지표
-        """
+    def bootstrap(self, *, symbols: List[str]) -> None:
         # ✅ 0) WS 구독은 MarketSync 책임 (중복 구독 방지)
         need = [s for s in symbols if s not in self._subscribed]
         if need:
@@ -92,35 +76,19 @@ class MarketSync:
                     if self.system_logger:
                         self.system_logger.error(f"[MarketSync] subscribe failed: {e}")
 
-        if signal_only:
-            for sym in symbols:
-                bootstrap_candles_for_symbol(
-                    rest_client=self.rest,
-                    candle_engine=self.candle,
-                    refresh_indicators=self.refresh_indicators,
-                    symbol=sym,
-                    candles_num=self.cfg.candles_num,
-                    system_logger=self.system_logger,
-                )
-            if self.system_logger:
-                self.system_logger.debug("[MarketSync] signal_only 부트스트랩 완료(캔들/인디케이터)")
-            return asset
+        # 1) 캔들 백필 + 2) 인디케이터 refresh (bootstrap_candles_for_symbol 안에서 수행)
+        for sym in symbols:
+            bootstrap_candles_for_symbol(
+                rest_client=self.rest,
+                candle_engine=self.candle,
+                refresh_indicators=self.refresh_indicators,
+                symbol=sym,
+                candles_num=self.cfg.candles_num,
+                system_logger=self.system_logger,
+            )
 
-        # 주문 모드: 기존 bootstrap_all_symbols 결과를 asset에 반영
-        new_asset = bootstrap_all_symbols(
-            rest_client=self.rest,
-            candle_engine=self.candle,
-            refresh_indicators=self.refresh_indicators,
-            symbols=symbols,
-            leverage=leverage,
-            asset=asset,
-            candles_num=self.cfg.candles_num,
-            save_asset=save_asset,  # ✅ 추가
-            system_logger=self.system_logger,
-        )
         if self.system_logger:
-            self.system_logger.debug("[MarketSync] 주문 모드 부트스트랩 완료(자산/포지션+캔들/인디케이터)")
-        return new_asset
+            self.system_logger.debug("[MarketSync] bootstrap 완료(캔들/인디케이터)")
 
     def ensure_symbol(self, symbol: str) -> None:
         self._rest_fallback_on.setdefault(symbol, False)
@@ -247,8 +215,6 @@ class MarketSync:
         # ✅ 진짜 갭: 닫혀 있어야 하는 분(expected_closed) 기준으로 2개 이상 밀릴 때만
         if (expected_closed - int(engine_last)) < 2:
             return
-
-        # (이하 쿨다운/로그/REST 동일)
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
         self.ensure_symbol(symbol)  # ✅ 여기 추가

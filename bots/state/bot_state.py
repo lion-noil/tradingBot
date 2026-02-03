@@ -10,9 +10,6 @@ class BotState:
 
     min_ma_threshold: float
 
-    # 자산/포지션
-    asset: Dict[str, Any] = field(default_factory=dict)
-
     # 인디케이터 상태들
     ma100s: Dict[str, List[Optional[float]]] = field(default_factory=dict)
     now_ma100: Dict[str, Optional[float]] = field(default_factory=dict)
@@ -23,13 +20,6 @@ class BotState:
     ma_check_enabled: Dict[str, bool] = field(default_factory=dict)
 
     def init_defaults(self) -> None:
-        # asset 기본
-        if not self.asset:
-            self.asset = {
-                "wallet": {"USDT": 0.0},
-                "positions": {s: {} for s in self.symbols},
-            }
-
         for s in self.symbols:
             self.ma100s.setdefault(s, [])
             self.now_ma100.setdefault(s, None)

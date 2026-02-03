@@ -9,8 +9,10 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from collections import deque
 
 from core.redis_client import redis_client
-
+from zoneinfo import ZoneInfo
+from datetime import datetime
 DAY_MS = 86_400_000
+_TZ = ZoneInfo("Asia/Seoul")
 
 
 # ---------- base ----------
@@ -277,3 +279,71 @@ class OpenSignalsIndex:
                 d.rotate(i)
                 return item
         return None
+
+def record_and_index_signal(
+    *,
+    namespace: str,
+    open_index: "OpenSignalsIndex",
+    sym: str,
+    side: str,
+    kind: str,
+    price: Optional[float],
+    payload: Any,
+    engine: Optional[str] = None,
+    system_logger=None,
+    trading_logger=None,
+) -> Tuple[str, int]:
+    # payload dict 보장
+    p = payload if isinstance(payload, dict) else {}
+
+    kind_u = _normalize_kind(kind)
+    side_u = (side or "").upper().strip()
+    sym_u = (sym or "").upper().strip()
+
+    sig_dict = {
+        **p,
+        "kind": kind_u,
+        "side": side_u,
+        "symbol": sym_u,
+        "ts": datetime.now(_TZ).isoformat(),
+        "price": price,
+        "engine": engine or namespace,
+    }
+
+    sid, ts_ms = record_signal_with_ts(
+        namespace=namespace,
+        symbol=sym_u,
+        side=side_u,
+        kind=kind_u,
+        price=price,
+        payload=sig_dict,
+    )
+
+    # ✅ 로컬 캐시도 같이 갱신
+    if kind_u == "ENTRY":
+        open_index.on_open(
+            namespace=namespace,
+            symbol=sym_u,
+            side=side_u,
+            signal_id=sid,
+            ts_ms=ts_ms,
+            entry_price=float(price or 0.0),
+        )
+    else:
+        open_id = _extract_open_signal_id(sig_dict)  # record_signal_with_ts에서 이미 검증됨
+        if open_id:
+            open_index.on_close_by_id(
+                namespace=namespace,
+                symbol=sym_u,
+                side=side_u,
+                open_signal_id=open_id,
+            )
+
+    # ✅ 로그
+    if trading_logger:
+        try:
+            trading_logger.info("SIG " + json.dumps(sig_dict, ensure_ascii=False, default=str))
+        except Exception:
+            trading_logger.info(f"SIG {sig_dict}")
+
+    return sid, ts_ms

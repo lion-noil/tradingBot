@@ -378,6 +378,108 @@ def get_exit_signal(
         }
 
     # ------------------------------------------------------------
+    # ✅ STOP_LOSS / TAKE_PROFIT: oldest 1개 기준 청산
+    #    - 1시간 이전: SL/TP 미적용
+    #    - 1h~24h: ma_thr_eff
+    #    - 24h~3d: ma_thr_eff * 1/2
+    #    - 3d+:    ma_thr_eff * 1/3
+    # ------------------------------------------------------------
+    oldest_id, oldest_ts, oldest_entry_price = items[0]
+
+    try:
+        oldest_entry = float(oldest_entry_price or 0.0)
+    except Exception:
+        oldest_entry = 0.0
+
+    def _sl_tp_factor_by_age(elapsed_sec: int) -> float:
+        s = int(elapsed_sec or 0)
+        if s < 60 * 60:  # < 1h  → SL/TP 안함
+            return 0.0
+        if s >= 3 * 24 * 60 * 60:  # 3d+
+            return 1.0 / 3.0
+        if s >= 24 * 60 * 60:  # 24h+
+            return 1.0 / 2.0
+        return 1.0  # 1h~24h
+
+    age_factor = _sl_tp_factor_by_age(oldest_elapsed_sec)
+
+    # ✅ 1시간 이전이면 SL/TP 스킵
+    if age_factor > 0.0 and oldest_entry > 0 and price is not None:
+        # pnl_pct: +면 이익, -면 손해 (LONG/SHORT 통일)
+        if side == "LONG":
+            pnl_pct = (float(price) - oldest_entry) / oldest_entry
+        elif side == "SHORT":
+            pnl_pct = (oldest_entry - float(price)) / oldest_entry
+        else:
+            pnl_pct = 0.0
+
+        tp_pct = float(ma_thr_eff) * float(age_factor)
+        sl_pct = float(ma_thr_eff) * float(age_factor)
+
+        # 손절 우선
+        if pnl_pct <= -sl_pct:
+            return {
+                "kind": "EXIT",
+                "mode": "STOP_LOSS",
+                "targets": [oldest_id],
+                "anchor_open_signal_id": oldest_id,
+                "reasons": [
+                    "STOP_LOSS",
+                    "CLOSE_OLDEST_ONLY",
+                    f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
+                    f"OLDEST_PNL -{fmt_pct2(sl_pct)}",
+                    f"pnl={fmt_pct2(pnl_pct)}",
+                    f"age_factor={age_factor:.4f}",
+                ],
+                "thresholds": {
+                    "sl_pct": sl_pct,
+                    "tp_pct": tp_pct,
+                    "age_factor": float(age_factor),
+                    "oldest_entry_price": oldest_entry,
+                    "ma": ma_thr_eff,
+                    "exit_easing": exit_easing,
+                    "x": x, "y": y,
+                },
+                "extra": {
+                    "oldest_entry_price": oldest_entry,
+                    "pnl_pct": pnl_pct,
+                    "close_oldest_only": True,
+                    "age_factor": float(age_factor),
+                },
+            }
+
+        if pnl_pct >= tp_pct:
+            return {
+                "kind": "EXIT",
+                "mode": "TAKE_PROFIT",
+                "targets": [oldest_id],
+                "anchor_open_signal_id": oldest_id,
+                "reasons": [
+                    "TAKE_PROFIT",
+                    "CLOSE_OLDEST_ONLY",
+                    f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
+                    f"OLDEST_PNL +{fmt_pct2(tp_pct)}",
+                    f"pnl={fmt_pct2(pnl_pct)}",
+                    f"age_factor={age_factor:.4f}",
+                ],
+                "thresholds": {
+                    "sl_pct": sl_pct,
+                    "tp_pct": tp_pct,
+                    "age_factor": float(age_factor),
+                    "oldest_entry_price": oldest_entry,
+                    "ma": ma_thr_eff,
+                    "exit_easing": exit_easing,
+                    "x": x, "y": y,
+                },
+                "extra": {
+                    "oldest_entry_price": oldest_entry,
+                    "pnl_pct": pnl_pct,
+                    "close_oldest_only": True,
+                    "age_factor": float(age_factor),
+                },
+            }
+
+    # ------------------------------------------------------------
     # ✅ (NEW) RISK_CONTROL: open 3~4개면 평균진입가 대비 +0.3% 익절시 "마지막 진입 1개" 정리
     # ------------------------------------------------------------
     PROFIT_TAKE_PCT = 0.002  # 0.2%

@@ -9,7 +9,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, List
 from core.redis_client import redis_client
-from core.execution import ExecutionEngine
 from bots.trading.trade_executor import TradeExecutor, TradeExecutorDeps
 from bots.state.lots import (
     open_lot,
@@ -330,7 +329,6 @@ class ExecContext:
     engine: str
     state_ns: str
     rest: Any
-    exec_engine: ExecutionEngine
     trade_executor: TradeExecutor
     lots_index: LotsIndex
     rules_warmed: Set[str]
@@ -378,13 +376,23 @@ def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> 
             except Exception:
                 pass
 
+        pos_map = asset.get("positions") or {}
+
         if symbol:
             sym = str(symbol).upper().strip()
-            pos_sym = ((asset.get("positions") or {}).get(sym))
+            pos_sym = pos_map.get(sym)
             payload = "[]"
             if pos_sym is not None:
                 payload = json.dumps(pos_sym, separators=(",", ":"), ensure_ascii=False, default=str)
             redis_client.hset(asset_key, f"positions.{sym}", payload)
+            return
+
+        # ✅ symbol=None이면 전 심볼 저장
+        for sym, pos_sym in pos_map.items():
+            sym_u = str(sym).upper().strip()
+            payload = json.dumps(pos_sym, separators=(",", ":"), ensure_ascii=False, default=str)
+            redis_client.hset(asset_key, f"positions.{sym_u}", payload)
+
 
     except Exception as e:
         log.warning(f"[save_asset] failed (symbol={symbol}): {e}")
@@ -392,101 +400,103 @@ def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> 
 
 def build_ctx(engine: str) -> ExecContext:
     engine = (engine or DEFAULT_ENGINE).upper().strip()
-
     cfg = load_engine_config(engine)
-
     max_eff = float(getattr(cfg, "max_effective_leverage", 0.0) or 0.0)
 
     rest = make_rest(engine)
-    state_ns_engine = f"{STATE_NS}:{engine}"  # ✅ 엔진별로도 분리(추천)
-    exec_engine = ExecutionEngine(
-        rest,
-        system_logger=system_logger,
-        trading_logger=trading_logger,
-        taker_fee_rate=0.00055,
-        engine_name=state_ns_engine,
-    )
+    state_ns_engine = f"{STATE_NS}:{engine}"
 
     lots_index = LotsIndex(namespace=state_ns_engine, redis_cli=redis_client)
 
     symbols_ctx = sorted(list(EX or RX or set()))
     lots_index.load_from_redis(symbols=symbols_ctx)
 
+    # ✅ ctx.asset를 단일 소스로 사용
     asset: Dict[str, Any] = {"wallet": {}, "positions": {}}
 
+    # asset warmup
     try:
-        # wallet 한번
-        asset = rest.build_asset(asset=asset, symbol=None)
+        asset = rest.build_asset(asset=asset, symbol=None) or asset
     except Exception:
         pass
-
     for s in (symbols_ctx or []):
         try:
-            asset = rest.build_asset(asset=asset, symbol=s)
+            asset = rest.build_asset(asset=asset, symbol=s) or asset
         except Exception:
             pass
+
+
     try:
         save_asset(state_ns_engine, rest, asset, None)
     except Exception:
         pass
+
+    ctx = ExecContext(
+        engine=engine,
+        state_ns=state_ns_engine,
+        rest=rest,
+        trade_executor=None,   # 아래에서 주입
+        lots_index=lots_index,
+        rules_warmed=set(),
+        asset=asset,
+    )
 
     def _get_entry_percent_for_symbol(symbol: str) -> float:
         sym = (symbol or "").upper().strip()
         m = getattr(cfg, "entry_percent_by_symbol", None) or {}
         v = m.get(sym)
         if v is None:
-            v = getattr(cfg, "entry_percent", None)  # ✅ 없으면 전역 entry_percent로 fallback
+            v = getattr(cfg, "entry_percent", None)
         if v is None:
-            v = DEFAULT_ENTRY_PERCENT  # ✅ 최후 fallback
+            v = DEFAULT_ENTRY_PERCENT
         return max(0.001, float(v))
 
-    trade_executor = TradeExecutor(
-        rest=rest,
-        exec_engine=exec_engine,
-        system_logger=system_logger,
-        deps=TradeExecutorDeps(
-            is_signal_only=lambda: False,
-            get_asset=lambda: asset,
-            set_asset=lambda a: (asset.clear(), asset.update(a or {})),
-            get_entry_percent=lambda sym: _get_entry_percent_for_symbol(sym),
-            get_max_effective_leverage=lambda: float(max_eff),
-            save_asset=lambda a, sym: save_asset(state_ns_engine, rest, a, sym),
+    deps = TradeExecutorDeps(
+        get_asset=lambda: ctx.asset,
+        set_asset=lambda a: (ctx.asset.clear(), ctx.asset.update(a or {})),
+        get_entry_percent=lambda sym: _get_entry_percent_for_symbol(sym),
+        get_max_effective_leverage=lambda: float(max_eff),
+        save_asset=lambda a, sym: save_asset(state_ns_engine, rest, a, sym),
 
-            open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None, ex_lot_id=None: open_lot(
-                namespace=state_ns_engine,
-                symbol=symbol,
-                side=side,
-                entry_ts_ms=entry_ts_ms,
-                entry_price=entry_price,
-                qty_total=qty_total,
-                entry_signal_id=entry_signal_id,
-                ex_lot_id=ex_lot_id,
-            ),
-            close_lot_full=lambda *, lot_id: close_lot_full(namespace=state_ns_engine, lot_id=lot_id),
-            get_lot_qty_total=lambda lot_id: get_lot_qty_total(namespace=state_ns_engine, lot_id=lot_id),
-            get_lot_ex_lot_id=lambda lot_id: get_lot_ex_lot_id(namespace=state_ns_engine, lot_id=lot_id),
-
-            on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id, ex_lot_id: lots_index.on_open(
-                sym, side, lot_id,
-                entry_ts_ms=entry_ts_ms,
-                qty_total=qty_total,
-                entry_price=entry_price,
-                entry_signal_id=entry_signal_id,
-                ex_lot_id=int(ex_lot_id or 0),
-            ),
-            on_lot_close=lambda sym, side, lot_id: lots_index.on_close(sym, side, lot_id),
+        open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
+                        ex_lot_id=None: open_lot(
+            namespace=state_ns_engine,
+            symbol=symbol,
+            side=side,
+            entry_ts_ms=entry_ts_ms,
+            entry_price=entry_price,
+            qty_total=qty_total,
+            entry_signal_id=entry_signal_id,
+            ex_lot_id=ex_lot_id,
         ),
+        close_lot_full=lambda *, lot_id: close_lot_full(namespace=state_ns_engine, lot_id=lot_id),
+        get_lot_qty_total=lambda lot_id: get_lot_qty_total(namespace=state_ns_engine, lot_id=lot_id),
+        get_lot_ex_lot_id=lambda lot_id: get_lot_ex_lot_id(namespace=state_ns_engine, lot_id=lot_id),
+
+        on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id,
+                           ex_lot_id: lots_index.on_open(
+            sym, side, lot_id,
+            entry_ts_ms=entry_ts_ms,
+            qty_total=qty_total,
+            entry_price=entry_price,
+            entry_signal_id=entry_signal_id,
+            ex_lot_id=int(ex_lot_id or 0),
+        ),
+        on_lot_close=lambda sym, side, lot_id: lots_index.on_close(sym, side, lot_id),
     )
-    return ExecContext(
-        engine=(engine or "").upper().strip(),
-        state_ns=state_ns_engine,
+
+    trade_executor = TradeExecutor.build(
         rest=rest,
-        exec_engine=exec_engine,
-        trade_executor=trade_executor,
-        lots_index=lots_index,
-        rules_warmed=set(),
-        asset=asset,                        # ✅
+        deps=deps,
+        system_logger=system_logger,
+        trading_logger=trading_logger,
+        taker_fee_rate=0.00055,
+        engine_tag=engine,
     )
+
+    ctx.trade_executor = trade_executor
+    return ctx
+
 
 
 # 멀티 거래소(엔진) 지원: BYBIT/MT5 둘 다 받을 수 있게 ctx map 구성

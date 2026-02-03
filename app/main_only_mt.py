@@ -176,7 +176,6 @@ async def startup_event():
         system_logger=system_logger,
         trading_logger=trading_logger,
         symbols=symbols_mt5,
-        signal_only=getattr(cfg_mt5, "signal_only", True),  # ✅ 너의 최신 main과 동일하게
         config=cfg_mt5,
         action_sender=local_sender,  # ✅ 추가
     )
