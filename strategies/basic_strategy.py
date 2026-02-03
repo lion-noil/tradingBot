@@ -201,6 +201,7 @@ def get_long_entry_signal(
     ma_ok = price < ma100 * (1 - float(ma_thr_eff))
     mom_ok = (-mom) > float(momentum_threshold)
     if not (ma_ok and mom_ok):
+
         return None
 
     ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
