@@ -254,8 +254,8 @@ def make_mt5_signal_config(
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-        # symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
-        symbols = ("BTCUSD", )
+        symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
+        # symbols = ("BTCUSD", )
 
     entry_percent = 1.0
     # leverage 50이므로 1은 50% 진입(=50 x 1%)
