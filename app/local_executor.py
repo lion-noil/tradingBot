@@ -364,7 +364,6 @@ def warmup_symbol_rules(ctx: ExecContext, symbol: str) -> None:
 def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> None:
     """
     lots/assets는 user_id 포함된 STATE_NS로만 저장.
-    rest._asset_key / rest.REDIS_ASSET_KEY는 공유 컨트롤러라 충돌 가능성이 있어
     여기서는 강제로 trading:{STATE_NS}:asset 사용.
     """
     try:

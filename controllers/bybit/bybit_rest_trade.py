@@ -208,45 +208,118 @@ class BybitRestTradeMixin:
             return 0.0
         return q
 
+    def _safe_float(self, x, default: float = 0.0) -> float:
+        try:
+            if x is None:
+                return default
+            return float(x)
+        except Exception:
+            try:
+                return float(str(x).strip())
+            except Exception:
+                return default
+
     # -------------------------
     # 주문 체결 대기 (거래용)
     # -------------------------
-    def wait_order_fill(self, symbol, order_id, max_retries=10, sleep_sec=1, **kwargs):
+    def wait_order_fill(self, symbol, order_id, max_retries=12, sleep_sec=0.8, **kwargs):
+        """
+        ✅ 전량 보장 강화 버전
+        - 거래소가 FILLED라고 하면 즉시 확정
+        - expected_qty(ExecutionEngine이 raw['qty']로 넘김)가 있으면:
+            cumExecQty >= expected_qty - eps  -> FILLED로 간주 (상태 지연 대응)
+        - TIMEOUT인데 cumExecQty > 0이면 PARTIAL로 반환
+        """
+        expected_qty = kwargs.get("expected_qty", None)
+
+        # eps: qtyStep 기반 (부동소수/step 오차 대비)
+        try:
+            rules = self.get_symbol_rules(symbol) or {}
+            step = float(rules.get("qtyStep") or 0.001) or 0.001
+        except Exception:
+            step = 0.001
+        eps = max(step * 0.5, 1e-12)
+
+        exp_qty = None
+        if expected_qty is not None:
+            exp_qty = self._safe_float(expected_qty, default=None)
+
         endpoint = "/v5/order/realtime"
         base = self.trade_base_url + endpoint
 
         from urllib.parse import urlencode
 
-        params_pairs = [
-            ("category", "linear"),
-            ("symbol", symbol),
-            ("orderId", order_id),
-        ]
+        params_pairs = [("category", "linear"), ("symbol", symbol), ("orderId", order_id)]
         query_string = urlencode(params_pairs, doseq=False)
         url = f"{base}?{query_string}"
 
+        last_o = None
+
         for i in range(max_retries):
             headers = self._get_headers("GET", endpoint, params=query_string, body="")
-            r = requests.get(url, headers=headers, timeout=5)
-
             try:
+                r = requests.get(url, headers=headers, timeout=5)
                 data = r.json()
             except Exception:
                 data = {}
 
-            orders = data.get("result", {}).get("list", [])
+            orders = (data.get("result") or {}).get("list") or []
             if orders:
-                o = orders[0]
+                o = orders[0] or {}
+                last_o = o
+
                 status = (o.get("orderStatus") or "").upper()
+
+                # ---- numeric normalize ----
+                cum = self._safe_float(o.get("cumExecQty"), 0.0)
+                qty = self._safe_float(o.get("qty"), 0.0)
+                leaves = self._safe_float(o.get("leavesQty"), 0.0)
+                avg_price = self._safe_float(o.get("avgPrice"), 0.0)
+
+                o["orderId"] = str(o.get("orderId") or order_id)
+                o["cumExecQty"] = cum
+                o["qty"] = qty
+                o["leavesQty"] = leaves
+                o["avgPrice"] = avg_price
+
+                if exp_qty is not None:
+                    o["expectedQty"] = float(exp_qty)
+
+                # 1) 거래소가 FILLED라고 하면 확정
                 if status == "FILLED":
+                    o["ex_lot_id"] = str(order_id)
                     return o
-                if status in ("CANCELLED", "REJECTED"):
+
+                # 2) 상태 지연 대비: 전량 체결이면 FILLED로 간주
+                if exp_qty is not None and exp_qty > 0 and (cum + eps >= exp_qty):
+                    o["orderStatus"] = "FILLED"
+                    o["ex_lot_id"] = str(order_id)
+                    return o
+
+                # 3) 종료 상태인데 일부 체결이면 PARTIAL로 변경(운영에서 매우 유용)
+                if status in ("CANCELLED", "REJECTED", "DEACTIVATED", "EXPIRED"):
+                    if cum > eps:
+                        o["orderStatus"] = "PARTIAL"
+                    o["ex_lot_id"] = str(order_id)
                     return o
 
             if getattr(self, "system_logger", None):
                 self.system_logger.debug(
-                    f"⌛ 주문 체결 대기중... ({i+1}/{max_retries}) | {symbol}"
+                    f"⌛ [BYBIT] 주문 체결 대기중... ({i + 1}/{max_retries}) | {symbol}"
                 )
             time.sleep(sleep_sec)
 
-        return {"orderId": order_id, "orderStatus": "TIMEOUT"}
+        # ---- timeout handling ----
+        if last_o:
+            cum = self._safe_float(last_o.get("cumExecQty"), 0.0)
+            last_o["cumExecQty"] = cum
+            if exp_qty is not None:
+                last_o["expectedQty"] = float(exp_qty)
+            last_o["ex_lot_id"] = str(order_id)
+            if cum > eps:
+                last_o["orderStatus"] = "PARTIAL"
+                return last_o
+
+        return {"orderId": str(order_id), "orderStatus": "TIMEOUT", "expectedQty": float(exp_qty or 0.0), "ex_lot_id": str(order_id)}
+
+

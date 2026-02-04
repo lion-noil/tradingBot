@@ -42,7 +42,7 @@ class ExecutionEngine:
           "expected": "OPEN"|"CLOSE",
           "side": Optional[str],            # "LONG"|"SHORT"|None (hint)
           "filled": dict,                   # wait_order_fill 결과 원문(없으면 {})
-          "ex_lot_id": Optional[int],
+          "ex_lot_id": Optional[str],
           "raw": Any,                       # fn 결과 원문(result)
         }
         """
@@ -144,7 +144,9 @@ class ExecutionEngine:
                 v = filled.get("ex_lot_id")
                 if v is None:
                     v = raw.get("ex_lot_id")
-                ex_lot_id = int(v) if v is not None and str(v).strip() else None
+                if v is None:
+                    v = order_id  # ✅ 기본은 order_id를 ex_lot_id로
+                ex_lot_id = str(v).strip() if v is not None and str(v).strip() else None
             except Exception:
                 ex_lot_id = None
 

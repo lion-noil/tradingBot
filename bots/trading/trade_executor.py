@@ -21,10 +21,11 @@ class TradeExecutorDeps:
     close_lot_full: Callable[..., bool]
     get_lot_qty_total: Callable[[str], Optional[float]]
 
-    on_lot_open: Callable[[str, str, str, int, float, float, str, int], None]
+    on_lot_open: Callable[[str, str, str, int, float, float, str, Optional[str]], None]
     on_lot_close: Callable[[str, str, str], None]
 
-    get_lot_ex_lot_id: Callable[[str], Optional[int]]
+    get_lot_ex_lot_id: Callable[[str], Optional[str]]
+
 
 
 class TradeExecutor:
@@ -187,9 +188,6 @@ class TradeExecutor:
         except Exception:
             ex_lot_id = None
 
-        # ✅ 핵심: execute_and_sync 호출 인자 정리
-        # execute_and_sync(fn, symbol, *fn_args, **fn_kwargs)
-        # close_market(position_detail, symbol, side=..., qty=..., ex_lot_id=...)
         res = await self.exec.execute_and_sync(
             self.rest.close_market,
             symbol,
@@ -347,7 +345,7 @@ class TradeExecutor:
                     float(delta),
                     float(price),
                     entry_signal_id or "",
-                    int(ex_lot_id or 0),
+                    ex_lot_id,
                 )
             except Exception as e:
                 if self.system_logger:

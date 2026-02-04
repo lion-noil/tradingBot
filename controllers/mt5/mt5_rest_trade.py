@@ -837,7 +837,7 @@ class Mt5RestTradeMixin:
                     "orderStatus": "FILLED",
                     "symbol": sym,
                     "deal": int(last_deal_ticket or 0),
-                    "ex_lot_id": int(last_ex_lot_id or 0),
+                    "ex_lot_id": str(int(last_ex_lot_id or 0)) if last_ex_lot_id else None,
                     "positionIdx": pos_idx,
                     "reduceOnly": reduce_only,
                     "side": "BUY" if (s == "LONG" and exp == "OPEN") or (s == "SHORT" and exp == "CLOSE") else "SELL",

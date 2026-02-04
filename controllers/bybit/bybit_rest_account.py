@@ -1,16 +1,70 @@
 # controllers/bybit/bybit_rest_account.py
 
 import json
+import requests
 
 class BybitRestAccountMixin:
     # -------------------------
     # 지갑 잔고 조회 (거래용: private)
     # -------------------------
 
-    REDIS_ASSET_KEY = "trading:bybit:asset"
+    REDIS_ASSET_KEY = "trading:BYBIT:asset"
 
-    def _asset_key(self):
-        return self.REDIS_ASSET_KEY
+    def get_positions(self, symbol=None, category="linear"):
+        endpoint = "/v5/position/list"
+        params_pairs = [("category", category), ("symbol", symbol)]
+        # ✅ 거래용 base_url 사용 (_request_with_resync는 self.base_url 사용)
+        resp = self._request_with_resync(
+            "GET", endpoint, params_pairs=params_pairs, body_dict=None, timeout=5
+        )
+        return resp.json()
+
+    # -------------------------
+    # 레버리지 설정 (거래용)
+    # -------------------------
+    def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
+        try:
+            endpoint = "/v5/position/set-leverage"
+            url = self.trade_base_url + endpoint
+            method = "POST"
+
+            payload = {
+                "category": category,
+                "symbol": symbol,
+                "buyLeverage": str(leverage),
+                "sellLeverage": str(leverage),
+            }
+
+            import json as _json
+
+            body = _json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._get_headers(method, endpoint, body=body)
+
+            response = requests.post(url, headers=headers, data=body, timeout=5)
+
+            if response.status_code == 200:
+                data = response.json()
+                ret_code = data.get("retCode")
+                if ret_code in (0, 110043):
+                    if getattr(self, "system_logger", None):
+                        self.system_logger.debug(
+                            f"✅ 레버리지 {leverage}x 설정 완료 | 심볼: {symbol}"
+                        )
+                    return True
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(
+                        f"❌ 레버리지 설정 실패: {data.get('retMsg')} (retCode {ret_code})"
+                    )
+            else:
+                if getattr(self, "system_logger", None):
+                    self.system_logger.error(
+                        f"❌ HTTP 오류: {response.status_code} {response.text}"
+                    )
+        except Exception as e:
+            if getattr(self, "system_logger", None):
+                self.system_logger.error(f"❌ 레버리지 설정 중 예외 발생: {e}")
+
+        return False
 
 
     def get_usdt_balance(self):

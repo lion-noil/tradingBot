@@ -5,18 +5,8 @@ import MetaTrader5 as mt5
 
 
 class Mt5RestAccountMixin:
-    """
-    BybitRestAccountMixin의 역할을 MT5용으로 옮긴 버전.
 
-    - get_account_balance(): MT5 계좌 balance/equity/free_margin 등 조회
-    - get_positions(symbol): 특정 심볼 포지션 조회
-    """
-
-    REDIS_ASSET_KEY = "trading:mt5_signal:asset"
-
-    def _asset_key(self):
-        return self.REDIS_ASSET_KEY
-
+    REDIS_ASSET_KEY = "trading:MT5:asset"
     # -------------------------
     # 내부: MT5 연결 보장
     # -------------------------
