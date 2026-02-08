@@ -63,14 +63,18 @@ class BurstWarningTerminator(logging.Handler):
     def _shutdown(self):
         def _kill():
             try:
-                os.kill(os.getpid(), signal.SIGINT)
-            except Exception:
-                raise SystemExit(1)
+                logging.getLogger("system").critical("🧯 종료 직전: 로그/텔레그램 flush 시도")
+                logging.shutdown()  # ✅ 핸들러 flush/close 유도
+            finally:
+                try:
+                    os.kill(os.getpid(), signal.SIGINT)
+                except Exception:
+                    raise SystemExit(1)
 
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running():
-                loop.call_later(self.grace_sec, _kill)
+                loop.call_later(self.grace_sec, _kill)  # ✅ grace_sec 만큼 기다렸다가 종료
                 return
         except RuntimeError:
             pass
@@ -92,7 +96,7 @@ system_logger = setup_logger(
     telegram_bot_token=tg_bot,      # ✅ 주입
     telegram_chat_id=tg_chat,       # ✅ 주입
 )
-system_logger.addHandler(BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=0.2))
+system_logger.addHandler(BurstWarningTerminator(threshold=5, window_sec=10.0, grace_sec=3))
 
 trading_logger = setup_logger(
     "trading",
