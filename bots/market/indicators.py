@@ -13,7 +13,7 @@ def kst_now_str() -> str:
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %z")
 
 # ── 임계값 양자화 ───────────────────────────────────
-def quantize_thr(thr: Optional[float], lo: float = 0.005, hi: float = 0.04) -> Optional[float]:
+def quantize_thr(thr: Optional[float], lo: float = 0.005, hi: float = 0.07) -> Optional[float]:
     if thr is None:
         return None
     v = Decimal(str(max(lo, min(hi, float(thr)))))

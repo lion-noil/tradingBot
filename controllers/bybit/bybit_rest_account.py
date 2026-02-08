@@ -1,14 +1,7 @@
 # controllers/bybit/bybit_rest_account.py
 
-import json
 import requests
-
 class BybitRestAccountMixin:
-    # -------------------------
-    # 지갑 잔고 조회 (거래용: private)
-    # -------------------------
-
-    REDIS_ASSET_KEY = "trading:BYBIT:asset"
 
     def get_positions(self, symbol=None, category="linear"):
         endpoint = "/v5/position/list"
@@ -19,9 +12,49 @@ class BybitRestAccountMixin:
         )
         return resp.json()
 
-    # -------------------------
-    # 레버리지 설정 (거래용)
-    # -------------------------
+    def get_position_qty_sum(self, symbol: str, side: str) -> float:
+        """
+        심볼과 방향(LONG/SHORT)을 주면 현재 보유 수량을 반환하는 경량 함수
+        """
+        sym = (symbol or "").upper()
+        target_side = (side or "").upper()  # "LONG" or "SHORT"
+
+        # 1. API 호출 (positions만 조회)
+        try:
+            resp = self.get_positions(symbol=sym)
+            rows = (resp.get("result") or {}).get("list") or []
+        except Exception as e:
+            if getattr(self, "system_logger", None):
+                self.system_logger.debug(f"[get_position_qty_sum] 조회 실패: {e}")
+            return 0.0
+
+        # 2. 파싱 (build_asset 로직의 경량화 버전)
+        for r in rows:
+            size = float(r.get("size", 0) or 0)
+            if size == 0:
+                continue
+
+            idx = int(r.get("positionIdx", 0) or 0)
+
+            # 방향 판별
+            current_side = ""
+            if idx == 1:
+                current_side = "LONG"
+            elif idx == 2:
+                current_side = "SHORT"
+            else:
+                # One-Way Mode (idx=0)
+                raw_side = (r.get("side") or "").upper()
+                if raw_side == "BUY":
+                    current_side = "LONG"
+                elif raw_side == "SELL":
+                    current_side = "SHORT"
+
+            if current_side == target_side:
+                return size
+
+        return 0.0
+
     def set_leverage(self, symbol="BTCUSDT", leverage=10, category="linear"):
         try:
             endpoint = "/v5/position/set-leverage"
@@ -66,8 +99,7 @@ class BybitRestAccountMixin:
 
         return False
 
-
-    def get_usdt_balance(self):
+    def get_account_balance(self):
         method = "GET"
         endpoint = "/v5/account/wallet-balance"
         coin = "USDT"
@@ -106,98 +138,12 @@ class BybitRestAccountMixin:
             wallet_balance = float(wb_raw or 0)
 
             return {
-                "coin": coin_data.get("coin") or coin,  # 명시적으로 USDT 표기
-                "wallet_balance": wallet_balance,
+                "currency": coin_data.get("coin") or coin,  # ✅ coin -> currency
+                "wallet_balance": float(wb_raw or 0.0),
             }
 
         except Exception as e:
             if getattr(self, "system_logger", None):
                 self.system_logger.error(f"[ERROR] 지갑 응답 파싱 실패: {e}")
             return None
-
-    def _json_or_empty_list(self, inpobj):
-        if inpobj is None:
-            return "[]"
-        return json.dumps(inpobj, separators=(",", ":"), ensure_ascii=False)
-
-
-    # -------------------------
-    # 자산 + 포지션/엔트리 구성 & Redis 저장 (거래용)
-    # -------------------------
-
-    def build_asset(self, asset: dict | None = None, symbol: str | None = None) -> dict:
-        """
-        - wallet/positions를 구성해서 asset dict로 반환
-        - ✅ Redis 저장(side-effect) 없음
-        """
-        asset = dict(asset or {})
-        wallet = dict(asset.get("wallet") or {})
-        positions = dict(asset.get("positions") or {})
-
-        # ---- 1) wallet ----
-        result = self.get_usdt_balance()
-        if result:
-            try:
-                wallet["USDT"] = float(result.get("wallet_balance") or 0.0)
-            except Exception:
-                wallet["USDT"] = wallet.get("USDT", 0.0)
-
-        asset["wallet"] = wallet
-        asset["positions"] = positions
-
-        # symbol 없으면 포지션 구성 스킵
-        if not symbol:
-            return asset
-
-        sym = str(symbol).upper().strip()
-        positions.setdefault(sym, {"LONG": None, "SHORT": None})
-
-        # ---- 2) positions (broker 조회) ----
-        try:
-            resp = self.get_positions(symbol=sym)  # BybitRestMarketMixin
-            rows = (resp.get("result") or {}).get("list") or []
-        except Exception:
-            rows = []
-
-        long_pos, short_pos = None, None
-
-        for r in rows:
-            size = float(r.get("size", 0) or 0)
-            if size == 0:
-                continue
-
-            avg_price = float(r.get("avgPrice", 0) or 0)
-            idx = r.get("positionIdx")
-
-            if idx == 1:
-                long_pos = {"qty": size, "avg_price": avg_price}
-            elif idx == 2:
-                short_pos = {"qty": size, "avg_price": avg_price}
-            else:
-                side = (r.get("side") or "").upper()
-                if side == "BUY":
-                    long_pos = {"qty": size, "avg_price": avg_price}
-                elif side == "SELL":
-                    short_pos = {"qty": size, "avg_price": avg_price}
-
-        # ---- 3) entries build (local orders) ----
-        try:
-            local_orders = self.load_orders(sym)  # BybitRestOrdersMixin
-        except Exception:
-            local_orders = []
-
-        if long_pos is not None:
-            long_pos["entries"] = self._build_entries_from_orders(
-                local_orders, sym, "LONG", long_pos["qty"]
-            )
-        if short_pos is not None:
-            short_pos["entries"] = self._build_entries_from_orders(
-                local_orders, sym, "SHORT", short_pos["qty"]
-            )
-
-        positions[sym]["LONG"] = long_pos
-        positions[sym]["SHORT"] = short_pos
-        asset["positions"] = positions
-
-        return asset
 

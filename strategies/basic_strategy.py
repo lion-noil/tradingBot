@@ -140,7 +140,7 @@ def get_long_entry_signal(
         open_items: List[Item],
         ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
-        reentry_cooldown_sec: int = 60 * 60,
+        reentry_cooldown_sec: int = 30 * 60,
 ) -> Optional[Dict[str, Any]]:
 
 
@@ -232,7 +232,7 @@ def get_short_entry_signal(
         open_items: List[Item],
         ma_threshold: float = 0.01,
         momentum_threshold: float = 0.001,
-        reentry_cooldown_sec: int = 60 * 60,
+        reentry_cooldown_sec: int = 30 * 60,
 ) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
@@ -380,10 +380,11 @@ def get_exit_signal(
 
     # ------------------------------------------------------------
     # ✅ STOP_LOSS / TAKE_PROFIT: oldest 1개 기준 청산
-    #    - 1시간 이전: SL/TP 미적용
-    #    - 1h~24h: ma_thr_eff
-    #    - 24h~3d: ma_thr_eff * 1/2
-    #    - 3d+:    ma_thr_eff * 1/3
+    # - <1h:     ma_thr_eff * 4/3
+    # - 1h~2h:   ma_thr_eff
+    # - 2h~12h:  ma_thr_eff * 2/3
+    # - 12h~24h: ma_thr_eff * 1/2
+    # - 24h~:    ma_thr_eff * 1/3
     # ------------------------------------------------------------
     oldest_id, oldest_ts, oldest_entry_price = items[0]
 
@@ -395,12 +396,14 @@ def get_exit_signal(
     def _sl_tp_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
         s = int(elapsed_sec or 0)
         if s < 60 * 60:
-            return ("NO_SLTP", 0.0)
-        if s >= 3 * 24 * 60 * 60:
-            return ("3D", 1.0 / 3.0)
-        if s >= 24 * 60 * 60:
-            return ("1D", 1.0 / 2.0)
-        return ("1H", 1.0)
+            return ("~1H", 4.0 / 3.0)
+        if s < 2 * 60 * 60:
+            return ("1H~2H", 1.0)
+        if s < 12 * 60 * 60:
+            return ("2H~12H", 2.0 / 3.0)
+        if s < 24 * 60 * 60:
+            return ("12H~24H", 1.0 / 2.0)
+        return ("24H~", 1.0 / 3.0)
 
     age_band, age_factor = _sl_tp_policy_by_age(oldest_elapsed_sec)
 
@@ -427,7 +430,6 @@ def get_exit_signal(
                 "targets": [oldest_id],
                 "anchor_open_signal_id": oldest_id,
                 "reasons": [
-                    "STOP_LOSS",
                     f"SL({age_band})",
                     "CLOSE_OLDEST_ONLY",
                     f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
@@ -464,7 +466,6 @@ def get_exit_signal(
                 "targets": [oldest_id],
                 "anchor_open_signal_id": oldest_id,
                 "reasons": [
-                    "TAKE_PROFIT",
                     f"TP({age_band})",
                     "CLOSE_OLDEST_ONLY",
                     f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
@@ -476,7 +477,7 @@ def get_exit_signal(
                     "sl_pct": sl_pct,
                     "tp_pct": tp_pct,
                     "age_factor": float(age_factor),
-                    "age_band": age_band,  # ✅ "1H"/"1D"/"3D"
+                    "age_band": age_band,
                     "held_sec": int(oldest_elapsed_sec),
                     "oldest_entry_price": oldest_entry,
                     "ma": ma_thr_eff,

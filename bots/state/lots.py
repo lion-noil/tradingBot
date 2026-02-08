@@ -16,7 +16,7 @@ def _now_ms() -> int:
 
 
 def _ns(namespace: str) -> str:
-    n = (namespace or "bybit").strip().lower()
+    n = (namespace or "bybit").strip()
     return f"trading:{n}"
 
 
@@ -66,7 +66,7 @@ def open_lot(
     entry_price: float,
     qty_total: float,
     entry_signal_id: Optional[str] = None,
-    ex_lot_id: Optional[int] = None,   # ✅ 추가
+    ex_lot_id: Optional[str] = None
 ) -> str:
     """
     ✅ 체결 확정 후에만 호출해야 함.
@@ -87,7 +87,7 @@ def open_lot(
         "entry_price": _safe_num_str(entry_price, max_decimals=8),
         "qty_total": _safe_num_str(qty_total, max_decimals=12),
         "entry_signal_id": entry_signal_id or "",
-        "ex_lot_id": str(int(ex_lot_id or 0)),      # ✅ 추가
+        "ex_lot_id": ex_lot_id or "",     # ✅ 추가
         "created_ts_ms": str(_now_ms()),
     }
 
@@ -178,15 +178,14 @@ def get_lot_qty_total(*, namespace: str = "bybit", lot_id: str) -> Optional[floa
     except Exception:
         return None
 
-def get_lot_ex_lot_id(*, namespace: str = "bybit", lot_id: str) -> Optional[int]:
+def get_lot_ex_lot_id(*, namespace: str = "bybit", lot_id: str) -> Optional[str]:
     v = redis_client.hget(_lot_key(namespace, lot_id), "ex_lot_id")
     if not v:
         return None
-    try:
-        x = int(float(v.decode()))
-        return x if x > 0 else None
-    except Exception:
-        return None
+    s = v.decode().strip()
+    return s or None
+
+
 
 # ----------------------------- LotsIndex (in-memory cache) -----------------------------
 
@@ -197,7 +196,7 @@ class LotCacheItem:
     qty_total: float
     entry_price: float
     entry_signal_id: str = ""
-    ex_lot_id: int = 0          # ✅ 추가
+    ex_lot_id: str = ""
 
 
 class LotsIndex:
@@ -255,7 +254,7 @@ class LotsIndex:
                         qty_total = float(_get("qty_total") or "0")
                         entry_price = float(_get("entry_price") or "0")
                         entry_signal_id = _get("entry_signal_id") or ""
-                        ex_lot_id = int(float(_get("ex_lot_id") or "0"))   # ✅ 추가
+                        ex_lot_id = _get("ex_lot_id") or ""
                     except Exception:
                         continue
 
@@ -265,7 +264,7 @@ class LotsIndex:
                         qty_total=qty_total,
                         entry_price=entry_price,
                         entry_signal_id=entry_signal_id,
-                        ex_lot_id=ex_lot_id if ex_lot_id > 0 else 0,      # ✅ 추가
+                        ex_lot_id=ex_lot_id
                     )
                     arr.append(item)
                     self._rev[lot_id] = (sym, side)
@@ -293,7 +292,7 @@ class LotsIndex:
         qty_total: float,
         entry_price: float,
         entry_signal_id: str = "",
-        ex_lot_id: int = 0,     # ✅ 추가
+        ex_lot_id: str = ""
     ) -> None:
         k = (symbol, side)
         arr = list(self._items.get(k) or [])
@@ -306,7 +305,7 @@ class LotsIndex:
             qty_total=float(qty_total),
             entry_price=float(entry_price),
             entry_signal_id=entry_signal_id or "",
-            ex_lot_id=int(ex_lot_id or 0),     # ✅ 추가
+            ex_lot_id=ex_lot_id
         )
         arr.insert(0, item)
 
@@ -340,3 +339,47 @@ class LotsIndex:
     def list_open_symbols(self) -> List[str]:
         syms = {sym for (sym, _side) in (self._items.keys() or [])}
         return sorted(list(syms))
+
+    def list_open_entries(
+            self,
+            symbol: str,
+            side: str,
+            *,
+            sort_asc: bool = True,  # True면 오래된->최신 (ts 오름차순)
+    ) -> List[dict]:
+        items = self.list_open_items(symbol, side)
+        out = []
+        for it in items:
+            out.append({
+                "lot_id": it.lot_id,
+                "ts": int(it.entry_ts_ms),
+                "qty": float(it.qty_total),
+                "price": float(it.entry_price),
+                "entry_signal_id": it.entry_signal_id or "",
+                "ex_lot_id": it.ex_lot_id or "",
+            })
+        if sort_asc:
+            out.sort(key=lambda x: x["ts"])
+        else:
+            out.sort(key=lambda x: x["ts"], reverse=True)
+        return out
+
+    def get_item(self, lot_id: str) -> Optional[LotCacheItem]:
+        k = self._rev.get(lot_id)
+        if not k:
+            return None
+        items = self._items.get(k) or []
+        for it in items:
+            if it.lot_id == lot_id:
+                return it
+        return None
+
+    def get_lot_qty_total_cached(self, lot_id: str) -> Optional[float]:
+        it = self.get_item(lot_id)
+        return float(it.qty_total) if it else None
+
+    def get_lot_ex_lot_id_cached(self, lot_id: str) -> Optional[str]:
+        it = self.get_item(lot_id)
+        s = (it.ex_lot_id or "").strip() if it else ""
+        return s or None
+

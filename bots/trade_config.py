@@ -176,8 +176,8 @@ class TradeConfig:
     entry_percent_by_symbol: Dict[str, float] = field(default_factory=dict)
 
     # 인디케이터
-    indicator_min_thr: float = 0.004
-    indicator_max_thr: float = 0.04
+    indicator_min_thr: float = 0.005
+    indicator_max_thr: float = 0.05
     target_cross: int = 10
 
     # 슬라이딩 윈도우(캔들 개수)
@@ -239,12 +239,12 @@ class TradeConfig:
 
 def make_mt5_signal_config(
     *,
-    indicator_min_thr: float = 0.004,
-    indicator_max_thr: float = 0.04,
-    target_cross: int = 5,
+    indicator_min_thr: float = 0.005,
+    indicator_max_thr: float = 0.07,
+    target_cross: int = 10,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
-    min_ma_threshold: float = 0.0051,
+    min_ma_threshold: float = 0.0055,
 
     # ✅ 추가: 심볼별 entry% 맵
     entry_percent_by_symbol: dict[str, float] | None = None,
@@ -254,21 +254,21 @@ def make_mt5_signal_config(
     - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
     """
     if symbols is None:
-        symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100")
-        # symbols = ("BTCUSD", )
+        symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100",
+                   "SOLUSD")
+        # symbols = ("XAGUSD", )
 
     entry_percent = 1.0
     # leverage 50이므로 1은 50% 진입(=50 x 1%)
     if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
             "SOLUSD": 0.5,
-            "XRPUSD":0.5,
             "XAUUSD":0.5,
             "XAGUSD":0.5,
             "BTCUSD": 0.5,
             "ETHUSD": 0.5,
             "WTI": 0.5,
-            "XNGUSD": 0.2,
+            "XNGUSD": 0.5,
         }
 
     cfg = TradeConfig(
@@ -320,7 +320,7 @@ def make_bybit_config(
 
     # 이 설정이 다루는 심볼 목록
     symbols: list[str] | tuple[str, ...] | None = None,
-    min_ma_threshold: float = 0.006,
+    min_ma_threshold: float = 0.0055,
 
     # ✅ 추가: 심볼별 entry% 맵
     entry_percent_by_symbol: dict[str, float] | None = None,

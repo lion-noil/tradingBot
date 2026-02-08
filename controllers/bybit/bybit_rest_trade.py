@@ -2,24 +2,11 @@
 import math
 import requests
 import time
+from urllib.parse import urlencode
+
 
 class BybitRestTradeMixin:
-    """
-    주문 생성/청산/취소 + 수량 정규화 기능.
-    (기존 bybit_rest_market.py에 섞여 있던 trade 관련 로직을 분리)
 
-    요구사항:
-    - self._request_with_resync(method, endpoint, params_pairs=None, body_dict=None, timeout=5)
-    - self._get_headers(method, endpoint, params=None, body="")
-    - self.trade_base_url (거래용 base url)
-    - self.get_symbol_rules(symbol)  # 심볼 룰 조회 (qtyStep/minOrderQty 등)
-    - (선택) self.system_logger
-    - (선택) self.leverage
-    """
-
-    # -------------------------
-    # 심볼 규칙 (public market) -> price 서버로
-    # -------------------------
     def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
         url = f"{self.price_base_url}/v5/market/instruments-info"
         params = {"category": category, "symbol": symbol}
@@ -93,28 +80,16 @@ class BybitRestTradeMixin:
             )
         return None
 
-    def open_market(self, symbol, side, price, percent, wallet):
-        """
-        wallet(USDT) + percent 기반으로 qty 계산해서 시장가 진입.
-        side: "long" / "short"
-        """
-        if price is None or wallet is None:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error("❌ 가격 또는 잔고 정보가 누락되었습니다.")
-            return None
+    def open_market(self, symbol, side, qty, **kwargs):
+        qty = float(qty or 0.0)
 
-        total_balance = wallet.get("USDT", 0)
-        leverage = getattr(self, "leverage", 1)
-
-        raw_qty = total_balance * leverage / price * percent / 100.0
-        qty = self.normalize_qty(symbol, raw_qty, mode="floor")
+        # 1. qty가 유효한지 체크 (이미 Executor에서 정규화 했겠지만 안전장치)
         if qty <= 0:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(
-                    f"❗ 주문 수량이 최소단위 미만입니다. raw={raw_qty:.8f}, norm={qty:.8f} ({symbol})"
-                )
+                self.system_logger.error(f"❌ open_market 수량 오류: {qty}")
             return None
 
+        # 2. Side 매핑
         if side.lower() == "long":
             order_side, position_idx = "Buy", 1
         elif side.lower() == "short":
@@ -124,12 +99,21 @@ class BybitRestTradeMixin:
                 self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
             return None
 
+        # 3. 로그
         if getattr(self, "system_logger", None):
             self.system_logger.debug(
-                f"📥 {side.upper()} 진입 시도 | raw_qty={raw_qty:.8f} → qty={qty:.8f} @ {price:.4f} ({symbol})"
+                f"📥 {side.upper()} 진입 주문 전송 | qty={qty} ({symbol})"
             )
 
-        return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
+        # 4. 주문 전송
+        res = self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
+
+        if res and isinstance(res, dict):
+            res["qty"] = float(qty)
+
+        return res
+
+
     def close_market(self, symbol, side, qty, **kwargs):
         """
         보유 포지션 청산(시장가 reduceOnly).
@@ -156,7 +140,13 @@ class BybitRestTradeMixin:
                 f"📤 {side.upper()} 포지션 청산 시도 | qty={qty:.8f} ({symbol})"
             )
 
-        return self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
+        # ✅ 수정: 바로 return 하지 않고 결과를 받아서 qty를 넣어줌
+        res = self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=True)
+
+        if res and isinstance(res, dict):
+            res["qty"] = float(qty)  # <-- 핵심: 내가 요청한 수량을 결과에 명시
+
+        return res
 
     # -------------------------
     # 주문 취소
@@ -207,119 +197,3 @@ class BybitRestTradeMixin:
         if q < min_qty:
             return 0.0
         return q
-
-    def _safe_float(self, x, default: float = 0.0) -> float:
-        try:
-            if x is None:
-                return default
-            return float(x)
-        except Exception:
-            try:
-                return float(str(x).strip())
-            except Exception:
-                return default
-
-    # -------------------------
-    # 주문 체결 대기 (거래용)
-    # -------------------------
-    def wait_order_fill(self, symbol, order_id, max_retries=12, sleep_sec=0.8, **kwargs):
-        """
-        ✅ 전량 보장 강화 버전
-        - 거래소가 FILLED라고 하면 즉시 확정
-        - expected_qty(ExecutionEngine이 raw['qty']로 넘김)가 있으면:
-            cumExecQty >= expected_qty - eps  -> FILLED로 간주 (상태 지연 대응)
-        - TIMEOUT인데 cumExecQty > 0이면 PARTIAL로 반환
-        """
-        expected_qty = kwargs.get("expected_qty", None)
-
-        # eps: qtyStep 기반 (부동소수/step 오차 대비)
-        try:
-            rules = self.get_symbol_rules(symbol) or {}
-            step = float(rules.get("qtyStep") or 0.001) or 0.001
-        except Exception:
-            step = 0.001
-        eps = max(step * 0.5, 1e-12)
-
-        exp_qty = None
-        if expected_qty is not None:
-            exp_qty = self._safe_float(expected_qty, default=None)
-
-        endpoint = "/v5/order/realtime"
-        base = self.trade_base_url + endpoint
-
-        from urllib.parse import urlencode
-
-        params_pairs = [("category", "linear"), ("symbol", symbol), ("orderId", order_id)]
-        query_string = urlencode(params_pairs, doseq=False)
-        url = f"{base}?{query_string}"
-
-        last_o = None
-
-        for i in range(max_retries):
-            headers = self._get_headers("GET", endpoint, params=query_string, body="")
-            try:
-                r = requests.get(url, headers=headers, timeout=5)
-                data = r.json()
-            except Exception:
-                data = {}
-
-            orders = (data.get("result") or {}).get("list") or []
-            if orders:
-                o = orders[0] or {}
-                last_o = o
-
-                status = (o.get("orderStatus") or "").upper()
-
-                # ---- numeric normalize ----
-                cum = self._safe_float(o.get("cumExecQty"), 0.0)
-                qty = self._safe_float(o.get("qty"), 0.0)
-                leaves = self._safe_float(o.get("leavesQty"), 0.0)
-                avg_price = self._safe_float(o.get("avgPrice"), 0.0)
-
-                o["orderId"] = str(o.get("orderId") or order_id)
-                o["cumExecQty"] = cum
-                o["qty"] = qty
-                o["leavesQty"] = leaves
-                o["avgPrice"] = avg_price
-
-                if exp_qty is not None:
-                    o["expectedQty"] = float(exp_qty)
-
-                # 1) 거래소가 FILLED라고 하면 확정
-                if status == "FILLED":
-                    o["ex_lot_id"] = str(order_id)
-                    return o
-
-                # 2) 상태 지연 대비: 전량 체결이면 FILLED로 간주
-                if exp_qty is not None and exp_qty > 0 and (cum + eps >= exp_qty):
-                    o["orderStatus"] = "FILLED"
-                    o["ex_lot_id"] = str(order_id)
-                    return o
-
-                # 3) 종료 상태인데 일부 체결이면 PARTIAL로 변경(운영에서 매우 유용)
-                if status in ("CANCELLED", "REJECTED", "DEACTIVATED", "EXPIRED"):
-                    if cum > eps:
-                        o["orderStatus"] = "PARTIAL"
-                    o["ex_lot_id"] = str(order_id)
-                    return o
-
-            if getattr(self, "system_logger", None):
-                self.system_logger.debug(
-                    f"⌛ [BYBIT] 주문 체결 대기중... ({i + 1}/{max_retries}) | {symbol}"
-                )
-            time.sleep(sleep_sec)
-
-        # ---- timeout handling ----
-        if last_o:
-            cum = self._safe_float(last_o.get("cumExecQty"), 0.0)
-            last_o["cumExecQty"] = cum
-            if exp_qty is not None:
-                last_o["expectedQty"] = float(exp_qty)
-            last_o["ex_lot_id"] = str(order_id)
-            if cum > eps:
-                last_o["orderStatus"] = "PARTIAL"
-                return last_o
-
-        return {"orderId": str(order_id), "orderStatus": "TIMEOUT", "expectedQty": float(exp_qty or 0.0), "ex_lot_id": str(order_id)}
-
-

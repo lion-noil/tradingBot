@@ -59,11 +59,7 @@ def build_asset_log_with_lots(*, wallet: Dict[str, Any], lots_index: LotsIndex) 
 
     # lots_index 기준으로 “현재 오픈 포지션이 존재하는 심볼”만 뽑기
     symbols = []
-    try:
-        symbols = lots_index.list_open_symbols()
-    except Exception:
-        # (최후수단) 내부 접근도 가능하지만 비추
-        symbols = []
+    symbols = lots_index.list_open_symbols()
 
     if not symbols:
         lines.append("(open lots 없음)")
@@ -139,7 +135,7 @@ PROFILE = _pick_profile_by_account_id(EXEC_ACCOUNT_ID)
 # 공통 runtime
 HOST = _env("EXEC_LISTEN_HOST", "127.0.0.1")
 ENTRY_TTL_MS = int(_env("EXEC_ENTRY_TTL_MS", "60000"))
-DEDUP_TTL_SEC = int(_env("EXEC_DEDUP_TTL_SEC", str(24 * 3600)))
+DEDUP_TTL_SEC = int(_env("EXEC_DEDUP_TTL_SEC", str(5)))
 DRY_RUN = (_env("EXEC_DRY_RUN", "0") == "1")
 
 # profile-scoped
@@ -223,14 +219,6 @@ def parse_symbols(s: str) -> Optional[Set[str]]:
             out.add(t)
     return out or None
 
-
-def state_namespace() -> str:
-    if ACCOUNT_ID:
-        return f"{BASE_NS}:{USER_ID}:{ACCOUNT_ID}"
-    return f"{BASE_NS}:{USER_ID}"
-
-
-STATE_NS = state_namespace()
 
 def pick_config_name(engine: str) -> str:
     eng = (engine or "").upper().strip()
@@ -405,30 +393,14 @@ def build_ctx(engine: str) -> ExecContext:
     rest = make_rest(engine)
     state_ns_engine = f"{STATE_NS}:{engine}"
 
+    # 1) lots cache 부트스트랩: Redis -> in-memory
     lots_index = LotsIndex(namespace=state_ns_engine, redis_cli=redis_client)
 
     symbols_ctx = sorted(list(EX or RX or set()))
     lots_index.load_from_redis(symbols=symbols_ctx)
 
-    # ✅ ctx.asset를 단일 소스로 사용
+    # 2) ctx.asset 단일 소스
     asset: Dict[str, Any] = {"wallet": {}, "positions": {}}
-
-    # asset warmup
-    try:
-        asset = rest.build_asset(asset=asset, symbol=None) or asset
-    except Exception:
-        pass
-    for s in (symbols_ctx or []):
-        try:
-            asset = rest.build_asset(asset=asset, symbol=s) or asset
-        except Exception:
-            pass
-
-
-    try:
-        save_asset(state_ns_engine, rest, asset, None)
-    except Exception:
-        pass
 
     ctx = ExecContext(
         engine=engine,
@@ -450,6 +422,25 @@ def build_ctx(engine: str) -> ExecContext:
             v = DEFAULT_ENTRY_PERCENT
         return max(0.001, float(v))
 
+    # 3) deps 구성 (✅ lots_index 포함, ✅ lot qty/ex는 캐시 우선)
+    def _lot_qty(lot_id: str) -> Optional[float]:
+        try:
+            v = lots_index.get_lot_qty_total_cached(lot_id)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+        return get_lot_qty_total(namespace=state_ns_engine, lot_id=lot_id)
+
+    def _lot_ex(lot_id: str) -> Optional[str]:
+        try:
+            s = lots_index.get_lot_ex_lot_id_cached(lot_id)
+            if s:
+                return s
+        except Exception:
+            pass
+        return get_lot_ex_lot_id(namespace=state_ns_engine, lot_id=lot_id)
+
     deps = TradeExecutorDeps(
         get_asset=lambda: ctx.asset,
         set_asset=lambda a: (ctx.asset.clear(), ctx.asset.update(a or {})),
@@ -457,8 +448,7 @@ def build_ctx(engine: str) -> ExecContext:
         get_max_effective_leverage=lambda: float(max_eff),
         save_asset=lambda a, sym: save_asset(state_ns_engine, rest, a, sym),
 
-        open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
-                        ex_lot_id=None: open_lot(
+        open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None, ex_lot_id=None: open_lot(
             namespace=state_ns_engine,
             symbol=symbol,
             side=side,
@@ -469,21 +459,26 @@ def build_ctx(engine: str) -> ExecContext:
             ex_lot_id=ex_lot_id,
         ),
         close_lot_full=lambda *, lot_id: close_lot_full(namespace=state_ns_engine, lot_id=lot_id),
-        get_lot_qty_total=lambda lot_id: get_lot_qty_total(namespace=state_ns_engine, lot_id=lot_id),
-        get_lot_ex_lot_id=lambda lot_id: get_lot_ex_lot_id(namespace=state_ns_engine, lot_id=lot_id),
 
-        on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id,
-                           ex_lot_id: lots_index.on_open(
+        # ✅ 캐시 우선
+        get_lot_qty_total=lambda lot_id: _lot_qty(lot_id),
+        get_lot_ex_lot_id=lambda lot_id: _lot_ex(lot_id),
+
+        on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id, ex_lot_id: lots_index.on_open(
             sym, side, lot_id,
             entry_ts_ms=entry_ts_ms,
             qty_total=qty_total,
             entry_price=entry_price,
             entry_signal_id=entry_signal_id,
-            ex_lot_id=int(ex_lot_id or 0),
+            ex_lot_id=ex_lot_id or "",
         ),
         on_lot_close=lambda sym, side, lot_id: lots_index.on_close(sym, side, lot_id),
+
+        # ✅ TradeExecutor에서 snapshot entries 만들 때 사용
+        lots_index=lots_index,
     )
 
+    # 4) TradeExecutor 생성
     trade_executor = TradeExecutor.build(
         rest=rest,
         deps=deps,
@@ -492,9 +487,32 @@ def build_ctx(engine: str) -> ExecContext:
         taker_fee_rate=0.00055,
         engine_tag=engine,
     )
-
     ctx.trade_executor = trade_executor
+
+    # 5) asset 부트스트랩: 거래소(rest) -> ctx.asset
+    #    - wallet(기본) 먼저
+    try:
+        boot = trade_executor._build_asset_snapshot(asset=ctx.asset, symbol=None)
+        deps.set_asset(boot)
+    except Exception as e:
+        system_logger.warning(f"[bootstrap] wallet snapshot failed: {e}")
+
+    #    - 심볼별 포지션 qty / entries (entries는 lots_index 기반)
+    for s in (symbols_ctx or []):
+        try:
+            boot = trade_executor._build_asset_snapshot(asset=ctx.asset, symbol=s)
+            deps.set_asset(boot)
+        except Exception as e:
+            system_logger.warning(f"[bootstrap] symbol snapshot failed {engine} {s}: {e}")
+
+    # 6) Redis(asset)에 올림 (symbol=None => 전심볼 저장)
+    try:
+        save_asset(state_ns_engine, rest, ctx.asset, None)
+    except Exception as e:
+        system_logger.warning(f"[bootstrap] save_asset failed: {e}")
+
     return ctx
+
 
 
 

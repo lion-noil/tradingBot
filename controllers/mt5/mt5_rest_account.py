@@ -2,11 +2,12 @@
 
 import json
 import MetaTrader5 as mt5
+from datetime import datetime, timezone, timedelta
+from typing import List
 
+KST = timezone(timedelta(hours=9))
 
 class Mt5RestAccountMixin:
-
-    REDIS_ASSET_KEY = "trading:MT5:asset"
     # -------------------------
     # 내부: MT5 연결 보장
     # -------------------------
@@ -22,6 +23,41 @@ class Mt5RestAccountMixin:
             return "[]"
         return json.dumps(inpobj, separators=(",", ":"), ensure_ascii=False)
 
+    def get_position_entries(self, symbol: str, side: str) -> List[dict]:
+        """
+        MT5의 ticket-level entries 반환.
+        return: [{ "ts": ms, "qty": float, "price": float }, ...]  (ts 오름차순 권장)
+        """
+        if not self._ensure_mt5():
+            return []
+
+        sym = (symbol or "").upper().strip()
+        sd = (side or "").upper().strip()
+        if sd not in ("LONG", "SHORT"):
+            return []
+
+        rows = self.get_positions(symbol=sym) or []
+        out = []
+
+        for p in rows:
+            vol = float(getattr(p, "volume", 0.0) or 0.0)
+            if vol <= 0:
+                continue
+
+            ptype = int(getattr(p, "type", -1))
+            if sd == "LONG" and ptype != mt5.POSITION_TYPE_BUY:
+                continue
+            if sd == "SHORT" and ptype != mt5.POSITION_TYPE_SELL:
+                continue
+
+            ts_ms = int(getattr(p, "time_msc", 0) or 0)
+            price_open = float(getattr(p, "price_open", 0.0) or 0.0)
+
+            out.append({"ts": ts_ms, "qty": vol, "price": price_open})
+
+        out.sort(key=lambda x: x["ts"])
+        return out
+
     # -------------------------
     # 계좌(자산) 조회
     # -------------------------
@@ -36,9 +72,13 @@ class Mt5RestAccountMixin:
                     self.system_logger.error(f"[ERROR] account_info() failed: {mt5.last_error()}")
                 return None
 
+            currency = (getattr(acc, "currency", None) or "").strip() or "ACC"
+            balance = float(getattr(acc, "balance", 0.0) or 0.0)
+
             return {
-                "currency": getattr(acc, "currency", None),
-                "balance": float(getattr(acc, "balance", 0.0) or 0.0),
+                "currency": currency,
+                "wallet_balance": balance,  # ✅ 핵심: 통일 필드
+                "balance": balance,  # (선택) 기존 필드 유지해도 됨
                 "equity": float(getattr(acc, "equity", 0.0) or 0.0),
                 "margin": float(getattr(acc, "margin", 0.0) or 0.0),
                 "free_margin": float(getattr(acc, "margin_free", 0.0) or 0.0),
@@ -70,91 +110,34 @@ class Mt5RestAccountMixin:
                 self.system_logger.error(f"[ERROR] positions_get 실패: {e}")
             return []
 
-    def build_asset(self, asset: dict | None = None, symbol: str | None = None) -> dict:
-        asset = dict(asset or {})
-        wallet = dict(asset.get("wallet") or {})
-        positions = dict(asset.get("positions") or {})
+    def get_position_qty_sum(self, symbol: str, side: str) -> float:
+        """
+        심볼과 방향(LONG/SHORT)을 주면 현재 보유 수량(Volume) 합계를 반환하는 경량 함수
+        """
+        if not self._ensure_mt5():
+            return 0.0
 
-        # ---- 1) wallet ----
-        result = self.get_account_balance()
-        if result:
-            try:
-                ccy = result.get("currency") or "ACC"
-                wallet[ccy] = float(result.get("balance") or 0.0)
-            except Exception:
-                pass
+        sym = (symbol or "").upper()
+        target_side = (side or "").upper()
 
-        asset["wallet"] = wallet
-        asset["positions"] = positions
+        # 1. API 호출 (해당 심볼의 포지션만 조회)
+        rows = self.get_positions(symbol=sym)
+        total_vol = 0.0
 
-        if not symbol:
-            return asset
-
-        sym = str(symbol).upper().strip()
-        positions.setdefault(sym, {"LONG": None, "SHORT": None})
-
-        # ---- 2) positions ----
-        rows = self.get_positions(symbol=sym) or []
-
-        long_pos, short_pos = None, None
-
+        # 2. 집계 (단순 합산)
         for p in rows:
-            volume = float(getattr(p, "volume", 0.0) or 0.0)
-            if volume == 0:
+            vol = float(getattr(p, "volume", 0.0) or 0.0)
+            if vol <= 0:
                 continue
 
-            price_open = float(getattr(p, "price_open", 0.0) or 0.0)
             ptype = int(getattr(p, "type", -1))
 
-            if ptype == mt5.POSITION_TYPE_BUY:
-                if long_pos is None:
-                    long_pos = {"qty": volume, "avg_price": price_open}
-                else:
-                    tot = long_pos["qty"] + volume
-                    if tot > 0:
-                        long_pos["avg_price"] = (long_pos["avg_price"] * long_pos["qty"] + price_open * volume) / tot
-                    long_pos["qty"] = tot
+            if target_side == "LONG":
+                if ptype == mt5.POSITION_TYPE_BUY:
+                    total_vol += vol
+            elif target_side == "SHORT":
+                if ptype == mt5.POSITION_TYPE_SELL:
+                    total_vol += vol
 
-            elif ptype == mt5.POSITION_TYPE_SELL:
-                if short_pos is None:
-                    short_pos = {"qty": volume, "avg_price": price_open}
-                else:
-                    tot = short_pos["qty"] + volume
-                    if tot > 0:
-                        short_pos["avg_price"] = (short_pos["avg_price"] * short_pos["qty"] + price_open * volume) / tot
-                    short_pos["qty"] = tot
 
-        # ---- 3) entries build (기존 방식 유지) ----
-        local_orders = []
-        can_build_entries = hasattr(self, "load_orders") and hasattr(self, "_build_entries_from_orders")
-
-        if can_build_entries:
-            try:
-                local_orders = self.load_orders(sym) or []
-            except Exception:
-                local_orders = []
-
-        if long_pos is not None:
-            if can_build_entries:
-                try:
-                    long_pos["entries"] = self._build_entries_from_orders(local_orders, sym, "LONG", long_pos["qty"])
-                except Exception:
-                    long_pos["entries"] = []
-            else:
-                long_pos["entries"] = []
-
-        if short_pos is not None:
-            if can_build_entries:
-                try:
-                    short_pos["entries"] = self._build_entries_from_orders(local_orders, sym, "SHORT", short_pos["qty"])
-                except Exception:
-                    short_pos["entries"] = []
-            else:
-                short_pos["entries"] = []
-
-        positions[sym]["LONG"] = long_pos
-        positions[sym]["SHORT"] = short_pos
-        asset["positions"] = positions
-
-        return asset
-
+        return float(total_vol)
