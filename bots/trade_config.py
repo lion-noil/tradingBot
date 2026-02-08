@@ -302,7 +302,7 @@ def make_bybit_config(
     *,
     # 인디케이터 기본값 (기존 TradeConfig 기본값과 동일)
     indicator_min_thr: float = 0.004,
-    indicator_max_thr: float = 0.04,
+    indicator_max_thr: float = 0.05,
     target_cross: int = 10,
     candles_num: int = 10080,
 

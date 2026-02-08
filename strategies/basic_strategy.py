@@ -396,18 +396,17 @@ def get_exit_signal(
     def _sl_tp_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
         s = int(elapsed_sec or 0)
         if s < 60 * 60:
-            return ("~1H", 4.0 / 3.0)
+            return ("_1H", 4.0 / 3.0)
         if s < 2 * 60 * 60:
-            return ("1H~2H", 1.0)
+            return ("1H_2H", 1.0)
         if s < 12 * 60 * 60:
-            return ("2H~12H", 2.0 / 3.0)
+            return ("2H_12H", 2.0 / 3.0)
         if s < 24 * 60 * 60:
-            return ("12H~24H", 1.0 / 2.0)
-        return ("24H~", 1.0 / 3.0)
+            return ("12H_24H", 1.0 / 2.0)
+        return ("24H_", 1.0 / 3.0)
 
     age_band, age_factor = _sl_tp_policy_by_age(oldest_elapsed_sec)
 
-    # ✅ 1시간 이전이면 SL/TP 스킵
     if age_factor > 0.0 and oldest_entry > 0 and price is not None:
         # pnl_pct: +면 이익, -면 손해 (LONG/SHORT 통일)
         if side == "LONG":
