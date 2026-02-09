@@ -9,6 +9,22 @@ import asyncio
 
 
 @dataclass
+class MinEntryResult:
+    ok: bool
+    symbol: str
+    wallet_ccy: str
+    wallet_balance: float
+    price: float
+    leverage: float
+    min_qty: float
+    required_notional: float
+    required_balance: float
+    reasons: List[str]
+    extra: Dict[str, Any]
+
+
+
+@dataclass
 class TradeExecutorDeps:
     get_asset: Callable[[], Dict[str, Any]]
     set_asset: Callable[[Dict[str, Any]], None]
@@ -66,6 +82,250 @@ class TradeExecutor:
             trading_logger=trading_logger,
             taker_fee_rate=taker_fee_rate,
             engine_tag=engine_tag,         # ✅ 핵심
+        )
+
+    def _pick_wallet_balance(self) -> tuple[str, float]:
+        wallet = (self.deps.get_asset() or {}).get("wallet") or {}
+        if wallet.get("USD") is not None:
+            return "USD", float(wallet.get("USD") or 0.0)
+        if wallet.get("USDT") is not None:
+            return "USDT", float(wallet.get("USDT") or 0.0)
+        k0 = next(iter(wallet.keys()), "")
+        return (k0 or "ACC"), float(wallet.get(k0) or 0.0) if k0 else 0.0
+
+    def calc_entry_qty_for_symbol(self, symbol: str, side_u: str) -> tuple[float, dict]:
+        sym = symbol.upper().strip()
+        ccy, bal = self._pick_wallet_balance()
+        entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
+
+        entry_notional = bal * (entry_percent / 100.0) * lev
+
+        fn = getattr(self.rest, "calc_notional_per_qty_account", None)
+        if not callable(fn):
+            raise RuntimeError(f"{sym}: rest.calc_notional_per_qty_account missing")
+
+        per = fn(sym, side="buy" if side_u == "LONG" else "sell") or {}
+        n = float(per.get("notionalPerQtyAccount") or 0.0)
+        if n <= 0:
+            raise RuntimeError(f"{sym}: notionalPerQtyAccount invalid per={per}")
+
+        raw = entry_notional / n
+        qty = self._normalize_qty(sym, raw, mode="floor")
+        return qty, {"ccy": ccy, "bal": bal, "entry_notional": entry_notional, "raw_qty": raw, "per": per}
+
+
+    def _price_from_rules(self, symbol: str) -> float:
+        r = self._get_rules(symbol) or {}
+        bid = float(r.get("bid") or 0.0)
+        ask = float(r.get("ask") or 0.0)
+        last = float(r.get("last") or 0.0)
+
+        # mid 우선
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        # 한쪽만 있으면 그 값
+        if bid > 0:
+            return bid
+        if ask > 0:
+            return ask
+        # 마지막 fallback
+        if last > 0:
+            return last
+        return 0.0
+
+    def assert_min_entry_notional_ok(self, symbol: str) -> None:
+        sym = (symbol or "").upper().strip()
+
+        # 1) rules에서 min_qty 확보
+        rules_fn = getattr(self.rest, "get_symbol_rules", None)
+        rules = rules_fn(sym) if callable(rules_fn) else (self._get_rules(sym) or {})
+
+        step = float(rules.get("qtyStep") or 0.0) or 0.0
+        min_qty = float(rules.get("minOrderQty") or 0.0) or 0.0
+        if min_qty <= 0:
+            min_qty = step
+        if min_qty <= 0:
+            raise RuntimeError(f"[preflight] {sym}: min_qty missing (step/minOrderQty invalid) rules={rules}")
+
+        # 2) qty 1.0 당 명목가치(계정통화)
+        fn = getattr(self.rest, "calc_notional_per_qty_account", None)
+        if not callable(fn):
+            raise RuntimeError(f"[preflight] {sym}: rest.calc_notional_per_qty_account missing")
+
+        per = fn(sym, side="buy") or {}
+        n_per_qty = float(per.get("notionalPerQtyAccount") or 0.0)
+        if n_per_qty <= 0:
+            raise RuntimeError(f"[preflight] {sym}: notionalPerQtyAccount invalid per={per}")
+
+        min_notional = n_per_qty * float(min_qty)
+
+        # 3) 내 전략 entry_notional
+        ccy, bal = self._pick_wallet_balance()
+        if bal <= 0:
+            raise RuntimeError(f"[preflight] {sym}: wallet empty ({ccy})")
+
+        entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        if entry_percent <= 0:
+            raise RuntimeError(f"[preflight] {sym}: entry_percent invalid ({entry_percent})")
+
+        lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
+        if lev <= 0:
+            raise RuntimeError(f"[preflight] {sym}: leverage invalid ({lev})")
+
+        entry_notional = bal * (entry_percent / 100.0) * lev
+
+        if entry_notional + 1e-12 < min_notional:
+            raise RuntimeError(
+                f"[preflight] {sym}: entry_notional too small. "
+                f"entry_notional={entry_notional:.6f}({ccy}) < "
+                f"min_notional={min_notional:.6f}({per.get('accountCcy') or 'ACC'}) "
+                f"(min_qty={min_qty} notionalPerQty={n_per_qty:.6f})"
+            )
+
+    def calc_entry_qty_for_warmup(self, symbol: str, *, side: str = "LONG") -> tuple[float, dict]:
+        sym = (symbol or "").upper().strip()
+
+        asset = self.deps.get_asset() or {}
+        wallet = asset.get("wallet") or {}
+
+        # balance
+        if wallet.get("USD") is not None:
+            bal = float(wallet.get("USD") or 0.0);
+            ccy = "USD"
+        elif wallet.get("USDT") is not None:
+            bal = float(wallet.get("USDT") or 0.0);
+            ccy = "USDT"
+        else:
+            k0 = next(iter(wallet.keys()), "")
+            bal = float(wallet.get(k0) or 0.0) if k0 else 0.0
+            ccy = k0 or "ACC"
+
+        entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
+
+        entry_notional = bal * (entry_percent / 100.0) * lev
+
+        # 1) MT5/CFD: notionalPerLotAccount 사용
+        per_fn = getattr(self.rest, "calc_notional_per_lot_account", None)
+        if callable(per_fn):
+            per = per_fn(sym, side="buy" if str(side).upper() == "LONG" else "sell") or {}
+            n1 = float(per.get("notionalPerLotAccount") or 0.0)
+            if n1 > 0:
+                raw_qty = entry_notional / n1
+                norm_qty = self._normalize_qty(sym, raw_qty, mode="floor")
+                return float(norm_qty), {
+                    "method": "mt5_notionalPerLot",
+                    "ccy": ccy,
+                    "bal": bal,
+                    "entry_percent": entry_percent,
+                    "leverage": lev,
+                    "entry_notional": entry_notional,
+                    "notional_1lot": n1,
+                    "raw_qty": raw_qty,
+                    "accountCcy": per.get("accountCcy"),
+                }
+
+        # 2) fallback(Bybit 등): price*contractSize 기반
+        rules = self._get_rules(sym) or {}
+        px = float(self._price_from_rules(sym) or 0.0)
+        cs = float(rules.get("contractSize") or 1.0) or 1.0
+        denom = px * cs
+        raw_qty = (entry_notional / denom) if denom > 0 else 0.0
+        norm_qty = self._normalize_qty(sym, raw_qty, mode="floor")
+        return float(norm_qty), {
+            "method": "price_contractSize",
+            "ccy": ccy,
+            "bal": bal,
+            "entry_percent": entry_percent,
+            "leverage": lev,
+            "entry_notional": entry_notional,
+            "price": px,
+            "contractSize": cs,
+            "raw_qty": raw_qty,
+        }
+
+
+    def preflight_min_entry(self, symbol: str) -> MinEntryResult:
+        sym = (symbol or "").upper().strip()
+        reasons: List[str] = []
+
+        # rules
+        rules = self._get_rules(sym) or {}
+        step = float(rules.get("qtyStep") or 0.0) or 0.0
+        min_qty = float(rules.get("minOrderQty") or 0.0) or 0.0
+        max_qty = float(rules.get("maxOrderQty") or 0.0) or 0.0
+
+        if step <= 0:
+            reasons.append("rules_step_missing")
+            step = 0.0
+
+        if min_qty <= 0:
+            # 최소수량이 없으면 step을 최소수량으로 간주
+            min_qty = step
+
+        if min_qty <= 0:
+            reasons.append("min_qty_missing")
+
+        # price: rules의 bid/ask/last(mid)
+        px = float(self._price_from_rules(sym) or 0.0)
+        if px <= 0:
+            reasons.append("price_missing")
+
+        # leverage
+        lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
+        if lev <= 0:
+            reasons.append("leverage_invalid")
+            lev = 0.0
+
+        # wallet balance
+        asset = self.deps.get_asset() or {}
+        wallet = asset.get("wallet") or {}
+        wallet_ccy = "USDT" if (wallet.get("USDT") is not None) else ("USD" if (wallet.get("USD") is not None) else "")
+        bal = float(wallet.get(wallet_ccy) or 0.0) if wallet_ccy else 0.0
+        if bal <= 0:
+            reasons.append(f"wallet_empty:{wallet_ccy or 'UNKNOWN'}")
+
+        # required
+        required_notional = 0.0
+        required_balance = 0.0
+
+        if px > 0 and min_qty > 0 and lev > 0:
+            # 1) 최소 주문 수량 * 현재가(대충 mid) = 최소 명목
+            required_notional = float(min_qty) * float(px)
+
+            # 2) 네 시스템 qty 공식이 balance*leverage/price 기반이니까:
+            #    required_balance = required_notional / leverage
+            required_balance = required_notional / lev
+
+            # (선택) 수수료/슬리피지 버퍼 조금
+            required_balance *= (1.0 + float(self.TAKER_FEE_RATE or 0.0))
+
+            # max_qty 체크(의미는 없지만 룰 깨졌을 때 표시)
+            if max_qty > 0 and min_qty > max_qty:
+                reasons.append("min_qty_gt_max_qty")
+
+        else:
+            # 이미 reasons에 다 들어감
+            pass
+
+        ok = (len(reasons) == 0) and (bal >= required_balance) and (required_balance > 0)
+
+        if (len(reasons) == 0) and (required_balance > 0) and (bal < required_balance):
+            reasons.append(f"insufficient_balance need={required_balance:.6f} have={bal:.6f}")
+
+        return MinEntryResult(
+            ok=ok,
+            symbol=sym,
+            wallet_ccy=wallet_ccy or "UNKNOWN",
+            wallet_balance=float(bal),
+            price=float(px),
+            leverage=float(lev),
+            min_qty=float(min_qty),
+            required_notional=float(required_notional),
+            required_balance=float(required_balance),
+            reasons=reasons,
+            extra={"rules": rules},
         )
 
     @staticmethod
@@ -379,23 +639,15 @@ class TradeExecutor:
                     )
                 return
 
-        entry_percent = float(self.deps.get_entry_percent(symbol))
-        wallet = asset.get("wallet") or {}
-        balance = float(wallet.get("USDT") or wallet.get("USD") or 0.0)
-        leverage = float(getattr(self.rest, "leverage", 1.0))
-        if price <= 0:
-            return  # 가격 오류 시 중단
-
-        raw_qty = (balance * leverage * (entry_percent / 100.0)) / price
-        qty = self._normalize_qty(symbol, raw_qty, mode="floor")
+        # ✅ 명목가치 기반 qty 계산
+        qty, qmeta = self.calc_entry_qty_for_symbol(symbol, side_u)
 
         if qty <= 0:
             if self.system_logger:
                 self.system_logger.info(
-                    f"[OPEN] 수량 계산 결과 0 (raw={raw_qty:.6f}, norm={qty:.6f}) -> 스킵"
+                    f"[OPEN] qty=0 -> skip (sym={symbol} side={side_u} meta={qmeta})"
                 )
             return
-
         res = await self._execute_and_wait(
             self.rest.open_market,
             symbol,

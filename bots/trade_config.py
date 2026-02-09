@@ -241,7 +241,7 @@ def make_mt5_signal_config(
     *,
     indicator_min_thr: float = 0.005,
     indicator_max_thr: float = 0.07,
-    target_cross: int = 10,
+    target_cross: int = 14,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
     min_ma_threshold: float = 0.0055,
@@ -258,9 +258,9 @@ def make_mt5_signal_config(
                    "SOLUSD")
         # symbols = ("XAGUSD", )
 
-    entry_percent = 1.0
-    # leverage 50이므로 1은 50% 진입(=50 x 1%)
-    if entry_percent_by_symbol is None:
+    entry_percent = 5.0
+    # leverage 50이므로 1은 50% 진입(=50 x 3%)
+    """if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
             "SOLUSD": 0.5,
             "XAUUSD":0.5,
@@ -269,7 +269,7 @@ def make_mt5_signal_config(
             "ETHUSD": 0.5,
             "WTI": 0.5,
             "XNGUSD": 0.5,
-        }
+        }"""
 
     cfg = TradeConfig(
         name="mt5",
@@ -283,7 +283,7 @@ def make_mt5_signal_config(
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
 
-        max_effective_leverage=10.0,
+        max_effective_leverage=20.0,
 
         # 인디케이터 관련
         indicator_min_thr=indicator_min_thr,
@@ -303,7 +303,7 @@ def make_bybit_config(
     # 인디케이터 기본값 (기존 TradeConfig 기본값과 동일)
     indicator_min_thr: float = 0.004,
     indicator_max_thr: float = 0.05,
-    target_cross: int = 10,
+    target_cross: int = 14,
     candles_num: int = 10080,
 
     # 실행/네트워크

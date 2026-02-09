@@ -5,17 +5,17 @@ from datetime import datetime
 sid = datetime.now().strftime("test_%H%M%S_%f")[:-3]  # 예: test_long_220512_123
 
 msg = {
-    "source": "MT5",
-    "symbol": "BTCUSD",
+    "source": "BYBIT",
+    "symbol": "XRPUSDT",
     "action": "ENTRY",
     "side": "LONG",
-    "price": 43000,
+    "price": 1,
     "signal_id": sid,
     "ts_ms": int(time.time() * 1000),
 }
 
 s = socket.socket()
-s.connect(("127.0.0.1", 9010))
+s.connect(("127.0.0.1", 9009))
 s.sendall((json.dumps(msg) + "\n").encode())
 s.close()
 

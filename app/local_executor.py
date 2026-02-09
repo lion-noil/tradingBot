@@ -336,17 +336,26 @@ def warmup_symbol_rules(ctx: ExecContext, symbol: str) -> None:
     sym = (symbol or "").upper().strip()
     if not sym or sym in ctx.rules_warmed:
         return
+
     get_fn = getattr(ctx.rest, "get_symbol_rules", None)
     fetch_fn = getattr(ctx.rest, "fetch_symbol_rules", None)
+
+    if callable(get_fn):
+        get_fn(sym)
+    elif callable(fetch_fn):
+        fetch_fn(sym)
+
+    # ✅ entry qty 계산해서 같이 표시
+    qty = 0.0
     try:
-        if callable(get_fn):
-            get_fn(sym)
-        elif callable(fetch_fn):
-            fetch_fn(sym)
-        ctx.rules_warmed.add(sym)
-        log.debug(f"[rules] warmed {ctx.engine} {sym}")
-    except Exception as e:
-        log.warning(f"[rules] warmup failed {ctx.engine} {sym}: {e}")
+        qty, meta = ctx.trade_executor.calc_entry_qty_for_warmup(sym, side="LONG")
+    except Exception:
+        meta = {}
+
+    ctx.rules_warmed.add(sym)
+
+    system_logger.debug(f"[rules] warmed {ctx.engine} {sym} entryqty={qty}")
+
 
 
 def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> None:
@@ -656,33 +665,31 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         log.debug(f"[disconnect] {addr}")
 
 def _warmup_all_symbols(ctx: ExecContext) -> None:
-    # 가능한 심볼 목록: 실행/수신 필터에 걸린 것 + cfg.symbols
     cfg = load_engine_config(ctx.engine)
 
     symbols = set()
     symbols.update(EX or set())
     symbols.update(RX or set())
     symbols.update((cfg.symbols or []))
-
     symbols = sorted({s.upper().strip() for s in symbols if s and s.strip()})
+
     if not symbols:
         system_logger.debug(f"[rules] warmup skipped: no symbols (engine={ctx.engine})")
         return
 
-    ok, fail = [], []
+    ok_syms, fail_syms = [], []
+
     for sym in symbols:
         try:
             warmup_symbol_rules(ctx, sym)
-            ok.append(sym)
+            ctx.trade_executor.assert_min_entry_notional_ok(sym)
+            ok_syms.append(sym)
         except Exception as e:
-            fail.append((sym, str(e)))
+            fail_syms.append((sym, str(e)))
 
-    system_logger.debug(
-        f"[rules] warmup done engine={ctx.engine} ok={len(ok)} fail={len(fail)} "
-        f"ok_syms={ok[:10]}{'...' if len(ok) > 10 else ''}"
-    )
-    if fail:
-        system_logger.warning(f"[rules] warmup failed details={fail[:10]}")
+    if fail_syms:
+        system_logger.error(f"[warmup] FAIL symbols(sample)={fail_syms[:10]}")
+        raise RuntimeError(f"warmup failed: {len(fail_syms)} symbols not tradable (min-notional)")
 
 async def main():
     log.debug("=== Local Executor ===")

@@ -44,7 +44,7 @@ def xadd_pct_log(
     namespace: Optional[str] = None,
     stream_key: Optional[str] = None,
     cross_times: Optional[List[Tuple[str, str, float, float, float]]] = None,
-    cross_times_max: int = 10,  # 너무 크면 최근 N개만
+    cross_times_max: int = 20,  # 너무 크면 최근 N개만
 ) -> None:
     """
     - 기본 키: "OpenPctLog"

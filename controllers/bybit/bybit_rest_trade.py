@@ -8,8 +8,13 @@ from urllib.parse import urlencode
 class BybitRestTradeMixin:
 
     def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
+        sym = (symbol or "").upper().strip()
+        if not sym:
+            raise RuntimeError("empty symbol")
+
+        # 1) instruments-info (qty rules)
         url = f"{self.price_base_url}/v5/market/instruments-info"
-        params = {"category": category, "symbol": symbol}
+        params = {"category": category, "symbol": sym}
         r = requests.get(url, params=params, timeout=5)
         r.raise_for_status()
         j = r.json()
@@ -18,28 +23,87 @@ class BybitRestTradeMixin:
         lst = (j.get("result") or {}).get("list") or []
         if not lst:
             raise RuntimeError("empty instruments list")
-        info = lst[0]
+        info = lst[0] or {}
         lot = info.get("lotSizeFilter", {}) or {}
-        price = info.get("priceFilter", {}) or {}
 
         rules = {
-            "qtyStep": float(lot.get("qtyStep", 0) or 0),
-            "minOrderQty": float(lot.get("minOrderQty", 0) or 0),
-            "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0),
-            "tickSize": float(price.get("tickSize", 0) or 0),
-            "minPrice": float(price.get("minPrice", 0) or 0),
-            "maxPrice": float(price.get("maxPrice", 0) or 0),
+            "qtyStep": float(lot.get("qtyStep", 0) or 0.0),
+            "minOrderQty": float(lot.get("minOrderQty", 0) or 0.0),
+            "maxOrderQty": float(lot.get("maxOrderQty", 0) or 0.0),
+
+            # ✅ 추가 (중요)
+            "contractSize": float(info.get("contractSize", 1) or 1.0),
+            "quoteCoin": str(info.get("quoteCoin") or "").upper(),
+            "settleCoin": str(info.get("settleCoin") or "").upper(),
+
+            "bid": 0.0,
+            "ask": 0.0,
+            "last": 0.0,
         }
+
+        # step/min 보정 (기존 유지)
         if rules["qtyStep"] <= 0:
             rules["qtyStep"] = 0.001
         if rules["minOrderQty"] <= 0:
             rules["minOrderQty"] = rules["qtyStep"]
+        if rules["maxOrderQty"] < 0:
+            rules["maxOrderQty"] = 0.0
 
-        self._symbol_rules[symbol] = rules
+        # 2) ticker (bid/ask/last 채우기)
+        try:
+            t = self.fetch_symbol_ticker(sym, category=category) or {}
+            # Bybit v5 tickers: bid1Price/ask1Price/lastPrice (string)
+            rules["bid"] = float(t.get("bid1Price") or 0.0)
+            rules["ask"] = float(t.get("ask1Price") or 0.0)
+            rules["last"] = float(t.get("lastPrice") or 0.0)
+        except Exception:
+            # ticker 실패해도 qty rules는 유효하니 그냥 둠(가격은 preflight에서 missing 처리 가능)
+            pass
+
+        if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
+            self._symbol_rules = {}
+
+        self._symbol_rules[sym] = rules
         return rules
 
+    def calc_notional_per_qty_account(self, symbol: str, side: str = "buy") -> dict:
+        sym = (symbol or "").upper().strip()
+        rules = self.get_symbol_rules(sym) or {}
+
+        bid = float(rules.get("bid") or 0.0)
+        ask = float(rules.get("ask") or 0.0)
+        last = float(rules.get("last") or 0.0)
+
+        # ✅ mid 우선
+        px = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else (bid or ask or last)
+
+        if px <= 0:
+            raise RuntimeError(f"{sym}: price missing (rules/ticker)")
+
+        contract_size = float(rules.get("contractSize") or 1.0) or 1.0
+
+        # ✅ USDT linear 기준 notional per qty
+        notional_per_qty = float(px * contract_size)
+
+        account_ccy = (rules.get("settleCoin") or rules.get("quoteCoin") or "USDT").upper() or "USDT"
+
+        return {
+            "accountCcy": account_ccy,
+            "notionalPerQtyAccount": notional_per_qty,
+            "method": "bybit_mid_x_contractSize",
+            "price": float(px),
+            "contractSize": float(contract_size),
+            "rules": rules,
+        }
+
     def get_symbol_rules(self, symbol: str) -> dict:
-        return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)
+        sym = (symbol or "").upper().strip()
+        if not sym:
+            return {}
+        if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
+            self._symbol_rules = {}
+        return self._symbol_rules.get(sym) or self.fetch_symbol_rules(sym)
+
     # -------------------------
     # 주문 생성/청산 래퍼
     # -------------------------
@@ -183,6 +247,20 @@ class BybitRestTradeMixin:
         else:
             n = math.floor(n + 1e-12)
         return float(f"{n * step:.8f}")
+
+    def fetch_symbol_ticker(self, symbol: str, category: str = "linear") -> dict:
+        sym = (symbol or "").upper().strip()
+        url = f"{self.price_base_url}/v5/market/tickers"
+        params = {"category": category, "symbol": sym}
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("retCode") != 0:
+            raise RuntimeError(f"retCode={j.get('retCode')}, retMsg={j.get('retMsg')}")
+        lst = (j.get("result") or {}).get("list") or []
+        if not lst:
+            return {}
+        return lst[0] or {}
 
     def normalize_qty(self, symbol: str, qty: float, mode: str = "floor") -> float:
         """

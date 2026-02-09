@@ -27,7 +27,10 @@ class Mt5RestTradeMixin:
         if not self._ensure_mt5():
             raise RuntimeError("mt5 initialize failed")
 
-        sym = symbol.upper()
+        sym = (symbol or "").upper().strip()
+        if not sym:
+            raise RuntimeError("empty symbol")
+
         info = mt5.symbol_info(sym)
         if info is None:
             raise RuntimeError(f"symbol_info({sym}) failed: {mt5.last_error()}")
@@ -35,53 +38,43 @@ class Mt5RestTradeMixin:
         if not info.visible:
             mt5.symbol_select(sym, True)
 
-        # tickSize
-        tick_size = float(getattr(info, "point", 0.0) or 0.0)
-        if tick_size <= 0:
-            digits = int(getattr(info, "digits", 0) or 0)
-            tick_size = 10 ** (-digits) if digits > 0 else 0.0
-
-        # contractSize (fallback)
-        contract_size = float(getattr(info, "trade_contract_size", 0.0) or 0.0)
-        if contract_size <= 0:
-            contract_size = 1.0
-
-        # tick (optional but useful)
+        # tick (for bid/ask/last)
         tick = mt5.symbol_info_tick(sym)
         bid = float(getattr(tick, "bid", 0.0) or 0.0) if tick else 0.0
         ask = float(getattr(tick, "ask", 0.0) or 0.0) if tick else 0.0
         last = float(getattr(tick, "last", 0.0) or 0.0) if tick else 0.0
 
+        # ✅ 최소 스키마만 유지
         rules = {
             "qtyStep": float(getattr(info, "volume_step", 0.0) or 0.0),
             "minOrderQty": float(getattr(info, "volume_min", 0.0) or 0.0),
             "maxOrderQty": float(getattr(info, "volume_max", 0.0) or 0.0),
-
-            "tickSize": tick_size,
-            "minPrice": 0.0,
-            "maxPrice": 0.0,
-
-            "digits": int(getattr(info, "digits", 0) or 0),
-            "contractSize": contract_size,
-            "currencyProfit": str(getattr(info, "currency_profit", "") or ""),
-            "currencyMargin": str(getattr(info, "currency_margin", "") or ""),
-
-            # optional
             "bid": bid,
             "ask": ask,
             "last": last,
         }
 
+        # ✅ 보정 (기존 로직 유지)
         if rules["qtyStep"] <= 0:
             rules["qtyStep"] = 0.01
         if rules["minOrderQty"] <= 0:
             rules["minOrderQty"] = rules["qtyStep"]
+        if rules["maxOrderQty"] < 0:
+            rules["maxOrderQty"] = 0.0
 
+        # ✅ 캐시 키는 항상 UPPER
+        if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
+            self._symbol_rules = {}
         self._symbol_rules[sym] = rules
         return rules
 
     def get_symbol_rules(self, symbol: str) -> dict:
-        return self._symbol_rules.get(symbol) or self.fetch_symbol_rules(symbol)
+        sym = (symbol or "").upper().strip()
+        if not sym:
+            return {}
+        if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
+            self._symbol_rules = {}
+        return self._symbol_rules.get(sym) or self.fetch_symbol_rules(sym)
 
     # -------------------------
     # 수량(랏) 정규화
@@ -99,19 +92,29 @@ class Mt5RestTradeMixin:
         return float(f"{n * step:.8f}")
 
     def normalize_qty(self, symbol: str, qty: float, mode: str = "floor") -> float:
-        rules = self.get_symbol_rules(symbol) or {}
-        step = float(rules.get("qtyStep") or 0.01) or 0.01
-        min_qty = float(rules.get("minOrderQty") or step) or step
+        sym = (symbol or "").upper().strip()
+        rules = self.get_symbol_rules(sym) or {}
+
+        step = float(rules.get("qtyStep") or 0.0) or 0.0
+        if step <= 0:
+            step = 0.01  # MT5 default
+
+        min_qty = float(rules.get("minOrderQty") or 0.0) or 0.0
+        if min_qty <= 0:
+            min_qty = step
+
         max_qty = float(rules.get("maxOrderQty") or 0.0) or 0.0
 
-        q = max(0.0, float(qty))
+        q = max(0.0, float(qty or 0.0))
         q = self._round_step(q, step, mode=mode)
 
         if q < min_qty:
             return 0.0
         if max_qty > 0 and q > max_qty:
             q = self._round_step(max_qty, step, mode="floor")
-        return q
+            if q < min_qty:
+                return 0.0
+        return float(q)
 
     # -------------------------
     # 주문 생성/청산 래퍼
@@ -371,6 +374,21 @@ class Mt5RestTradeMixin:
 
         return (None, "NOT_FOUND")
 
+    def calc_notional_per_qty_account(self, symbol: str, side: str = "buy") -> dict | None:
+        per = self.calc_notional_per_lot_account(symbol, side=side)
+        if not per:
+            return None
+        n = float(per.get("notionalPerLotAccount") or 0.0)
+        if n <= 0:
+            return None
+        return {
+            "accountCcy": per.get("accountCcy"),
+            "notionalPerQtyAccount": n,  # MT5는 qty=lot
+            "method": "mt5_notionalPerLot",
+            "per": per,
+        }
+
+
     def calc_notional_per_lot_account(self, symbol: str, side: str = "buy") -> dict | None:
         sym = symbol.upper()
         if not self._ensure_mt5():
@@ -502,107 +520,6 @@ class Mt5RestTradeMixin:
 
         res["qty"] = float(qty)
         return res
-
-        if not symbol or wallet is None:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error("❌ symbol 또는 wallet 정보가 누락되었습니다.")
-            return None
-
-        sym = symbol.upper()
-        side_norm = (side or "").strip().lower()
-
-        # 1) side 확정
-        if side_norm == "long":
-            order_side = "Buy"
-            position_idx = 1
-            side2 = "buy"
-        elif side_norm == "short":
-            order_side = "Sell"
-            position_idx = 2
-            side2 = "sell"
-        else:
-            if getattr(self, "system_logger", None):
-                self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
-            return None
-
-        # 2) price 확보(없으면 tick에서)
-        p = float(price or 0.0)
-        if p <= 0:
-            if not self._ensure_mt5():
-                return None
-            if not mt5.symbol_select(sym, True):
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[ERROR] symbol_select({sym}) failed: {mt5.last_error()}")
-                return None
-            tick = mt5.symbol_info_tick(sym)
-            if not tick:
-                if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[ERROR] symbol_info_tick({sym}) failed: {mt5.last_error()}")
-                return None
-            p = float(tick.ask if side2 == "buy" else tick.bid)
-
-        # 3) 명목 기준 percent -> raw lot 계산
-        raw_lot, meta = self._calc_raw_lot_from_percent_notional(sym, p, percent, wallet, side=side2)
-
-        # meta 안전 접근
-        raw_lot_val = float(meta.get("raw_lot") or raw_lot or 0.0)
-        qty = self.normalize_qty(sym, raw_lot_val, mode="floor")
-
-        if qty <= 0:
-            if getattr(self, "system_logger", None):
-                per = meta.get("per") or {}
-                acct_ccy = per.get("accountCcy") or meta.get("currency") or ""
-                # 환산 실패/페어 없음 같은 경우 meta에 error 들어있도록 만들어둔 상태일 것
-                err = meta.get("error") or ""
-                self.system_logger.error(
-                    f"❗ 주문 수량이 최소단위 미만이거나 계산 실패. "
-                    f"raw_lot={raw_lot_val:.8f} norm_lot={qty:.8f} "
-                    f"(sym={sym} price={p:.5f} pct={float(meta.get('percent') or percent):.4f} "
-                    f"target_notional≈{float(meta.get('target_notional') or 0.0):.2f}{acct_ccy} "
-                    f"fx={per.get('fxUsed') or 'N/A'} {('err=' + err) if err else ''})"
-                )
-            return None
-
-        # 4) 진짜 “명목/마진 추정치” 로그 (다심볼 대응)
-        per = meta.get("per") or {}
-        acct_ccy = per.get("accountCcy") or meta.get("currency") or ""
-        fx_used = per.get("fxUsed") or "N/A"
-
-        # 4-1) 계정통화 기준 1lot 명목이 있으면 그걸로, 없으면 quote 기준이라도
-        est_notional = None
-        try:
-            n1_acc = meta.get("notional_1lot_account")
-            if n1_acc is not None:
-                est_notional = float(n1_acc) * float(qty)
-            else:
-                # fallback: quote 기준(환산 불가한 케이스)
-                n1_q = per.get("notionalPerLotQuote")
-                qccy = per.get("quoteCcy") or ""
-                if n1_q is not None:
-                    est_notional = float(n1_q) * float(qty)
-                    acct_ccy = qccy or acct_ccy  # 표시 통화 fallback
-        except Exception:
-            est_notional = None
-
-        # 4-2) 마진은 MT5 서버 계산이 제일 정확
-        est_margin = None
-        try:
-            est_margin = self.calc_margin(sym, float(qty), side=side2)
-        except Exception:
-            est_margin = None
-
-        if getattr(self, "system_logger", None):
-            self.system_logger.debug(
-                f"📥 [MT5] {side.upper()} 진입 시도 | {sym} lot={qty:.4f} (raw={raw_lot_val:.6f}) "
-                f"@{float(per.get('price') or p):.5f} "
-                f"target_notional≈{float(meta.get('target_notional') or 0.0):.2f}{acct_ccy} "
-                f"1lot_notional≈{float(meta.get('notional_1lot_account') or 0.0):.2f}{acct_ccy} "
-                f"est_notional≈{(float(est_notional) if est_notional is not None else 0.0):.2f}{acct_ccy} "
-                f"est_margin≈{(float(est_margin) if est_margin is not None else 0.0):.2f}{acct_ccy} "
-                f"fx={fx_used}"
-            )
-
-        return self.submit_market_order(sym, order_side, qty, position_idx, reduce_only=False)
 
     # -------------------------
     # Bybit 스타일 래퍼: 청산
