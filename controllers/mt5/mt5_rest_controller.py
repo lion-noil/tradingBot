@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from pprint import pprint
-from datetime import datetime, timedelta
-import time
-
 
 import MetaTrader5 as mt5
 
 from controllers.mt5.mt5_rest_base import Mt5RestBase
 from controllers.mt5.mt5_rest_market import Mt5RestMarketMixin
 
-# ✅ 터미널 기반 기능들(REST 아님)
 from controllers.mt5.mt5_rest_account import Mt5RestAccountMixin
 from controllers.mt5.mt5_rest_trade import Mt5RestTradeMixin
 
@@ -31,27 +26,23 @@ class Mt5RestController(
     - Mt5RestAccount/Orders/Trade: MT5 터미널 API로 처리 (MetaTrader5)
     """
 
-    def __init__(self, system_logger=None):
+    def __init__(
+            self,
+            system_logger=None,
+            *,
+            trade_base_url: str | None = None,
+            price_base_url: str | None = None,
+            api_key: str | None = None,
+            api_secret: str | None = None,
+            leverage: int = 50,
+            taker_fee_rate: float = 0.00055,
+    ):
         super().__init__(
             system_logger=system_logger,
+            trade_base_url=trade_base_url,
+            price_base_url=price_base_url,
+            api_key=api_key,
+            api_secret=api_secret,
         )
-
-        # 트레이딩 공통 설정
-        self.leverage = 50
-        self.TAKER_FEE_RATE = 0.00055  # 0.055%
-
-
-def _pos_snapshot(symbol: str):
-    sym = symbol.upper()
-    poss = mt5.positions_get(symbol=sym) or []
-    rows = []
-    for p in poss:
-        rows.append({
-            "ticket": int(getattr(p, "ticket", 0) or 0),
-            "type": int(getattr(p, "type", -1)),
-            "volume": float(getattr(p, "volume", 0.0) or 0.0),
-            "price_open": float(getattr(p, "price_open", 0.0) or 0.0),
-        })
-    return rows
-
-
+        self.leverage = int(leverage)
+        self.TAKER_FEE_RATE = float(taker_fee_rate)

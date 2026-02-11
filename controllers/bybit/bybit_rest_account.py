@@ -106,7 +106,6 @@ class BybitRestAccountMixin:
         params_pairs = [("accountType", "UNIFIED"), ("coin", coin)]
 
         try:
-            # ✅ _request_with_resync는 trade_base_url 기반 (BybitRestBase에서 trade로 고정)
             resp = self._request_with_resync(
                 method, endpoint, params_pairs=params_pairs, body_dict=None, timeout=5
             )

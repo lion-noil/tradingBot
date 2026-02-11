@@ -8,22 +8,11 @@ from websocket import WebSocketApp
 
 
 class Mt5WebSocketController:
-    """
-    MT5 WebSocket 클라이언트 컨트롤러
-    - URL: MT5_PRICE_WS_URL (.env)
-    - 프로토콜:
-        - subscribe: {"op": "subscribe", "args": ["tickers.SYMBOL", "kline.1.SYMBOL", ...]}
-        - unsubscribe: {"op": "unsubscribe", "args": [...]}
-        - ticker 수신: {"topic": "tickers.SYMBOL", "data": {...}}
-        - kline 수신: {"topic": "kline.INTERVAL.SYMBOL", "data": [ {...}, ... ]}
-    """
-
-    def __init__(self, symbols=("EURUSD",), system_logger=None):
+    def __init__(self, symbols=("EURUSD",), system_logger=None,price_ws_url=None):
         self.kline_interval = "1"
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
 
-        cfg_secret = SecretsConfig.from_env().require_mt5_public()
         self._last_recv_monotonic_global = 0.0
         self._last_recv_monotonic: dict[str, float] = {}
 
@@ -31,7 +20,7 @@ class Mt5WebSocketController:
         self.symbols = list(symbols)
         self.system_logger = system_logger
 
-        self.ws_url = cfg_secret.mt5_price_ws_url
+        self.ws_url = price_ws_url
         if not self.ws_url:
             raise RuntimeError("MT5_PRICE_WS_URL is missing (.env)")
 

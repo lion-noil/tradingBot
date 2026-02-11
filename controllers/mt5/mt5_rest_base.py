@@ -15,15 +15,18 @@ class Mt5RestBase:
     """
 
     def __init__(
-        self,
-        system_logger=None
+            self,
+            system_logger=None,
+            *,
+            trade_base_url: str | None = None,
+            price_base_url: str | None = None,
+            api_key: str | None = None,
+            api_secret: str | None = None,
     ):
         self.system_logger = system_logger
-        cfg_secret = SecretsConfig.from_env().require_mt5_trade()
-
-        self.price_base_url = cfg_secret.mt5_price_rest_url
-        self.trade_base_url = cfg_secret.mt5_trade_rest_url
-        self.api_key = cfg_secret.mt5_trade_api_key
+        self.price_base_url = price_base_url
+        self.trade_base_url = trade_base_url
+        self.api_key = api_key
         self._symbol_rules: dict[str, dict] = {}
 
 

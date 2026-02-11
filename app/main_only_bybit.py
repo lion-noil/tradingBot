@@ -11,7 +11,7 @@ if sys.platform.startswith("win"):
 from fastapi import FastAPI
 from pydantic import BaseModel
 from asyncio import Queue
-from utils.local_action_sender import LocalActionSender
+from utils.local_action_sender import LocalActionSender, Target
 
 from bots.trade_bot import TradeBot
 from bots.trade_config import make_bybit_config, SecretsConfig
@@ -161,6 +161,8 @@ async def bot_loop(bot: TradeBot, ws, name: str):
             system_logger.error(f"❌ [{name}] bot_loop 오류: {e}")
             await asyncio.sleep(10)
 
+def _env(key: str, default: str = "") -> str:
+    return (os.getenv(key) or default).strip()
 
 @app.on_event("startup")
 async def startup_event():
@@ -177,9 +179,20 @@ async def startup_event():
     symbols_bybit = tuple(getattr(cfg_bybit, "symbols", []) or [])  # ✅ 단순/안전
     system_logger.debug(f"🔧 Bybit symbols={symbols_bybit}, config={cfg_bybit.as_dict()}")
 
-    bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger)
-    bybit_rest_controller = BybitRestController(system_logger=system_logger)
-    local_sender = LocalActionSender(host="127.0.0.1", port=9009)
+    PRICE_REST_URL = _env(f"BYBIT_PRICE_REST_URL", "")
+    PRICE_WS_URL = _env(f"BYBIT_PRICE_WS_URL", "")
+
+    bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger,price_ws_url=PRICE_WS_URL)
+    bybit_rest_controller = BybitRestController(system_logger=system_logger,price_base_url=PRICE_REST_URL)
+    local_sender = LocalActionSender(
+        targets=[
+            Target("127.0.0.1", 9009),
+            Target("127.0.0.1", 9008),
+        ],
+        system_logger=system_logger,
+        ping_sec=10,
+    )
+    local_sender.start()  # ✅ 중요: send 없어도 바로 연결/감시 시작
 
     bot_bybit = TradeBot(
         bybit_ws_controller,

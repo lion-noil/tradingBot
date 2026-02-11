@@ -6,23 +6,21 @@ import json
 from urllib.parse import urlencode
 
 import requests
-from bots.trade_config import SecretsConfig
-
 class BybitRestBase:
-    def __init__(self, system_logger=None):
+    def __init__(
+            self,
+            system_logger=None,
+            *,
+            trade_base_url: str | None = None,
+            price_base_url: str | None = None,
+            api_key: str | None = None,
+            api_secret: str | None = None,
+    ):
         self.system_logger = system_logger
-        cfg_secret = SecretsConfig.from_env().require_bybit_trade()
-        self.trade_base_url = cfg_secret.bybit_trade_rest_url
-        self.price_base_url = cfg_secret.bybit_price_rest_url
-        self.api_key = cfg_secret.bybit_trade_api_key
-        self.api_secret = cfg_secret.bybit_trade_api_secret
-
-        if not self.api_key:
-            raise RuntimeError("BYBIT_TRADE_API_KEY is missing")
-        if not self.trade_base_url:
-            raise RuntimeError("BYBIT_TRADE_REST_URL is missing")
-        if not self.price_base_url:
-            raise RuntimeError("BYBIT_PRICE_REST_URL is missing")
+        self.trade_base_url = trade_base_url
+        self.price_base_url = price_base_url
+        self.api_key = api_key
+        self.api_secret = api_secret
 
         self.recv_window = "15000"
         self._time_offset_ms = 0

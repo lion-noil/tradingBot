@@ -3,7 +3,6 @@ import sys
 from typing import Literal
 import signal, os, asyncio, logging, threading, time
 from collections import deque
-from utils.local_action_sender import LocalActionSender
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -19,6 +18,7 @@ from utils.logger import setup_logger
 from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
 from controllers.mt5.mt5_rest_controller import Mt5RestController
 
+from utils.local_action_sender import LocalActionSender, Target
 
 class ManualOrderRequest(BaseModel):
     percent: float = 10
@@ -149,6 +149,9 @@ async def bot_loop(bot: TradeBot, ws, name: str):
             system_logger.error(f"❌ [{name}] bot_loop 오류: {e}")
             await asyncio.sleep(10)
 
+def _env(key: str, default: str = "") -> str:
+    return (os.getenv(key) or default).strip()
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -165,9 +168,20 @@ async def startup_event():
     symbols_mt5 = tuple(getattr(cfg_mt5, "symbols", []) or [])  # ✅ 튼튼하게
     system_logger.debug(f"🔧 MT5 symbols={symbols_mt5}, config={cfg_mt5.as_dict()}")
 
-    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger)
-    mt5_rest_controller = Mt5RestController(system_logger=system_logger)
-    local_sender = LocalActionSender(host="127.0.0.1", port=9010)
+    PRICE_REST_URL = _env(f"MT5_PRICE_REST_URL", "")
+    PRICE_WS_URL = _env(f"MT5_PRICE_WS_URL", "")
+
+    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger,price_ws_url=PRICE_WS_URL)
+    mt5_rest_controller = Mt5RestController(system_logger=system_logger,price_base_url=PRICE_REST_URL)
+    local_sender = LocalActionSender(
+        targets=[
+            Target("127.0.0.1", 9010),
+        ],
+        system_logger=system_logger,
+        ping_sec=10,
+    )
+
+    local_sender.start()  # ✅ 중요: send 없어도 바로 연결/감시 시작
 
     bot_mt5 = TradeBot(
         mt5_ws_controller,

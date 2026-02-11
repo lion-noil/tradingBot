@@ -154,6 +154,13 @@ MAX_EFF_LEV = float(_env("EXEC_MAX_EFF_LEV", "0"))
 RECEIVE_SYMBOLS = _env(f"EXEC_{PROFILE}_RECEIVE_SYMBOLS", "")
 EXECUTE_SYMBOLS = _env(f"EXEC_{PROFILE}_EXECUTE_SYMBOLS", "")
 
+# profile-scoped
+TRADE_REST_URL = _env(f"EXEC_{PROFILE}_TRADE_REST_URL", "")
+PRICE_REST_URL = _env(f"EXEC_{PROFILE}_PRICE_REST_URL", "")
+API_KEY   = _env(f"EXEC_{PROFILE}_TRADE_API_KEY", "")
+API_SECRET= _env(f"EXEC_{PROFILE}_TRADE_API_SECRET", "")
+
+
 # telegram (profile-scoped token + global chat id)
 tg_bot = _env(f"EXEC_{PROFILE}_TELEGRAM_BOT_TOKEN", "")
 tg_chat = _env("TELEGRAM_CHAT_ID", "")
@@ -325,10 +332,19 @@ class ExecContext:
 
 def make_rest(engine: str):
     eng = (engine or "").upper().strip()
+    kwargs = {}
+    kwargs.update(
+        trade_base_url=TRADE_REST_URL,
+        price_base_url=PRICE_REST_URL,
+        api_key=API_KEY,
+        api_secret=API_SECRET,
+    )
+
     if eng == "BYBIT":
-        return BybitRestController(system_logger=system_logger)
+        return BybitRestController(system_logger=system_logger, **kwargs)
+
     if eng == "MT5":
-        return Mt5RestController(system_logger=system_logger)
+        return Mt5RestController(system_logger=system_logger, **kwargs)
     raise ValueError(f"Unknown engine={engine}")
 
 
@@ -395,8 +411,10 @@ def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> 
 
 
 def build_ctx(engine: str) -> ExecContext:
+
     engine = (engine or DEFAULT_ENGINE).upper().strip()
     cfg = load_engine_config(engine)
+
     max_eff = float(getattr(cfg, "max_effective_leverage", 0.0) or 0.0)
 
     rest = make_rest(engine)
@@ -645,24 +663,46 @@ async def handle_action(msg: Dict[str, Any]) -> None:
 # =========================
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     addr = writer.get_extra_info("peername")
-    log.debug(f"[connect] {addr}")
+
+    # ✅ sender 연결/재연결 감지 (system_logger로)
+    system_logger.debug(f"[sender] connect {addr}")
+
     try:
         while True:
             line = await reader.readline()
             if not line:
                 break
+
             try:
                 msg = json.loads(line.decode("utf-8").strip())
+                if msg.get("type") == "PING":
+                    continue
             except Exception:
+                system_logger.debug(f"[sender] bad json from {addr}: {line[:200]!r}")
                 continue
+
             try:
                 await handle_action(msg)
             except Exception as e:
-                log.exception(f"[handle_action] error: {e}")
+                system_logger.exception(f"[handle_action] error from {addr}: {e}")
+
+    except asyncio.CancelledError:
+        # 서버 종료 시 정상 취소
+        raise
+    except Exception as e:
+        # 소켓/네트워크 예외 등
+        system_logger.exception(f"[sender] client loop error {addr}: {e}")
+
     finally:
-        writer.close()
-        await writer.wait_closed()
-        log.debug(f"[disconnect] {addr}")
+        # ✅ 안전하게 닫기
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+        system_logger.debug(f"[sender] disconnect {addr}")
+
 
 def _warmup_all_symbols(ctx: ExecContext) -> None:
     cfg = load_engine_config(ctx.engine)

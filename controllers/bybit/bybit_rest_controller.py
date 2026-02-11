@@ -13,9 +13,23 @@ class BybitRestController(
     BybitRestMarketMixin,
     BybitRestTradeMixin,
 ):
-    def __init__(self, system_logger=None):
-        super().__init__(system_logger=system_logger)
-
-        # 트레이딩 공통 설정
-        self.leverage = 50
-        self.TAKER_FEE_RATE = 0.00055  # 0.055%
+    def __init__(
+        self,
+        system_logger=None,
+        *,
+        trade_base_url: str | None = None,
+        price_base_url: str | None = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        leverage: int = 50,
+        taker_fee_rate: float = 0.00055,
+    ):
+        super().__init__(
+            system_logger=system_logger,
+            trade_base_url=trade_base_url,
+            price_base_url=price_base_url,
+            api_key=api_key,
+            api_secret=api_secret,
+        )
+        self.leverage = int(leverage)
+        self.TAKER_FEE_RATE = float(taker_fee_rate)

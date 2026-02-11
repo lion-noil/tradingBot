@@ -7,19 +7,18 @@ from bots.trade_config import SecretsConfig
 
 
 class BybitWebSocketController:
-    def __init__(self, symbols=("BTCUSDT",), system_logger=None):
+    def __init__(self, symbols=("BTCUSDT",), system_logger=None, price_ws_url=None):
 
         self.kline_interval = "1"  # "1" = 1분봉
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
-        cfg_secret = SecretsConfig.from_env().require_bybit_public()
 
         self._last_recv_monotonic_global = 0.0
         self._last_recv_monotonic: dict[str, float] = {}
 
         self.symbols = list(symbols)
         self.system_logger = system_logger
-        self.ws_url = cfg_secret.bybit_price_ws_url
+        self.ws_url = price_ws_url
 
         self._lock = threading.Lock()
         self.ws: WebSocketApp | None = None
