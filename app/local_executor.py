@@ -658,18 +658,38 @@ async def handle_action(msg: Dict[str, Any]) -> None:
     log.warning(f"[skip] unknown action={action} msg={msg}")
 
 
+
+def _is_normal_disconnect_exc(e: BaseException) -> bool:
+    # Windows에서 흔한 정상 종료/리셋 케이스들
+    if isinstance(e, (ConnectionResetError, BrokenPipeError)):
+        return True
+
+    if isinstance(e, OSError):
+        win = getattr(e, "winerror", None)
+        if win in (64, 10054, 10053):
+            return True
+
+    return False
+
+
 # =========================
 # TCP Server
 # =========================
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     addr = writer.get_extra_info("peername")
-
-    # ✅ sender 연결/재연결 감지 (system_logger로)
     system_logger.debug(f"[sender] connect {addr}")
 
     try:
         while True:
-            line = await reader.readline()
+            try:
+                line = await reader.readline()
+            except Exception as e:
+                # read 자체가 깨지는 케이스(상대 종료 등)
+                if _is_normal_disconnect_exc(e):
+                    system_logger.debug(f"[sender] recv closed {addr}: {e}")
+                    break
+                raise
+
             if not line:
                 break
 
@@ -687,19 +707,26 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 system_logger.exception(f"[handle_action] error from {addr}: {e}")
 
     except asyncio.CancelledError:
-        # 서버 종료 시 정상 취소
         raise
     except Exception as e:
-        # 소켓/네트워크 예외 등
-        system_logger.exception(f"[sender] client loop error {addr}: {e}")
+        # ✅ 여기서도 “정상 disconnect”는 exception 말고 debug
+        if _is_normal_disconnect_exc(e):
+            system_logger.debug(f"[sender] disconnect {addr}: {e}")
+        else:
+            system_logger.exception(f"[sender] client loop error {addr}: {e}")
 
     finally:
-        # ✅ 안전하게 닫기
+        # ✅ 안전하게 닫기 (wait_closed에서도 동일 케이스가 튈 수 있음)
         try:
             writer.close()
-            await writer.wait_closed()
         except Exception:
             pass
+
+        try:
+            await writer.wait_closed()
+        except Exception as e:
+            if not _is_normal_disconnect_exc(e):
+                system_logger.debug(f"[sender] wait_closed error {addr}: {e}")
 
         system_logger.debug(f"[sender] disconnect {addr}")
 
