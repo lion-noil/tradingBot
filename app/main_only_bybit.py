@@ -175,10 +175,13 @@ async def startup_event():
     system_logger.debug(f"🔧 Bybit symbols={symbols_bybit}, config={cfg_bybit.as_dict()}")
 
     PRICE_REST_URL = _env(f"BYBIT_PRICE_REST_URL", "")
+    TRADE_REST_URL = _env(f"BYBIT_TRADE_REST_URL", "")
     PRICE_WS_URL = _env(f"BYBIT_PRICE_WS_URL", "")
 
-    bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger,price_ws_url=PRICE_WS_URL)
-    bybit_rest_controller = BybitRestController(system_logger=system_logger,price_base_url=PRICE_REST_URL)
+    bybit_ws_controller = BybitWebSocketController(symbols=symbols_bybit, system_logger=system_logger,
+                                                   price_ws_url=PRICE_WS_URL)
+    bybit_rest_controller = BybitRestController(system_logger=system_logger,
+                                                trade_base_url=TRADE_REST_URL, price_base_url=PRICE_REST_URL)
     local_sender = LocalActionSender(
         targets=[
             Target("127.0.0.1", 9009),
