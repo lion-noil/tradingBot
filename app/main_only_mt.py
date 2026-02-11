@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from asyncio import Queue
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_mt5_signal_config, SecretsConfig
+from bots.trade_config import make_mt5_signal_config
 from utils.logger import setup_logger
 
 from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
@@ -158,11 +158,6 @@ async def startup_event():
     global bot_mt5, mt5_ws_controller, mt5_rest_controller
 
     system_logger.debug("🚀 FastAPI 기반 MT5 시그널 서버 시작")
-
-    sec = SecretsConfig.from_env()
-    if not sec.enable_mt5:
-        system_logger.error("⛔ ENABLE_MT5=0 → MT5 서버 시작 중단")
-        return
 
     cfg_mt5 = make_mt5_signal_config()
     symbols_mt5 = tuple(getattr(cfg_mt5, "symbols", []) or [])  # ✅ 튼튼하게

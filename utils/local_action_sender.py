@@ -50,7 +50,10 @@ class _SingleConnSender:
     async def _ensure_conn(self):
         if self._writer is not None:
             return
-        _, w = await asyncio.open_connection(self.host, self.port)
+        _, w = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port),
+            timeout=1.0,  # ✅ 여기!
+        )
         self._writer = w
         if not self._connected:
             self._connected = True

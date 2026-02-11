@@ -14,7 +14,7 @@ from asyncio import Queue
 from utils.local_action_sender import LocalActionSender, Target
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_bybit_config, SecretsConfig
+from bots.trade_config import make_bybit_config
 from utils.logger import setup_logger
 
 from controllers.bybit.bybit_ws_controller import BybitWebSocketController
@@ -170,11 +170,6 @@ async def startup_event():
 
     system_logger.debug("🚀 FastAPI 기반 봇 서버 시작 (BYBIT ONLY)")
 
-    sec = SecretsConfig.from_env()
-    if not sec.enable_bybit:
-        system_logger.error("⛔ ENABLE_BYBIT=0 → Bybit 서버 시작 중단")
-        return
-
     cfg_bybit = make_bybit_config()
     symbols_bybit = tuple(getattr(cfg_bybit, "symbols", []) or [])  # ✅ 단순/안전
     system_logger.debug(f"🔧 Bybit symbols={symbols_bybit}, config={cfg_bybit.as_dict()}")
@@ -188,6 +183,7 @@ async def startup_event():
         targets=[
             Target("127.0.0.1", 9009),
             Target("127.0.0.1", 9008),
+            Target("127.0.0.1", 9007),
         ],
         system_logger=system_logger,
         ping_sec=10,

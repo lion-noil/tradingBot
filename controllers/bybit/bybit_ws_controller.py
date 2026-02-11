@@ -3,7 +3,6 @@ import threading
 import time
 import json
 from websocket import WebSocketApp
-from bots.trade_config import SecretsConfig
 
 
 class BybitWebSocketController:

@@ -1,7 +1,6 @@
 # controllers/mt5/mt5_rest_base.py
 import json
 from typing import Any, Dict, Optional
-from bots.trade_config import SecretsConfig
 import requests
 
 
@@ -112,68 +111,3 @@ class Mt5RestBase:
                     f"[MT5 REST] JSON 파싱 실패(use={use}): {resp.text[:200]}"
                 )
             raise
-
-if __name__ == "__main__":
-    from pprint import pprint
-    import time
-
-    print("\n[0] SecretsConfig MT5 env load test")
-    try:
-        sec = SecretsConfig.from_env()
-        pprint({
-            "enable_mt5": sec.enable_mt5,
-            "mt5_price_rest_url": sec.mt5_price_rest_url,
-            "mt5_trade_rest_url": sec.mt5_trade_rest_url,
-            "mt5_trade_api_key_set": bool(sec.mt5_trade_api_key),
-        })
-
-        # 너 코드가 require_mt5_trade()를 쓰고 있으니 그대로 검증
-        sec.require_mt5_trade()
-        print("✅ require_mt5_trade OK")
-    except Exception as e:
-        print("❌ MT5 env/config load failed:", e)
-        raise
-
-    print("\n[1] Mt5RestBase init test")
-    try:
-        b = Mt5RestBase(system_logger=None)
-        print("price_base_url:", b.price_base_url)
-        print("trade_base_url:", b.trade_base_url)
-        print("api_key_set:", bool(b.api_key))
-    except Exception as e:
-        print("❌ Mt5RestBase init failed:", e)
-        raise
-
-    print("\n[2] Simple GET test to price server")
-    # 어떤 endpoint가 있는지 프로젝트마다 달라서, 아래는 '연결 확인용'으로만 구성함.
-    # 흔한 health 엔드포인트 후보들을 순서대로 시도하고, 하나라도 성공하면 OK 처리.
-    candidates = ["/health", "/ping", "/v1/health", "/api/health", "/time", "/v5/market/time"]
-
-    ok = False
-    last_err = None
-
-    for ep in candidates:
-        try:
-            print(f" - trying GET {ep} (use=price)")
-            out = b._request("GET", ep, use="price", timeout=5.0)
-            print("   ✅ success:", type(out).__name__)
-            # 너무 길면 일부만
-            if isinstance(out, dict):
-                pprint({k: out[k] for k in list(out.keys())[:10]})
-            else:
-                pprint(out)
-            ok = True
-            break
-        except Exception as e:
-            last_err = e
-            print(f"   ❌ failed: {e}")
-
-    if not ok:
-        print("\n[WARN] No candidate endpoint succeeded.")
-        print("This usually means: base URL is wrong OR server has different endpoints.")
-        if last_err:
-            print("Last error:", last_err)
-        raise SystemExit(1)
-
-    print("\nDONE ✅")
-
