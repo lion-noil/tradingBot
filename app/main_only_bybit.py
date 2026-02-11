@@ -185,7 +185,6 @@ async def startup_event():
     local_sender = LocalActionSender(
         targets=[
             Target("127.0.0.1", 9009),
-            Target("127.0.0.1", 9008),
             Target("127.0.0.1", 9007),
         ],
         system_logger=system_logger,
