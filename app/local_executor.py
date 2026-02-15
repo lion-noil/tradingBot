@@ -151,7 +151,6 @@ DEFAULT_ENTRY_PERCENT = float(_env("EXEC_ENTRY_PERCENT", "10"))
 MAX_EFF_LEV = float(_env("EXEC_MAX_EFF_LEV", "0"))
 
 # symbol filters (profile-scoped)
-RECEIVE_SYMBOLS = _env(f"EXEC_{PROFILE}_RECEIVE_SYMBOLS", "")
 EXECUTE_SYMBOLS = _env(f"EXEC_{PROFILE}_EXECUTE_SYMBOLS", "")
 
 # profile-scoped
@@ -297,17 +296,7 @@ log = logging.getLogger("local_executor")
 # =========================
 # Filters (receive/execute)
 # =========================
-RX = parse_symbols(RECEIVE_SYMBOLS)
 EX = parse_symbols(EXECUTE_SYMBOLS)
-
-
-
-def allow_receive(engine: str, symbol: str) -> bool:
-    # engine 인자는 무시해도 되지만, 로그 호환 때문에 둠
-    sym = (symbol or "").upper().strip()
-    if not sym:
-        return False
-    return True if RX is None else (sym in RX)
 
 def allow_execute(engine: str, symbol: str) -> bool:
     sym = (symbol or "").upper().strip()
@@ -423,7 +412,11 @@ def build_ctx(engine: str) -> ExecContext:
     # 1) lots cache 부트스트랩: Redis -> in-memory
     lots_index = LotsIndex(namespace=state_ns_engine, redis_cli=redis_client)
 
-    symbols_ctx = sorted(list(EX or RX or set()))
+    base = set(EX or [])
+    if not base:
+        base.update(cfg.symbols or [])
+    symbols_ctx  = sorted({s.upper().strip() for s in base if s and s.strip()})
+
     lots_index.load_from_redis(symbols=symbols_ctx)
 
     # 2) ctx.asset 단일 소스
@@ -564,8 +557,7 @@ async def handle_action(msg: Dict[str, Any]) -> None:
     engine = (msg.get("source") or msg.get("engine") or DEFAULT_ENGINE).upper().strip()
     symbol = (msg.get("symbol") or "").upper().strip()
 
-    # 0) 수신 필터
-    if not allow_receive(engine, symbol):
+    if not allow_execute(engine, symbol):
         return
 
     action = (msg.get("action") or "").upper().strip()
@@ -589,8 +581,6 @@ async def handle_action(msg: Dict[str, Any]) -> None:
         log.debug(f"[skip] expired ENTRY {engine} {symbol} sid={signal_id}")
         return
 
-    # 3) 실행 여부 필터 (받는 건 OK, 실행만 제한)
-    exec_ok = allow_execute(engine, symbol)
 
     # 4) context
     ctx = get_ctx(engine)
@@ -599,10 +589,10 @@ async def handle_action(msg: Dict[str, Any]) -> None:
     warmup_symbol_rules(ctx, symbol)
 
     # 6) DRY_RUN / execute filter
-    if DRY_RUN or (not exec_ok):
+    if DRY_RUN:
         log.debug(
-            f"[RX{'/DRY' if DRY_RUN else ''}{'/NOEXEC' if not exec_ok else ''}] "
-            f"{engine} {action} {symbol} {side} px={price} sid={signal_id} close_open={close_open_signal_id}"
+            f"[DRY] {engine} {action} {symbol} {side} px={price} "
+            f"sid={signal_id} close_open={close_open_signal_id}"
         )
         return
 
@@ -734,11 +724,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 def _warmup_all_symbols(ctx: ExecContext) -> None:
     cfg = load_engine_config(ctx.engine)
 
-    symbols = set()
-    symbols.update(EX or set())
-    symbols.update(RX or set())
-    symbols.update((cfg.symbols or []))
-    symbols = sorted({s.upper().strip() for s in symbols if s and s.strip()})
+    base = set(EX or [])
+
+    symbols = sorted({s.upper().strip() for s in base if s and s.strip()})
+
+    system_logger.debug(f"[warmup] symbols={symbols}")
+
+    log.debug(f"symbols(EXECUTE_SYMBOLS)={EX}")
 
     if not symbols:
         system_logger.debug(f"[rules] warmup skipped: no symbols (engine={ctx.engine})")
@@ -764,7 +756,7 @@ async def main():
     log.debug(f"STATE_NS={STATE_NS}  (lots/assets prefix)")
     log.debug(f"DEFAULT_ENGINE={DEFAULT_ENGINE}")
     log.debug(f"DRY_RUN={DRY_RUN} ENTRY_TTL_MS={ENTRY_TTL_MS}")
-    log.debug(f"receive={RX} execute={EX}")
+    log.debug(f"symbols(EXECUTE_SYMBOLS)={EX}")
     log.debug(f"STATE_NS={STATE_NS}")
 
     # ✅ 여기서 초기 snapshot

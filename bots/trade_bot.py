@@ -111,13 +111,6 @@ class TradeBot:
             symbols=self.symbols,
         )
 
-
-        def _extract_open_signal_id(payload):
-            if not isinstance(payload, dict):
-                return None
-            v = payload.get("open_signal_id") or payload.get("target_open_signal_id")
-            return str(v) if v else None
-
         # signal processor
         self.signal_processor = SignalProcessor(
             system_logger=self.system_logger,

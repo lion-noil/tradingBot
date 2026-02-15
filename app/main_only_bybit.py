@@ -109,8 +109,8 @@ trading_logger = setup_logger(
     signals_filename="signals.jsonl",
     exclude_sig_in_file=False,
     telegram_mode="both",
-    telegram_bot_token=tg_bot,      # ✅ 주입
-    telegram_chat_id=tg_chat,       # ✅ 주입
+    telegram_bot_token=tg_bot,
+    telegram_chat_id=tg_chat,
 )
 
 # ── FastAPI 앱 ───────────────────────────────────

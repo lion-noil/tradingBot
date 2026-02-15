@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-# 네임스페이스(name)에 따라 서로 다른 키를 쓰도록 템플릿으로 정의
 REDIS_KEY_CFG = "trading:{name}:config"                  # 전체 공용 설정 해시
 REDIS_CH_CFG = "trading:{name}:config:update"            # 변경 브로드캐스트 채널(옵션)
 
@@ -36,16 +35,6 @@ def _load_dotenv_once(dotenv_path: str | None = None) -> None:
 def _optional(name: str, default=None):
     v = os.getenv(name)
     return v if (v is not None and v != "") else default
-
-def _required(name: str) -> str:
-    v = os.getenv(name)
-    if not v:
-        raise RuntimeError(f"❌ Missing required env var: {name}")
-    return v
-
-def _truthy(v) -> bool:
-    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
-
 
 @dataclass(frozen=True)
 class RedisConfig:
@@ -153,65 +142,14 @@ class TradeConfig:
         )
 
 
-def make_mt5_signal_config(
-    *,
-    indicator_min_thr: float = 0.005,
-    indicator_max_thr: float = 0.07,
-    target_cross: int = 14,
-    candles_num: int = 10080,
-    symbols: list[str] | tuple[str, ...] | None = None,
-    min_ma_threshold: float = 0.0055,
+def _parse_symbols(v: str | None) -> list[str] | None:
+    if not v:
+        return None
+    # 콤마/공백/개행 모두 허용
+    raw = v.replace("\n", ",").replace(" ", ",")
+    items = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    return items or None
 
-    # ✅ 추가: 심볼별 entry% 맵
-    entry_percent_by_symbol: dict[str, float] | None = None,
-) -> "TradeConfig":
-    """
-    MT5 시그널 전용 기본 설정 팩토리.
-    - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
-    """
-    if symbols is None:
-        symbols = ("US100", "JP225","XAUUSD","XNGUSD","WTI","XAGUSD","BTCUSD","ETHUSD","HK50","CHINA50","GER40","UK100",
-                   "SOLUSD","KS200",)
-        # symbols = ("XAGUSD", )
-
-    entry_percent = 5.0
-    # leverage 50이므로 1은 50% 진입(=50 x 3%)
-    """if entry_percent_by_symbol is None:
-        entry_percent_by_symbol = {
-            "SOLUSD": 0.5,
-            "XAUUSD":0.5,
-            "XAGUSD":0.5,
-            "BTCUSD": 0.5,
-            "ETHUSD": 0.5,
-            "WTI": 0.5,
-            "XNGUSD": 0.5,
-        }"""
-
-    cfg = TradeConfig(
-        name="mt5",
-        symbols=list(symbols),
-
-        ws_stale_sec=30.0,
-        ws_global_stale_sec=60.0,
-
-        # 주문 관련 값은 의미 없으므로 안전하게 최소로
-        leverage=50,
-        entry_percent=entry_percent,
-        entry_percent_by_symbol=entry_percent_by_symbol,
-
-        max_effective_leverage=20.0,
-
-        # 인디케이터 관련
-        indicator_min_thr=indicator_min_thr,
-        indicator_max_thr=indicator_max_thr,
-        target_cross=target_cross,
-
-        candles_num=candles_num,
-
-        min_ma_threshold=min_ma_threshold,
-        signal_only=False,
-    )
-    return cfg.normalized()
 
 
 def make_bybit_config(
@@ -246,8 +184,9 @@ def make_bybit_config(
     Bybit용 기본 트레이딩 설정 팩토리.
     - 기존 TradeConfig 기본값을 그대로 사용하면서, 필요시 인자만 살짝 바꿔서 재사용.
     """
-    if symbols is None:
-        symbols = ("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","XAUTUSDT")
+
+    _load_dotenv_once()
+    symbols = _parse_symbols(os.getenv("BYBIT_SYMBOLS"))
 
     if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
@@ -278,5 +217,64 @@ def make_bybit_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
+    )
+    return cfg.normalized()
+
+
+def make_mt5_signal_config(
+    *,
+    indicator_min_thr: float = 0.005,
+    indicator_max_thr: float = 0.07,
+    target_cross: int = 14,
+    candles_num: int = 10080,
+    symbols: list[str] | tuple[str, ...] | None = None,
+    min_ma_threshold: float = 0.0055,
+
+    # ✅ 추가: 심볼별 entry% 맵
+    entry_percent_by_symbol: dict[str, float] | None = None,
+) -> "TradeConfig":
+    """
+    MT5 시그널 전용 기본 설정 팩토리.
+    - 주문(레버리지, 진입비율)은 사용하지 않으므로 최소값으로 고정
+    """
+
+    _load_dotenv_once()
+
+    symbols = _parse_symbols(os.getenv("MT5_SYMBOLS"))
+    entry_percent = 5.0
+    # leverage 50이므로 1은 50% 진입(=50 x 3%)
+    """if entry_percent_by_symbol is None:
+        entry_percent_by_symbol = {
+            "XAUUSD":0.5,
+            "XAGUSD":0.5,
+            "BTCUSD": 0.5,
+            "ETHUSD": 0.5,
+            "WTI": 0.5,
+            "XNGUSD": 0.5,
+        }"""
+
+    cfg = TradeConfig(
+        name="mt5",
+        symbols=list(symbols),
+
+        ws_stale_sec=30.0,
+        ws_global_stale_sec=60.0,
+
+        # 주문 관련 값은 의미 없으므로 안전하게 최소로
+        leverage=50,
+        entry_percent=entry_percent,
+        entry_percent_by_symbol=entry_percent_by_symbol,
+
+        max_effective_leverage=20.0,
+
+        # 인디케이터 관련
+        indicator_min_thr=indicator_min_thr,
+        indicator_max_thr=indicator_max_thr,
+        target_cross=target_cross,
+
+        candles_num=candles_num,
+
+        min_ma_threshold=min_ma_threshold,
+        signal_only=False,
     )
     return cfg.normalized()
