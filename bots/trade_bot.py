@@ -232,13 +232,11 @@ class TradeBot:
                 actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
                 for act in actions:
-
-                    # ✅ 로컬로 액션 발행 (테스트용)
                     if self.action_sender is not None:
                         await self.action_sender.send({
                             "ts_ms": int(time.time() * 1000),
                             "symbol": act.symbol,
-                            "action": act.action,  # ENTRY/EXIT
+                            "action": act.action,
                             "side": (act.side or "").upper() if act.side else None,
                             "price": act.price,
                             "signal_id": act.signal_id,

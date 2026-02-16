@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 
 class _TelegramRateLimiter:
-    def __init__(self, cooldown_sec: float = 10.0):
+    def __init__(self, cooldown_sec: float = 1.0):
         self.cooldown_sec = cooldown_sec
         self._last_sent = defaultdict(float)
 
@@ -56,7 +56,7 @@ class TelegramLogHandler(logging.Handler):
         super().__init__(level)
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self._rl = _TelegramRateLimiter(cooldown_sec=10.0)  # ✅ 추가
+        self._rl = _TelegramRateLimiter(cooldown_sec=1.0)  # ✅ 추가
 
     def emit(self, record):
         try:
@@ -72,6 +72,8 @@ class TelegramLogHandler(logging.Handler):
                     price = obj.get("price")
                     ma100 = obj.get("ma100")
                     d_pct = obj.get("ma_delta_pct") or 0
+                    pnl_pct = obj.get("pnl_pct")
+                    entry_price = obj.get("entry_price")
 
                     dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
 
@@ -82,18 +84,14 @@ class TelegramLogHandler(logging.Handler):
                         reason0 = str(reasons[0])
                     elif isinstance(reasons, str) and reasons:
                         reason0 = reasons.split(",")[0].strip()
-                    reason_tag = f"({reason0})" if reason0 else ""
 
                     # ✅ 플랫폼/엔진(네임스페이스) 표시
                     engine = (obj.get("engine") or obj.get("namespace") or obj.get("source") or "").upper()
                     engine_tag = f"[{engine}]" if engine else ""
 
-                    badge = "🟢" if side=="LONG" else "🔴"
-                    title = "진입" if kind=="ENTRY" else "청산"
-                    side_kr = "롱" if side=="LONG" else "숏"
-
-                    # ✅ 헤드라인에 reason0 표시
-                    headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호 {reason_tag}"
+                    badge = "🟢" if side == "LONG" else "🔴"
+                    title = "진입" if kind == "ENTRY" else "청산"
+                    side_kr = "롱" if side == "LONG" else "숏"
 
                     # 값 포맷 안전화
                     def _fmt1(x, dp=1):
@@ -104,18 +102,53 @@ class TelegramLogHandler(logging.Handler):
 
                     pct_txt = "N/A"
                     try:
-                        pct_txt = f"{float(d_pct) :+.2f}%"
+                        pct_txt = f"{float(d_pct):+.2f}%"
                     except Exception:
                         pass
 
-                    text = (
-                        f"{headline}\n"
+                    # ✅ 1줄: 헤드라인(짧게)
+                    headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
+
+                    # ✅ 2줄: (reason) (PNL ...)
+                    line_reason = ""
+                    if reason0:
+                        line_reason += f"({reason0})"
+
+                    if kind == "EXIT":
+                        try:
+                            if pnl_pct is not None and pnl_pct != "":
+                                line_reason += f" (PNL {float(pnl_pct):+.2f}%)"
+                        except Exception:
+                            pass
+
+                    # ✅ 3줄: p/M100/Δ
+                    line_stats = (
                         f"p: {_fmt1(price, dp)}  "
                         f"M100: {_fmt1(ma100, dp)}  "
                         f"({pct_txt})"
                     )
 
-                    key = f"SIG:{symbol}:{kind}:{side}"
+                    # ✅ 4줄: entry (EXIT만)
+                    entry_line = ""
+                    if kind == "EXIT":
+                        try:
+                            if entry_price not in (None, "", 0, 0.0):
+                                entry_line = f"entry: {_fmt1(entry_price, dp)}"
+                        except Exception:
+                            entry_line = ""
+
+                    # ✅ 최종 조합
+                    lines = [headline]
+                    if line_reason:
+                        lines.append(line_reason)
+                    lines.append(line_stats)
+                    if entry_line:
+                        lines.append(entry_line)
+
+                    text = "\n".join(lines)
+
+                    sig_id = obj.get("signal_id") or ""
+                    key = f"SIG:{symbol}:{kind}:{side}:{sig_id}"
                     if not self._rl.allow(key):
                         return
 
@@ -123,6 +156,7 @@ class TelegramLogHandler(logging.Handler):
                     return
                 except Exception as e:
                     print(f"[Telegram prettify failed] {e} | raw={msg}")
+
             key = f"LOG:{record.levelname}"
             if not self._rl.allow(key):
                 return

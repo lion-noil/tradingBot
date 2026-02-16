@@ -154,6 +154,15 @@ def record_signal_with_ts(
     if open_id:
         stream_fields["open_signal_id"] = open_id
 
+    # ✅ EXIT일 때 entry_price/pnl_pct를 stream에 노출
+    if kind_u == "EXIT" and isinstance(payload, dict):
+        ep = payload.get("entry_price")
+        pp = payload.get("pnl_pct")
+        if ep is not None:
+            stream_fields["entry_price"] = "" if ep == "" else str(float(ep))
+        if pp is not None:
+            stream_fields["pnl_pct"] = "" if pp == "" else str(float(pp))
+
     pipe = redis_client.pipeline()
 
     # 1) hash 저장 + TTL
@@ -318,6 +327,10 @@ def record_and_index_signal(
         price=price,
         payload=sig_dict,
     )
+
+    # ✅ SIG 로그(JSON)에 유니크 id 포함 (텔레그램 rate-limit key로 사용 가능)
+    sig_dict["signal_id"] = sid
+    sig_dict["ts_ms"] = ts_ms
 
     # ✅ 로컬 캐시도 같이 갱신
     if kind_u == "ENTRY":

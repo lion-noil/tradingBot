@@ -121,15 +121,30 @@ class SignalProcessor:
                 continue
 
             for target_open_id in targets:
+
+                entry_price = 0.0
+                for (sid, _, ep) in open_items:
+                    if sid == target_open_id:
+                        entry_price = float(ep or 0.0)
+                        break
+
+                pnl_pct = None
+                if entry_price > 0:
+                    if side == "LONG":
+                        pnl_pct = (price - entry_price) / entry_price * 100.0
+                    else:  # SHORT
+                        pnl_pct = (entry_price - price) / entry_price * 100.0
+
                 payload = {
                     **sig,
                     "open_signal_id": target_open_id,
                     "price": price,
+                    "entry_price": entry_price,  # ✅ 추가
+                    "pnl_pct": pnl_pct,  # ✅ 추가
                     "ma100": now_ma100,
                     "ma_delta_pct": (price - now_ma100) / max(now_ma100, 1e-12) * 100.0,
                 }
-                signal_id, ts_ms  = self._record(symbol, side, "EXIT", price, payload)
-
+                signal_id, ts_ms = self._record(symbol, side, "EXIT", price, payload)
 
                 actions.append(TradeAction(
                     action="EXIT",
