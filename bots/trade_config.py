@@ -157,7 +157,7 @@ def make_bybit_config(
     # 인디케이터 기본값 (기존 TradeConfig 기본값과 동일)
     indicator_min_thr: float = 0.004,
     indicator_max_thr: float = 0.05,
-    target_cross: int = 14,
+    target_cross: int = 7,
     candles_num: int = 10080,
 
     # 실행/네트워크
@@ -225,7 +225,7 @@ def make_mt5_signal_config(
     *,
     indicator_min_thr: float = 0.005,
     indicator_max_thr: float = 0.07,
-    target_cross: int = 14,
+    target_cross: int = 7,
     candles_num: int = 10080,
     symbols: list[str] | tuple[str, ...] | None = None,
     min_ma_threshold: float = 0.0055,
