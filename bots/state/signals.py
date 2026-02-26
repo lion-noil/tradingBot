@@ -11,6 +11,7 @@ from collections import deque
 from core.redis_client import redis_client
 from zoneinfo import ZoneInfo
 from datetime import datetime
+
 DAY_MS = 86_400_000
 _TZ = ZoneInfo("Asia/Seoul")
 
@@ -84,16 +85,16 @@ def _normalize_kind(kind: str) -> str:
 
 
 def record_signal_with_ts(
-    *,
-    namespace: str = "bybit",
-    symbol: str,
-    side: str,                    # "LONG" | "SHORT"
-    kind: str,                    # "ENTRY" | "EXIT" (또는 OPEN/CLOSE 들어와도 됨)
-    price: Optional[float] = None,
-    payload: Any = None,
-    ts_ms: Optional[int] = None,
-    keep_days: int = 10,
-    trim_approx: bool = True,
+        *,
+        namespace: str = "bybit",
+        symbol: str,
+        side: str,  # "LONG" | "SHORT"
+        kind: str,  # "ENTRY" | "EXIT" (또는 OPEN/CLOSE 들어와도 됨)
+        price: Optional[float] = None,
+        payload: Any = None,
+        ts_ms: Optional[int] = None,
+        keep_days: int = 10,
+        trim_approx: bool = True,
 ) -> Tuple[str, int]:
     """
     신호 발생 시점 기록 (체결/lot과 무관)
@@ -185,9 +186,10 @@ def record_signal_with_ts(
     pipe.execute()
     return sid, ts
 
+
 # ---------- local cache (no redis writes!) ----------
 Key = Tuple[str, str, str]  # (namespace, symbol, side)
-Item = Tuple[str, int, float]  # (signal_id, ts_ms, entry_price)
+Item = Tuple[str, int, float, str]  # ✅ (signal_id, ts_ms, entry_price, tag)
 
 
 class OpenSignalsIndex:
@@ -200,7 +202,6 @@ class OpenSignalsIndex:
                 zkey = open_zset_key(namespace, sym, side)
                 rows = redis_client.zrange(zkey, 0, -1, withscores=True)  # oldest -> newest
 
-                # sid 목록
                 sids: List[str] = []
                 ts_list: List[int] = []
                 for sid_b, score in rows:
@@ -208,26 +209,46 @@ class OpenSignalsIndex:
                     sids.append(sid)
                     ts_list.append(int(score))
 
-                # ✅ sid별 entry_price는 hash에서 읽어옴 (pipeline)
                 prices: List[float] = []
+                tags: List[str] = []
+
                 if sids:
                     pipe = redis_client.pipeline()
                     for sid in sids:
                         hkey = signal_hash_key(namespace, sid)
                         pipe.hget(hkey, "price")
-                    raw_prices = pipe.execute()
+                        pipe.hget(hkey, "payload_json")  # ✅ 추가
+                    raw = pipe.execute()
 
-                    for rp in raw_prices:
-                        # record_signal_with_ts에서 price는 "" 또는 "123.45" 문자열로 저장
+                    # raw = [price0, payload0, price1, payload1, ...]
+                    for i in range(0, len(raw), 2):
+                        rp = raw[i]
+                        rpayload = raw[i + 1]
+
+                        # price
                         try:
                             p = float(rp) if rp not in (None, b"", "") else 0.0
                         except Exception:
                             p = 0.0
                         prices.append(p)
 
+                        # tag from payload_json.reasons[0]
+                        tag = ""
+                        try:
+                            if isinstance(rpayload, (bytes, bytearray)):
+                                rpayload = rpayload.decode("utf-8", "ignore")
+                            if rpayload:
+                                pd = json.loads(rpayload)
+                                rs = pd.get("reasons") if isinstance(pd, dict) else None
+                                if isinstance(rs, list) and rs:
+                                    tag = str(rs[0])
+                        except Exception:
+                            tag = ""
+                        tags.append(tag)
+
                 d: Deque[Item] = deque()
-                for sid, ts, p in zip(sids, ts_list, prices):
-                    d.append((sid, ts, float(p)))
+                for sid, ts, p, tag in zip(sids, ts_list, prices, tags):
+                    d.append((sid, ts, float(p), str(tag)))
 
                 self._dq[(namespace, sym, side)] = d
 
@@ -238,26 +259,27 @@ class OpenSignalsIndex:
         return OpenSignalStats(count=len(d), oldest_ts_ms=d[0][1], newest_ts_ms=d[-1][1])
 
     def on_open(
-        self,
-        *,
-        namespace: str,
-        symbol: str,
-        side: str,
-        signal_id: str,
-        ts_ms: int,
-        entry_price: float,
+            self,
+            *,
+            namespace: str,
+            symbol: str,
+            side: str,
+            signal_id: str,
+            ts_ms: int,
+            entry_price: float,
+            tag: str,  # ✅ 추가
     ) -> None:
         key = (namespace, symbol, side)
-        self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price)))
+        self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price), str(tag or "")))
 
     def list_open(
-        self,
-        *,
-        namespace: str,
-        symbol: str,
-        side: str,
-        newest_first: bool = True,
-        limit: Optional[int] = None,
+            self,
+            *,
+            namespace: str,
+            symbol: str,
+            side: str,
+            newest_first: bool = True,
+            limit: Optional[int] = None,
     ) -> List[Item]:
         d = self._dq.get((namespace, symbol, side))
         if not d:
@@ -270,18 +292,18 @@ class OpenSignalsIndex:
         return rows
 
     def on_close_by_id(
-        self,
-        *,
-        namespace: str,
-        symbol: str,
-        side: str,
-        open_signal_id: str,
+            self,
+            *,
+            namespace: str,
+            symbol: str,
+            side: str,
+            open_signal_id: str,
     ) -> Optional[Item]:
         key = (namespace, symbol, side)
         d = self._dq.get(key)
         if not d:
             return None
-        for i, (sid, ts, p) in enumerate(d):
+        for i, (sid, ts, p, tag) in enumerate(d):  # ✅ 4튜플
             if sid == open_signal_id:
                 d.rotate(-i)
                 item = d.popleft()
@@ -289,18 +311,19 @@ class OpenSignalsIndex:
                 return item
         return None
 
+
 def record_and_index_signal(
-    *,
-    namespace: str,
-    open_index: "OpenSignalsIndex",
-    sym: str,
-    side: str,
-    kind: str,
-    price: Optional[float],
-    payload: Any,
-    engine: Optional[str] = None,
-    system_logger=None,
-    trading_logger=None,
+        *,
+        namespace: str,
+        open_index: "OpenSignalsIndex",
+        sym: str,
+        side: str,
+        kind: str,
+        price: Optional[float],
+        payload: Any,
+        engine: Optional[str] = None,
+        system_logger=None,
+        trading_logger=None,
 ) -> Tuple[str, int]:
     # payload dict 보장
     p = payload if isinstance(payload, dict) else {}
@@ -334,6 +357,12 @@ def record_and_index_signal(
 
     # ✅ 로컬 캐시도 같이 갱신
     if kind_u == "ENTRY":
+        # tag는 reasons[0] 사용 (INIT / SCALE_IN 등)
+        tag = ""
+        rs = sig_dict.get("reasons")
+        if isinstance(rs, list) and rs:
+            tag = str(rs[0])
+
         open_index.on_open(
             namespace=namespace,
             symbol=sym_u,
@@ -341,6 +370,7 @@ def record_and_index_signal(
             signal_id=sid,
             ts_ms=ts_ms,
             entry_price=float(price or 0.0),
+            tag=tag,  # ✅ 추가
         )
     else:
         open_id = _extract_open_signal_id(sig_dict)  # record_signal_with_ts에서 이미 검증됨

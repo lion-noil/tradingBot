@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Tuple
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+import time
+from strategies.basic_entry import get_short_entry_signal, get_long_entry_signal
+from strategies.basic_exit import get_exit_signal
 
-from strategies.basic_strategy import (
-    get_short_entry_signal, get_long_entry_signal, get_exit_signal
-)
+# ✅ tag 포함 (signal_id, ts_ms, entry_price, entry_tag)
+Item = Tuple[str, int, float, str]
 
 
 @dataclass
@@ -22,9 +24,6 @@ class TradeAction:
     close_open_signal_id: Optional[str] = None
 
 
-Item = Tuple[str, int, float]  # (signal_id, ts_ms, entry_price)
-
-
 @dataclass
 class SignalProcessorDeps:
     # --- state getters ---
@@ -37,7 +36,9 @@ class SignalProcessorDeps:
     get_position_max_hold_sec: Callable[[], int]
     get_near_touch_window_sec: Callable[[], int]
 
-    get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> items
+    # ✅ 이제 tag 포함해서 내려줘야 함
+    get_open_signal_items: Callable[[str, str], List[Item]]  # (symbol, side) -> [(sid, ts, ep, tag), ...]
+
     get_last_scaleout_ts_ms: Callable[[str, str], Optional[int]]
     set_last_scaleout_ts_ms: Callable[[str, str, int], None]
 
@@ -83,17 +84,11 @@ class SignalProcessor:
 
         return []
 
-    def _decide_exits(
-            self,
-            symbol: str,
-            price: float,
-            now_ma100: float,
-            thr: float,
-    ) -> List[TradeAction]:
+    def _decide_exits(self, symbol: str, price: float, now_ma100: float, thr: float) -> List[TradeAction]:
         actions: List[TradeAction] = []
 
         for side in ("LONG", "SHORT"):
-            open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts, entry_price), newest-first]
+            open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts, ep, tag), ...]
 
             if not open_items:
                 continue
@@ -102,14 +97,12 @@ class SignalProcessor:
                 side=side,
                 price=price,
                 ma100=now_ma100,
-                prev3_candle=self.deps.get_prev3_candle(symbol),  # ✅ 추가
-                open_items=open_items,  # [(open_signal_id, ts_ms, entry_price), ...]
-
+                prev3_candle=self.deps.get_prev3_candle(symbol),
+                open_items=open_items,  # ✅ 4튜플 그대로
                 ma_threshold=float(thr),
                 time_limit_sec=self.deps.get_position_max_hold_sec(),
                 near_touch_window_sec=self.deps.get_near_touch_window_sec(),
-
-                momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),  # ✅ 추가
+                momentum_threshold=float(self.deps.get_momentum_threshold(symbol) or 0.0),
                 last_scaleout_ts_ms=self.deps.get_last_scaleout_ts_ms(symbol, side),
             )
 
@@ -121,9 +114,8 @@ class SignalProcessor:
                 continue
 
             for target_open_id in targets:
-
                 entry_price = 0.0
-                for (sid, _, ep) in open_items:
+                for (sid, _ts, ep, _tag) in open_items:
                     if sid == target_open_id:
                         entry_price = float(ep or 0.0)
                         break
@@ -132,15 +124,15 @@ class SignalProcessor:
                 if entry_price > 0:
                     if side == "LONG":
                         pnl_pct = (price - entry_price) / entry_price * 100.0
-                    else:  # SHORT
+                    else:
                         pnl_pct = (entry_price - price) / entry_price * 100.0
 
                 payload = {
                     **sig,
                     "open_signal_id": target_open_id,
                     "price": price,
-                    "entry_price": entry_price,  # ✅ 추가
-                    "pnl_pct": pnl_pct,  # ✅ 추가
+                    "entry_price": entry_price,
+                    "pnl_pct": pnl_pct,
                     "ma100": now_ma100,
                     "ma_delta_pct": (price - now_ma100) / max(now_ma100, 1e-12) * 100.0,
                 }
@@ -150,68 +142,86 @@ class SignalProcessor:
                     action="EXIT",
                     symbol=symbol,
                     side=side,
-                    sig=payload,  # ✅ payload 넣는게 좋음(개별 open_signal_id 포함)
+                    sig=payload,
                     signal_id=signal_id,
                     close_open_signal_id=target_open_id,
                 ))
 
-                # ✅ SCALE_OUT이면 쿨다운 캐시 갱신
                 if payload.get("mode") == "SCALE_OUT":
                     self.deps.set_last_scaleout_ts_ms(symbol, side, int(ts_ms))
 
         return actions
 
-    def _decide_entries(
-            self,
-            symbol: str,
-            price: float,
-            now_ma100: float,
-            thr: float,
-    ) -> List[TradeAction]:
+    def _decide_entries(self, symbol: str, price: float, now_ma100: float, thr: float) -> List[TradeAction]:
         actions: List[TradeAction] = []
 
-        # --- Short ---
-        open_items = self.deps.get_open_signal_items(symbol, "SHORT")  # ✅ 추가
+        prev3 = self.deps.get_prev3_candle(symbol)
+        mom_thr = self.deps.get_momentum_threshold(symbol)
 
-        sig_s = get_short_entry_signal(
-            price=price,
-            ma100=now_ma100,
-            prev3_candle=self.deps.get_prev3_candle(symbol),
-            open_items=open_items,  # ✅ 추가
-            ma_threshold=float(thr),  # ✅ 원본 thr 그대로
-            momentum_threshold=self.deps.get_momentum_threshold(symbol),
-        )
-        if sig_s:
-            signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
-            actions.append(TradeAction(
-                action="ENTRY",
-                symbol=symbol,
-                side="SHORT",
+        now_ms = int(time.time() * 1000)
+
+        def _has_init(items: List[Item]) -> bool:
+            return any((tag == "INIT") for (_sid, _ts, _ep, tag) in (items or []))
+
+        def _init_age_sec(items: List[Item]) -> Optional[int]:
+            # INIT이 여러개면 가장 오래된 INIT 기준(보통 1개일 것)
+            inits = [(ts, sid) for (sid, ts, _ep, tag) in (items or []) if tag == "INIT"]
+            if not inits:
+                return None
+            init_ts, _ = min(inits, key=lambda x: x[0])
+            return max(0, (now_ms - int(init_ts)) // 1000)
+
+        # ---------------- SHORT ----------------
+        open_short = self.deps.get_open_signal_items(symbol, "SHORT")  # [(sid, ts, ep, tag), ...]
+
+        # ✅ “포지션 있는 상태에서 추가진입 허용 조건”을 여기서 결정
+        # 예: INIT이 없으면 추가진입 금지 (원하면 조건 바꾸면 됨)
+        allow_short_add = (not open_short) or _has_init(open_short)
+
+        if allow_short_add:
+
+            sig_s = get_short_entry_signal(
                 price=price,
-                sig=sig_s,
-                signal_id=signal_id,
-            ))
+                ma100=now_ma100,
+                prev3_candle=prev3,
+                open_items=open_short,  # ✅ 4튜플 그대로
+                ma_threshold=float(thr),
+                momentum_threshold=mom_thr,
+            )
+            if sig_s:
+                signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
+                actions.append(TradeAction(
+                    action="ENTRY",
+                    symbol=symbol,
+                    side="SHORT",
+                    price=price,
+                    sig=sig_s,
+                    signal_id=signal_id,
+                ))
 
-        # --- Long ---
-        open_items = self.deps.get_open_signal_items(symbol, "LONG")  # ✅ 추가
+        # ---------------- LONG ----------------
+        open_long = self.deps.get_open_signal_items(symbol, "LONG")
 
-        sig_l = get_long_entry_signal(
-            price=price,
-            ma100=now_ma100,
-            prev3_candle=self.deps.get_prev3_candle(symbol),
-            open_items=open_items,  # ✅ 추가
-            ma_threshold=float(thr),  # ✅ 원본 thr 그대로
-            momentum_threshold=self.deps.get_momentum_threshold(symbol),
-        )
-        if sig_l:
-            signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
-            actions.append(TradeAction(
-                action="ENTRY",
-                symbol=symbol,
-                side="LONG",
+        allow_long_add = (not open_long) or _has_init(open_long)
+
+        if allow_long_add:
+            sig_l = get_long_entry_signal(
                 price=price,
-                sig=sig_l,
-                signal_id=signal_id,
-            ))
+                ma100=now_ma100,
+                prev3_candle=prev3,
+                open_items=open_long,  # ✅ 4튜플 그대로
+                ma_threshold=float(thr),
+                momentum_threshold=mom_thr,
+            )
+            if sig_l:
+                signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
+                actions.append(TradeAction(
+                    action="ENTRY",
+                    symbol=symbol,
+                    side="LONG",
+                    price=price,
+                    sig=sig_l,
+                    signal_id=signal_id,
+                ))
 
         return actions
