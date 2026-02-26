@@ -39,6 +39,17 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 
 ---
 
+### INIT2 / INIT3 (INIT 이후 15분 이내)
+
+| 방향 | 조건 |
+|------|------|
+| LONG | INIT 이후 15분 이내 <br> INIT2: 가격 ≤ INIT_price × (1 - ma_thr_eff × 1) <br> INIT3: 가격 ≤ INIT_price × (1 - ma_thr_eff × 2) |
+| SHORT | INIT 이후 15분 이내 <br> INIT2: 가격 ≥ INIT_price × (1 + ma_thr_eff × 1) <br> INIT3: 가격 ≥ INIT_price × (1 + ma_thr_eff × 2) |
+
+→ INIT 기준 추가 이탈 시 빠른 확장 진입
+
+---
+
 ### SCALE IN (최대 4회)
 
 | 방향 | 조건 |
@@ -46,11 +57,13 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 | LONG | (1) 직전 진입가보다 낮음 AND (2) 3분 하락 모멘텀 ≥ momentum_threshold AND (3) 가격 ≤ MA100 × (1 - ma_thr_eff / 2) |
 | SHORT | (1) 직전 진입가보다 높음 AND (2) 3분 상승 모멘텀 ≥ momentum_threshold AND (3) 가격 ≥ MA100 × (1 + ma_thr_eff / 2) |
 
-→ 불리한 방향으로 더 이탈 시 계단식 진입
+→ 불리한 방향으로 더 이탈 시 계단식 진입 (30분 쿨다운)
 
 ---
 
 ## 🔴 EXIT
+
+---
 
 ### 1️⃣ STOP LOSS (oldest 1개 기준)
 
@@ -60,8 +73,17 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 | SHORT | 가격 ≥ 진입가 × (1 + sl_pct) |
 
 - sl_pct = ma_thr_eff × age_factor
-- 즉, **진입 당시 MA 이탈폭만큼 추가로 밀리면 손절**
 - 보유 시간이 길수록 age_factor 감소 → 손절폭 축소
+
+#### 📌 Age Factor 정책
+
+| 보유 시간 | age_factor |
+|------------|------------|
+| < 1h | 3.0 |
+| 1 ~ 2h | 2.5 |
+| 2 ~ 12h | 2.0 |
+| 12 ~ 24h | 1.5 |
+| > 24h | 1.0 |
 
 ---
 
@@ -73,11 +95,21 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 | SHORT | 가격 ≤ 진입가 × (1 - tp_pct) |
 
 - tp_pct = ma_thr_eff × age_factor
-- **진입 당시 MA 이탈폭만큼 되돌리면 익절**
+- 진입 당시 MA 이탈폭만큼 되돌리면 익절
 
 ---
 
-### 3️⃣ NORMAL (전량 청산)
+### 3️⃣ RISK CONTROL (구조 정리)
+
+| 조건 | 청산 |
+|------|------|
+| 3~4개 랏 보유 AND 평균진입가 대비 ±0.3% 유리 | 3개 → oldest 1개 <br> 4개 → 전체 청산 |
+
+→ 다중 랏 위험 구간에서 빠른 리스크 축소
+
+---
+
+### 4️⃣ NORMAL (전량 청산)
 
 | 방향 | 조건 |
 |------|------|
@@ -88,18 +120,22 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 
 ---
 
-### 4️⃣ SCALE OUT (부분 익절)
+### 5️⃣ SCALE OUT (부분 익절, newest 1개 청산)
 
 | 방향 | 조건 |
 |------|------|
-| LONG | 가격 ≥ MA100 × (1 + ma_thr_eff / 3) AND 3분 상승 모멘텀 ≥ momentum_threshold |
-| SHORT | 가격 ≤ MA100 × (1 - ma_thr_eff / 3) AND 3분 하락 모멘텀 ≥ momentum_threshold |
+| LONG | (1) 가격 ≥ 직전 랏 진입가 AND (2) 가격 ≥ MA100 × (1 + ma_thr_eff / 2) |
+| SHORT | (1) 가격 ≤ 직전 랏 진입가 AND (2) 가격 ≤ MA100 × (1 - ma_thr_eff / 2) |
 
-→ MA 일부 복귀 구간에서 최근 진입 1개 정리
+- 직전 랏(prev entry) 기준 회귀 확인
+- 모멘텀 조건 없음
+- scaleout_cooldown 적용
+
+→ 최근 진입 물량부터 점진적 감량
 
 ---
 
-### 5️⃣ INIT OUT (1개 보유 시 빠른 탈출)
+### 6️⃣ INIT OUT (1개 보유 시 빠른 탈출)
 
 | 방향 | 조건 |
 |------|------|
@@ -110,15 +146,26 @@ Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트
 
 ---
 
+### 7️⃣ NEAR TOUCH (근접 청산)
+
+| 조건 | 청산 |
+|------|------|
+| newest 보유시간 ≤ near_touch_window_sec AND MA100 근접 도달 | newest 1개 |
+
+→ 최근 진입 물량의 빠른 경량화
+
+---
+
 ## ⚙ 핵심 구조 요약
 
 - 기준선: MA100
-- 모멘텀: 3분 봉 기준 변화율
+- 모멘텀: 3분 봉 변화율
 - 최대 진입: 4회
-- 손절/익절: 진입가 기준 MA 이탈폭 기반
-- 보유 시간이 길수록 SL/TP 폭 축소
 - oldest 우선 청산 구조
+- SL/TP = MA 이탈폭 기반 동적 조정
+- 다중 랏 시 0.3% 회복 시 구조 정리
 - 부분청산 + 전량청산 병행
+- 평균회귀 기반 다단계 포지션 관리 전략
 
 ## License
 Private / Internal
