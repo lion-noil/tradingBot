@@ -126,7 +126,7 @@ def get_exit_signal(
                         f"SL({age_band_sl})",
                         "CLOSE_OLDEST_ONLY",
                         f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
-                        f"held={held_old_txt}",
+                        f"held= {held_old_txt}",
                         f"OLDEST_PNL -{fmt_pct2(sl_pct)}",
                         f"pnl={fmt_pct2(pnl_old_pct)}",
                     ],
