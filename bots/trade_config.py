@@ -241,8 +241,7 @@ def make_mt5_signal_config(
     _load_dotenv_once()
 
     symbols = _parse_symbols(os.getenv("MT5_SYMBOLS"))
-    entry_percent = 5.0
-    # leverage 50이므로 1은 50% 진입(=50 x 3%)
+    entry_percent = 2.0
     """if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
             "XAUUSD":0.5,
