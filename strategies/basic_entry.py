@@ -30,7 +30,7 @@ def get_long_entry_signal(
 
     items = _sorted_items(open_items)
 
-    MAX_OPEN = 4
+    MAX_OPEN = 6
     if len(items) >= MAX_OPEN:
         return None
 
@@ -183,7 +183,7 @@ def get_short_entry_signal(
 
     items = _sorted_items(open_items)
 
-    MAX_OPEN = 4
+    MAX_OPEN = 6
     if len(items) >= MAX_OPEN:
         return None
 

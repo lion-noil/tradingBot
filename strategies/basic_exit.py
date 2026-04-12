@@ -74,9 +74,7 @@ def get_exit_signal(
         }
 
     # ------------------------------------------------------------
-    # STOP_LOSS / TAKE_PROFIT
-    #   - SL: oldest 1개 기준 (age: oldest)
-    #   - TP: newest 1개 기준 (age: newest)
+    # STOP_LOSS / TAKE_PROFIT(age: oldest)
     # ------------------------------------------------------------
     oldest_id, oldest_ts, oldest_entry_price, _tag0 = items[0]
     try:
@@ -84,20 +82,24 @@ def get_exit_signal(
     except Exception:
         oldest_entry = 0.0
 
-    def _sl_tp_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
+    def _sl_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
         s = int(elapsed_sec or 0)
-        if s < 60 * 60:
-            return ("_1H", 2.5)
-        if s < 2 * 60 * 60:
-            return ("1H_2H", 2)
-        if s < 12 * 60 * 60:
-            return ("2H_12H", 1.5)
-        if s < 24 * 60 * 60:
-            return ("12H_24H", 1)
-        return ("24H_", 0.5)
+        if s < 24 * 60 * 60:  # 1일 미만
+            return ("_1D", 5.0)
+        if s < 3 * 24 * 60 * 60:  # 1~3일
+            return ("1D_3D", 4.0)
+        return ("3D_", 3.0)
 
-    age_band_sl, age_factor_sl = _sl_tp_policy_by_age(oldest_elapsed_sec)
-    age_band_tp, age_factor_tp = _sl_tp_policy_by_age(newest_elapsed_sec)
+    def _tp_policy_by_age(elapsed_sec: int) -> tuple[str, float]:
+        s = int(elapsed_sec or 0)
+        if s < 24 * 60 * 60:  # 1일 미만
+            return ("_1D", 3.0)
+        if s < 3 * 24 * 60 * 60:  # 1~3일
+            return ("1D_3D", 2.0)
+        return ("3D_", 1.0)
+
+    age_band_sl, age_factor_sl = _sl_policy_by_age(oldest_elapsed_sec)
+    age_band_tp, age_factor_tp = _tp_policy_by_age(oldest_elapsed_sec)
 
     if price is not None:
         sl_pct = float(ma_thr_eff) * float(age_factor_sl)
@@ -155,67 +157,52 @@ def get_exit_signal(
                 }
 
         # -------------------------
-        # TP: newest 기준 (newest 1개만 청산)
+        # TP: oldest 기준
         # -------------------------
-        newest_id, newest_ts, newest_entry_price, _tagN = items[-1]
-        try:
-            newest_entry = float(newest_entry_price or 0.0)
-        except Exception:
-            newest_entry = 0.0
-
-        if newest_entry > 0:
-            if side == "LONG":
-                pnl_new_pct = (float(price) - newest_entry) / newest_entry
-            elif side == "SHORT":
-                pnl_new_pct = (newest_entry - float(price)) / newest_entry
-            else:
-                pnl_new_pct = 0.0
-
-            held_new_txt = fmt_dur_smh_d(newest_elapsed_sec)
-
-            if pnl_new_pct >= tp_pct:
-                return {
-                    "kind": "EXIT",
-                    "mode": "TAKE_PROFIT",
-                    "targets": [newest_id],
-                    "anchor_open_signal_id": newest_id,
-                    "reasons": [
-                        f"TP({age_band_tp})",
-                        "CLOSE_NEWEST_ONLY",
-                        f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",
-                        f"held={held_new_txt}",
-                        f"NEWEST_PNL +{fmt_pct2(tp_pct)}",
-                        f"pnl={fmt_pct2(pnl_new_pct)}",
-                    ],
-                    "thresholds": {
-                        "sl_pct": sl_pct,
-                        "tp_pct": tp_pct,
-                        "age_factor_sl": float(age_factor_sl),
-                        "age_band_sl": age_band_sl,
-                        "age_factor_tp": float(age_factor_tp),
-                        "age_band_tp": age_band_tp,
-                        "held_sec": int(newest_elapsed_sec),
-                        "newest_entry_price": newest_entry,
-                        "ma": ma_thr_eff,
-                        "exit_easing": exit_easing,
-                        "x": x, "y": y,
-                    },
-                    "extra": {
-                        "newest_entry_price": newest_entry,
-                        "pnl_pct": pnl_new_pct,
-                        "close_newest_only": True,
-                        "age_factor_tp": float(age_factor_tp),
-                        "age_band_tp": age_band_tp,
-                        "held_sec": int(newest_elapsed_sec),
-                        "sl_tp_tag": f"TP({age_band_tp})",
-                    },
-                }
+        if pnl_old_pct >= tp_pct:
+            return {
+                "kind": "EXIT",
+                "mode": "TAKE_PROFIT",
+                "targets": [oldest_id],
+                "anchor_open_signal_id": oldest_id,
+                "reasons": [
+                    f"TP({age_band_tp})",
+                    "CLOSE_OLDEST_ONLY",
+                    f"#EXIT {fmt_targets_idx(open_idx, [oldest_id])}/{total_n}",
+                    f"held={held_old_txt}",
+                    f"OLDEST_PNL +{fmt_pct2(tp_pct)}",
+                    f"pnl={fmt_pct2(pnl_old_pct)}",
+                ],
+                "thresholds": {
+                    "sl_pct": sl_pct,
+                    "tp_pct": tp_pct,
+                    "age_factor_sl": float(age_factor_sl),
+                    "age_band_sl": age_band_sl,
+                    "age_factor_tp": float(age_factor_tp),
+                    "age_band_tp": age_band_tp,
+                    "held_sec": int(oldest_elapsed_sec),
+                    "oldest_entry_price": oldest_entry,
+                    "ma": ma_thr_eff,
+                    "exit_easing": exit_easing,
+                    "x": x, "y": y,
+                },
+                "extra": {
+                    "oldest_entry_price": oldest_entry,
+                    "pnl_pct": pnl_old_pct,
+                    "close_oldest_only": True,
+                    "age_factor_tp": float(age_factor_tp),
+                    "age_band_tp": age_band_tp,
+                    "held_sec": int(oldest_elapsed_sec),
+                    "sl_tp_tag": f"TP({age_band_tp})",
+                },
+            }
 
     # ------------------------------------------------------------
     # RISK_CONTROL
     # ------------------------------------------------------------
+    # 포지션 평균가를 기준으로 트리거됨.
     PROFIT_TAKE_PCT = 0.003  # 0.3%
-    if len(items) in (3, 4):
+    if len(items) >=3:
         avg_entry = sum(float(ep) for (_sid, _ts, ep, _tag) in items) / max(len(items), 1)
 
         if side == "LONG":
@@ -229,13 +216,13 @@ def get_exit_signal(
             profit_sign = ""
 
         if hit:
-            if len(items) == 3:
+            if len(items) < 6:
                 target_ids = [oldest_id]
-                mode = "RISK_CONTROL_3"
+                mode = "RISK_CONTROL_ONE"
                 extra = {"risk_control": True, "close_oldest_only": True}
             else:
                 target_ids = [sid for (sid, _ts, _ep, _tag) in items]
-                mode = "RISK_CONTROL_4"
+                mode = "RISK_CONTROL_ALL"
                 extra = {"risk_control": True, "close_all": True}
 
             return {
@@ -265,6 +252,12 @@ def get_exit_signal(
     # ------------------------------------------------------------
     # touch band
     # ------------------------------------------------------------
+    newest_id, newest_ts, newest_entry_price, _tagN = items[-1]
+    try:
+        newest_entry = float(newest_entry_price or 0.0)
+    except Exception:
+        newest_entry = 0.0
+
     if newest_elapsed_sec <= x:
         band = "NEAR"
         trigger_pct = -float(exit_easing)
@@ -276,12 +269,28 @@ def get_exit_signal(
         trigger_name = "일반"
         band_label = f"⛳ {fmt_dur_smh_d(x)}~{fmt_dur_smh_d(y)}"
 
+    cond1 = False
+    cond2 = False
     if side == "LONG":
-        touched = price >= ma100 * (1 + trigger_pct)
+        if band == "NEAR":
+            cond1 = price >= ma100 * (1 + trigger_pct)  # 기존 MA 기준
+            cond2 = price >= newest_entry * (1 + ma_thr_eff * 0.7)  # 70% 기준
+            touched = cond1 or cond2
+        else:
+            touched = price >= ma100 * (1 + trigger_pct)
+
+
     elif side == "SHORT":
-        touched = price <= ma100 * (1 - trigger_pct)
+        if band == "NEAR":
+            cond1 = price <= ma100 * (1 - trigger_pct)
+            cond2 = price <= newest_entry * (1 - ma_thr_eff * 0.7)
+            touched = cond1 or cond2
+        else:
+            touched = price <= ma100 * (1 - trigger_pct)
+
     else:
         return None
+
 
     pct_abs_txt = fmt_pct2(abs(trigger_pct))
     sign = ("-" if side == "LONG" else "+") if band == "NEAR" else ("+" if side == "LONG" else "-")
@@ -359,6 +368,7 @@ def get_exit_signal(
                 }
 
     # INIT_OUT
+    # 포지션 1개, 기대수익/2, momentum
     if len(items) == 1 and (not _scaleout_on_cooldown()):
         mom = momentum_vs_prev_candle_ohlc(price, prev3_candle) if prev3_candle is not None else None
         if mom is not None:
