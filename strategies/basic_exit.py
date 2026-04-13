@@ -21,7 +21,7 @@ def get_exit_signal(
 
         ma_threshold: float = 0.01,
         time_limit_sec: int = None,
-        near_touch_window_sec: int = 60 * 60,
+        near_touch_window_sec: int = 30 * 60,
 
         momentum_threshold: float = 0.001,
 
