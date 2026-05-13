@@ -17,7 +17,7 @@ from bots.state.lots import (
     LotsIndex,
     get_lot_ex_lot_id,
 )
-from bots.trade_config import TradeConfig, make_mt5_signal_config,make_bybit_config
+from bots.trade_config import TradeConfig, make_mt5_signal_config, make_bybit_config
 from utils.logger import setup_logger
 # Rest controllers
 from controllers.bybit.bybit_rest_controller import BybitRestController
@@ -27,11 +27,13 @@ from datetime import datetime, timezone, timedelta
 
 KST = timezone(timedelta(hours=9))
 
+
 def _fmt_ts_ms(ts_ms: int) -> str:
     try:
         return datetime.fromtimestamp(int(ts_ms) / 1000, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return "-"
+
 
 def _weighted_avg(items) -> float:
     # items: List[LotCacheItem]
@@ -46,6 +48,7 @@ def _weighted_avg(items) -> float:
         den += q
     return (num / den) if den > 0 else 0.0
 
+
 def build_asset_log_with_lots(*, wallet: Dict[str, Any], lots_index: LotsIndex) -> str:
     # bot 스타일 느낌만 유지: wallet + 심볼별 포지션(롱/숏) + 엔트리 라인들
     lines: List[str] = ["\n💼 ASSET STATUS"]
@@ -55,7 +58,7 @@ def build_asset_log_with_lots(*, wallet: Dict[str, Any], lots_index: LotsIndex) 
         w = {k: float(v) for k, v in (wallet or {}).items()}
         lines.append(f"wallet={w}")
     except Exception:
-        lines.append(f"wallet={wallet or {}}")
+        lines.append(f"wallet={wallet or {} }")
 
     # lots_index 기준으로 “현재 오픈 포지션이 존재하는 심볼”만 뽑기
     symbols = []
@@ -101,12 +104,14 @@ def build_asset_log_with_lots(*, wallet: Dict[str, Any], lots_index: LotsIndex) 
 
     return "\n".join(lines).rstrip()
 
+
 # =========================
 # Settings (ENV) - account-based profile
 # =========================
 
 def _env(key: str, default: str = "") -> str:
     return (os.getenv(key) or default).strip()
+
 
 def _pick_profile_by_account_id(account_id: str) -> str:
     """
@@ -127,6 +132,7 @@ def _pick_profile_by_account_id(account_id: str) -> str:
             return p
 
     raise RuntimeError(f"No profile matched EXEC_ACCOUNT_ID={aid}. profiles={profiles}")
+
 
 # 어떤 계정을 돌릴지 (tenant key)
 EXEC_ACCOUNT_ID = _env("EXEC_ACCOUNT_ID")
@@ -156,14 +162,14 @@ EXECUTE_SYMBOLS = _env(f"EXEC_{PROFILE}_EXECUTE_SYMBOLS", "")
 # profile-scoped
 TRADE_REST_URL = _env(f"EXEC_{PROFILE}_TRADE_REST_URL", "")
 PRICE_REST_URL = _env(f"EXEC_{PROFILE}_PRICE_REST_URL", "")
-API_KEY   = _env(f"EXEC_{PROFILE}_TRADE_API_KEY", "")
-API_SECRET= _env(f"EXEC_{PROFILE}_TRADE_API_SECRET", "")
-
+API_KEY = _env(f"EXEC_{PROFILE}_TRADE_API_KEY", "")
+API_SECRET = _env(f"EXEC_{PROFILE}_TRADE_API_SECRET", "")
 
 # telegram (profile-scoped token + global chat id)
 tg_bot = _env(f"EXEC_{PROFILE}_TELEGRAM_BOT_TOKEN", "")
 tg_chat = _env("TELEGRAM_CHAT_ID", "")
 enable_tg = bool(tg_bot and tg_chat)
+
 
 def state_namespace() -> str:
     # lots/assets는 account_id 기준으로 분리
@@ -172,8 +178,8 @@ def state_namespace() -> str:
         return f"{BASE_NS}:{USER_ID}:{ACCOUNT_ID}"
     return f"{BASE_NS}:{USER_ID}"
 
-STATE_NS = state_namespace()
 
+STATE_NS = state_namespace()
 
 system_logger = setup_logger(
     "local_executor",
@@ -233,6 +239,7 @@ def pick_config_name(engine: str) -> str:
     if eng == "MT5":
         return "MT5"
 
+
 def load_engine_config(engine: str) -> TradeConfig:
     cfg_name = pick_config_name(engine)  # 위에서 만든 함수
     n = (cfg_name or "default").strip()
@@ -255,8 +262,11 @@ def make_event_id(msg: Dict[str, Any]) -> str:
     act = (msg.get("action") or "").upper().strip()
     sid = str(msg.get("signal_id") or "")
     return f"{src}|{sym}|{act}|{sid}"
+
+
 # --- dedup: in-memory (no Redis) ---
 _seen: dict[str, int] = {}  # eid -> expire_ms
+
 
 def dedup_seen(eid: str) -> bool:
     """
@@ -280,7 +290,6 @@ def dedup_seen(eid: str) -> bool:
     return False
 
 
-
 def entry_expired(ts_ms: int) -> bool:
     if ts_ms <= 0:
         return False
@@ -297,6 +306,7 @@ log = logging.getLogger("local_executor")
 # Filters (receive/execute)
 # =========================
 EX = parse_symbols(EXECUTE_SYMBOLS)
+
 
 def allow_execute(engine: str, symbol: str) -> bool:
     sym = (symbol or "").upper().strip()
@@ -317,7 +327,8 @@ class ExecContext:
     lots_index: LotsIndex
     rules_warmed: Set[str]
 
-    asset: Dict[str, Any]                 # ✅ 추가
+    asset: Dict[str, Any]  # ✅ 추가
+
 
 def make_rest(engine: str):
     eng = (engine or "").upper().strip()
@@ -362,6 +373,41 @@ def warmup_symbol_rules(ctx: ExecContext, symbol: str) -> None:
     system_logger.debug(f"[rules] warmed {ctx.engine} {sym} entryqty={qty}")
 
 
+TRADE_RECORDS_RETENTION_DAYS = 10
+
+def _redis_field(v):
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, separators=(",", ":"), default=str)
+    return str(v)
+
+
+def save_trade_record(state_ns: str, data: Dict[str, Any]) -> None:
+    key = f"trading:{state_ns}:trade_records"
+
+    payload = dict(data or {})
+    payload.setdefault("saved_ts_ms", now_ms())
+
+    fields = {
+        k: _redis_field(v)
+        for k, v in payload.items()
+        if v is not None
+    }
+
+    redis_client.xadd(
+        key,
+        fields,
+        maxlen=10000,
+        approximate=True,
+    )
+
+    # 10일 이전 기록 제거
+    cutoff_ms = now_ms() - TRADE_RECORDS_RETENTION_DAYS * 86400 * 1000
+    try:
+        redis_client.execute_command("XTRIM", key, "MINID", "~", f"{cutoff_ms}-0")
+    except Exception:
+        pass
 
 def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> None:
     """
@@ -400,7 +446,6 @@ def save_asset(state_ns: str, rest: Any, asset: dict, symbol: Optional[str]) -> 
 
 
 def build_ctx(engine: str) -> ExecContext:
-
     engine = (engine or DEFAULT_ENGINE).upper().strip()
     cfg = load_engine_config(engine)
 
@@ -415,7 +460,7 @@ def build_ctx(engine: str) -> ExecContext:
     base = set(EX or [])
     if not base:
         base.update(cfg.symbols or [])
-    symbols_ctx  = sorted({s.upper().strip() for s in base if s and s.strip()})
+    symbols_ctx = sorted({s.upper().strip() for s in base if s and s.strip()})
 
     lots_index.load_from_redis(symbols=symbols_ctx)
 
@@ -426,7 +471,7 @@ def build_ctx(engine: str) -> ExecContext:
         engine=engine,
         state_ns=state_ns_engine,
         rest=rest,
-        trade_executor=None,   # 아래에서 주입
+        trade_executor=None,  # 아래에서 주입
         lots_index=lots_index,
         rules_warmed=set(),
         asset=asset,
@@ -467,8 +512,10 @@ def build_ctx(engine: str) -> ExecContext:
         get_entry_percent=lambda sym: _get_entry_percent_for_symbol(sym),
         get_max_effective_leverage=lambda: float(max_eff),
         save_asset=lambda a, sym: save_asset(state_ns_engine, rest, a, sym),
+        save_trade_record=lambda data: save_trade_record(state_ns_engine, data),
 
-        open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None, ex_lot_id=None: open_lot(
+        open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
+                        ex_lot_id=None: open_lot(
             namespace=state_ns_engine,
             symbol=symbol,
             side=side,
@@ -484,7 +531,8 @@ def build_ctx(engine: str) -> ExecContext:
         get_lot_qty_total=lambda lot_id: _lot_qty(lot_id),
         get_lot_ex_lot_id=lambda lot_id: _lot_ex(lot_id),
 
-        on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id, ex_lot_id: lots_index.on_open(
+        on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id,
+                           ex_lot_id: lots_index.on_open(
             sym, side, lot_id,
             entry_ts_ms=entry_ts_ms,
             qty_total=qty_total,
@@ -534,10 +582,9 @@ def build_ctx(engine: str) -> ExecContext:
     return ctx
 
 
-
-
 # 멀티 거래소(엔진) 지원: BYBIT/MT5 둘 다 받을 수 있게 ctx map 구성
 CTX_MAP: Dict[str, ExecContext] = {}
+
 
 def get_ctx(engine: str) -> ExecContext:
     eng = (engine or DEFAULT_ENGINE).upper().strip()
@@ -580,7 +627,6 @@ async def handle_action(msg: Dict[str, Any]) -> None:
     if action == "ENTRY" and entry_expired(ts_ms):
         log.debug(f"[skip] expired ENTRY {engine} {symbol} sid={signal_id}")
         return
-
 
     # 4) context
     ctx = get_ctx(engine)
@@ -635,6 +681,8 @@ async def handle_action(msg: Dict[str, Any]) -> None:
             side,
             lot_id,
             exit_signal_id=str(signal_id),
+            exit_price=float(price) if price is not None else None,
+            close_open_signal_id=str(close_open_signal_id),
         )
 
         system_logger.debug(
@@ -646,7 +694,6 @@ async def handle_action(msg: Dict[str, Any]) -> None:
         return
 
     log.warning(f"[skip] unknown action={action} msg={msg}")
-
 
 
 def _is_normal_disconnect_exc(e: BaseException) -> bool:
@@ -750,6 +797,7 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
         system_logger.error(f"[warmup] FAIL symbols(sample)={fail_syms[:10]}")
         raise RuntimeError(f"warmup failed: {len(fail_syms)} symbols not tradable (min-notional)")
 
+
 async def main():
     log.debug("=== Local Executor ===")
     log.debug(f"listen={HOST}:{PORT}")
@@ -762,7 +810,7 @@ async def main():
     # ✅ 여기서 초기 snapshot
     try:
         ctx = get_ctx(DEFAULT_ENGINE)
-    # ✅ 부팅 시 rules warmup 강제 + 확인 로그
+        # ✅ 부팅 시 rules warmup 강제 + 확인 로그
         _warmup_all_symbols(ctx)
 
         system_logger.debug(

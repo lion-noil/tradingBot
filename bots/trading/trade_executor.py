@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional ,List
+from typing import Any, Callable, Dict, Optional, List
 import math
 import asyncio
 
@@ -23,7 +23,6 @@ class MinEntryResult:
     extra: Dict[str, Any]
 
 
-
 @dataclass
 class TradeExecutorDeps:
     get_asset: Callable[[], Dict[str, Any]]
@@ -31,6 +30,7 @@ class TradeExecutorDeps:
     get_entry_percent: Callable[[str], float]
     get_max_effective_leverage: Callable[[], float]
     save_asset: Callable[[Dict[str, Any], Optional[str]], None]
+    save_trade_record: Callable[[Dict[str, Any]], None]
 
     open_lot: Callable[..., str]
     close_lot_full: Callable[..., bool]
@@ -52,7 +52,7 @@ class TradeExecutor:
             system_logger=None,
             trading_logger=None,  # ✅ 추가
             engine_tag: str = "",  # ✅ engine_tag로
-            taker_fee_rate: float = 0.00055,   # ✅ 엔진에 있던 설정을 여기로
+            taker_fee_rate: float = 0.00055,  # ✅ 엔진에 있던 설정을 여기로
     ):
         self.rest = rest
         self.deps = deps
@@ -73,7 +73,7 @@ class TradeExecutor:
             system_logger=None,
             trading_logger=None,
             taker_fee_rate: float = 0.00055,
-            engine_tag: str = "",          # ✅ 추가
+            engine_tag: str = "",  # ✅ 추가
     ) -> "TradeExecutor":
         return cls(
             rest=rest,
@@ -81,7 +81,7 @@ class TradeExecutor:
             system_logger=system_logger,
             trading_logger=trading_logger,
             taker_fee_rate=taker_fee_rate,
-            engine_tag=engine_tag,         # ✅ 핵심
+            engine_tag=engine_tag,  # ✅ 핵심
         )
 
     def _pick_wallet_balance(self) -> tuple[str, float]:
@@ -113,7 +113,6 @@ class TradeExecutor:
         raw = entry_notional / n
         qty = self._normalize_qty(sym, raw, mode="floor")
         return qty, {"ccy": ccy, "bal": bal, "entry_notional": entry_notional, "raw_qty": raw, "per": per}
-
 
     def _price_from_rules(self, symbol: str) -> float:
         r = self._get_rules(symbol) or {}
@@ -244,7 +243,6 @@ class TradeExecutor:
             "contractSize": cs,
             "raw_qty": raw_qty,
         }
-
 
     def preflight_min_entry(self, symbol: str) -> MinEntryResult:
         sym = (symbol or "").upper().strip()
@@ -393,7 +391,6 @@ class TradeExecutor:
                         eps = max(step * 0.5, 1e-12)
             except Exception:
                 pass
-
 
             last_cur = float(before_qty)
 
@@ -683,6 +680,26 @@ class TradeExecutor:
                 self.system_logger.info(f"[lots_store] open_lot 실패 ({symbol} {side_u}) err={e}")
             return
 
+        try:
+            self.deps.save_trade_record({
+                "kind": "ENTRY",
+                "symbol": symbol,
+                "side": side_u,
+                "qty": float(qty),
+                "price": float(price),
+                "entry_price": float(price),
+                "ts_ms": entry_ts_ms,
+                "signal_id": entry_signal_id,
+                "entry_signal_id": entry_signal_id,
+                "lot_id": lot_id,
+                "ex_lot_id": ex_lot_id,
+                "engine": self.engine_tag,
+                "fee_rate": self.TAKER_FEE_RATE,
+            })
+        except Exception as e:
+            if self.system_logger:
+                self.system_logger.warning(f"[trade_record] ENTRY save failed ({symbol} {side_u}) err={e}")
+
         # cache update
         try:
             self.deps.on_lot_open(
@@ -717,6 +734,8 @@ class TradeExecutor:
             lot_id: str,
             *,
             exit_signal_id: Optional[str] = None,
+            exit_price: Optional[float] = None,
+            close_open_signal_id: Optional[str] = None,
     ) -> None:
         if not lot_id:
             raise ValueError("lot_id is required")
@@ -797,9 +816,6 @@ class TradeExecutor:
                     )
             return
 
-
-
-
         # 4) 실제 청산 주문 (✅ close_qty로!)
         res = await self._execute_and_wait(
             self.rest.close_market,
@@ -817,6 +833,63 @@ class TradeExecutor:
                     f"[CLOSE] not filled -> keep lot (lot_id={lot_id} status={res.get('status')})"
                 )
             return
+
+        # ✅ trade_records: EXIT 기록 저장
+        try:
+            exit_price_f = float(exit_price or 0.0)
+            entry_price_f = 0.0
+
+            # asset snapshot의 entries에서 lot_id로 entry_price 찾기
+            try:
+                asset_now = self.deps.get_asset() or {}
+                pos = ((asset_now.get("positions") or {}).get(symbol) or {}).get(side_u) or {}
+                entries = pos.get("entries") or []
+
+                for e in entries:
+                    if str(e.get("lot_id") or "") == str(lot_id):
+                        entry_price_f = float(e.get("price") or e.get("entry_price") or 0.0)
+                        break
+            except Exception:
+                entry_price_f = 0.0
+
+            # fallback: entry_price를 못 찾으면 PnL 계산은 하지 않음
+            gross_pnl_usdt = None
+            fee_usdt = None
+            pnl_usdt = None
+
+            if entry_price_f > 0 and exit_price_f > 0 and float(close_qty) > 0:
+                if side_u == "LONG":
+                    gross_pnl_usdt = (exit_price_f - entry_price_f) * float(close_qty)
+                else:
+                    gross_pnl_usdt = (entry_price_f - exit_price_f) * float(close_qty)
+
+                fee_usdt = (entry_price_f * float(close_qty) + exit_price_f * float(close_qty)) * float(self.TAKER_FEE_RATE)
+                pnl_usdt = gross_pnl_usdt - fee_usdt
+
+            self.deps.save_trade_record({
+                "kind": "EXIT",
+                "symbol": symbol,
+                "side": side_u,
+                "qty": float(close_qty),
+                "price": exit_price_f,
+                "entry_price": entry_price_f,
+                "exit_price": exit_price_f,
+                "gross_pnl_usdt": gross_pnl_usdt,
+                "fee_usdt": fee_usdt,
+                "pnl_usdt": pnl_usdt,
+                "fee_rate": self.TAKER_FEE_RATE,
+                "ts_ms": int(time.time() * 1000),
+                "signal_id": exit_signal_id,
+                "exit_signal_id": exit_signal_id,
+                "close_open_signal_id": close_open_signal_id,
+                "entry_signal_id": close_open_signal_id,
+                "lot_id": lot_id,
+                "ex_lot_id": ex_lot_id,
+                "engine": self.engine_tag,
+            })
+        except Exception as e:
+            if self.system_logger:
+                self.system_logger.warning(f"[trade_record] EXIT save failed ({symbol} {side_u} lot={lot_id}) err={e}")
 
         # 5) lot 정리 (현재 구조는 full close만 지원)
         ok = False
@@ -892,5 +965,3 @@ class TradeExecutor:
             self.trading_logger.info(
                 f"{tag} ⊖ {side_u} 청산 완료 | lot:{lot_s} | ex:{ex_s} | qty:{qty_str}"
             )
-
-
