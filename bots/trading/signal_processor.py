@@ -142,6 +142,7 @@ class SignalProcessor:
                     action="EXIT",
                     symbol=symbol,
                     side=side,
+                    price=price,  # ✅ 이 줄 추가
                     sig=payload,
                     signal_id=signal_id,
                     close_open_signal_id=target_open_id,
