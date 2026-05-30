@@ -74,8 +74,8 @@ class TradeConfig:
 
     # 레버리지/진입
     leverage: int = 50
-    entry_percent: float = 2  # leverage * entry_percent 가 한번 진입 퍼센트: 50 x 2 = 100% 진입
-    max_effective_leverage: float = 10.0   # 보유노션/지갑 최대 배수 (가드)
+    entry_percent: float = 0.5  # leverage * entry_percent 가 한번 진입 퍼센트: 50 x 2 = 100% 진입
+    max_effective_leverage: float = 5.0   # 보유노션/지갑 최대 배수 (가드)
 
     # ✅ 심볼별 진입 퍼센트 (없으면 entry_percent 사용)
     entry_percent_by_symbol: Dict[str, float] = field(default_factory=dict)
@@ -166,8 +166,8 @@ def make_bybit_config(
 
     # 레버리지/진입 관련 (기존 Bybit 기본값)
     leverage: int = 50,
-    entry_percent: float = 2.0,
-    max_effective_leverage: float = 10.0,
+    entry_percent: float = 0.5,
+    max_effective_leverage: float = 5.0,
 
     # Bybit는 기본적으로 주문까지 수행하므로 기본 False
     signal_only: bool = False,
@@ -189,12 +189,13 @@ def make_bybit_config(
     symbols = _parse_symbols(os.getenv("BYBIT_SYMBOLS"))
 
     if entry_percent_by_symbol is None:
-        entry_percent_by_symbol = {
+        '''entry_percent_by_symbol = {
             "ETHUSDT": 1.0,
             "SOLUSDT": 1.0,
             "XRPUSDT": 1.0,
             "XAUTUSDT": 1.0,
-        }
+        }'''
+        entry_percent_by_symbol = {}
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스
@@ -264,7 +265,7 @@ def make_mt5_signal_config(
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
 
-        max_effective_leverage=20.0,
+        max_effective_leverage=5.0,
 
         # 인디케이터 관련
         indicator_min_thr=indicator_min_thr,
