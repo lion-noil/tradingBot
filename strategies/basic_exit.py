@@ -167,8 +167,14 @@ def get_exit_signal(
     except Exception:
         oldest_entry = 0.0
 
-    age_band_sl, age_factor_sl = ("ALL", 7.0) # 기존 기대수익의 7배가 넘어가면 컷
-    age_band_tp, age_factor_tp = ("ALL", 2.0) # 기존 기대수익의 2배가 넘어가면 컷
+    # SL: 항상 ma_thr_eff * 7
+    age_band_sl, age_factor_sl = ("ALL", 7.0)
+
+    # TP: 1시간 전에는 ma_thr_eff * 2, 1시간 후에는 ma_thr_eff * 1
+    if oldest_elapsed_sec < 60 * 60:
+        age_band_tp, age_factor_tp = ("_1H", 2.0)
+    else:
+        age_band_tp, age_factor_tp = ("1H_", 1.0)
 
     if price is not None:
         sl_pct = float(ma_thr_eff) * float(age_factor_sl)
@@ -393,7 +399,7 @@ def get_exit_signal(
         # -------------------------
         # TP: oldest 기준
         # -------------------------
-        if pnl_old_pct >= tp_pct:
+        if oldest_entry > 0 and pnl_old_pct >= tp_pct:
             return {
                 "kind": "EXIT",
                 "mode": "TAKE_PROFIT",
