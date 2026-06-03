@@ -220,6 +220,8 @@ def get_long_entry_signal(
                         "anchor_age_sec": anchor_age_sec,
                         "open_boost_count": open_boost_count,
                         "lifetime_boost_count": lifetime_boost_count,
+                        "mom_ok": bool(mom_ok),
+                        "adverse_to_anchor": bool(adverse_to_anchor),
                     },
                     extra={
                         "is_boost": True,
@@ -248,12 +250,25 @@ def get_long_entry_signal(
 
         adverse = price < float(newest_entry_price)
         mom_ok = (-mom) > float(momentum_threshold)
-        ma_ok = price <= ma100 * (1 - ma_thr_eff / 2)
 
-        if not (adverse and mom_ok and ma_ok):
+        # 기존 SCALE_IN 기준: MA100 - eff/2 + momentum
+        ma_half_ok = price <= ma100 * (1 - ma_thr_eff / 2)
+
+        # 추가 SCALE_IN 기준: MA100 - eff 전체 도달
+        ma_full_ok = price <= ma100 * (1 - ma_thr_eff)
+
+        scale_ok = adverse and (
+                (mom_ok and ma_half_ok) or
+                ma_full_ok
+        )
+
+        if not scale_ok:
             return None
 
         ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
+
+        scale_mode = "MA_FULL" if ma_full_ok else "MOM_HALF"
+
         s = Signal(
             ok=True,
             kind="ENTRY",
@@ -261,14 +276,26 @@ def get_long_entry_signal(
             reasons=[
                 "SCALE_IN",
                 f"#ENTRY {next_no}",
-                f"MA100 -{momentum_threshold * 100:.2f}%",
-                f"3m -{momentum_threshold * 100:.2f}%",
+                f"MODE={scale_mode}",
+                f"MA100 -{ma_thr_eff * 100:.2f}%" if ma_full_ok else f"MA100 -{(ma_thr_eff / 2) * 100:.2f}%",
+                f"3m -{momentum_threshold * 100:.2f}%" if mom_ok else "3m not required",
             ],
             price=price,
             ma100=ma100,
             ma_delta_pct=ma_delta_pct,
             momentum_pct=mom,
-            thresholds={"ma": ma_thr_eff, "momentum": float(momentum_threshold), "entry_easing": entry_easing},
+            thresholds={
+                "ma": ma_thr_eff,
+                "momentum": float(momentum_threshold),
+                "entry_easing": entry_easing,
+                "ma_half": ma_thr_eff / 2,
+                "ma_full": ma_thr_eff,
+                "adverse": bool(adverse),
+                "mom_ok": bool(mom_ok),
+                "ma_half_ok": bool(ma_half_ok),
+                "ma_full_ok": bool(ma_full_ok),
+                "scale_mode": scale_mode,
+            },
             extra={"is_scale_in": True, "anchor_open_signal_id": newest_id},
         )
         return _signal_to_dict(s)
@@ -494,11 +521,21 @@ def get_short_entry_signal(
 
         adverse = price > float(newest_entry_price)
         mom_ok = mom > float(momentum_threshold)
-        ma_ok = price >= ma100 * (1 + ma_thr_eff / 2)
 
-        if not (adverse and mom_ok and ma_ok):
+        # 기존 SCALE_IN 기준: MA100 + eff/2 + momentum
+        ma_half_ok = price >= ma100 * (1 + ma_thr_eff / 2)
+
+        # 추가 SCALE_IN 기준: MA100 + eff 전체 도달
+        ma_full_ok = price >= ma100 * (1 + ma_thr_eff)
+
+        scale_ok = adverse and (
+                (mom_ok and ma_half_ok) or
+                ma_full_ok
+        )
+
+        if not scale_ok:
             return None
-
+        scale_mode = "MA_FULL" if ma_full_ok else "MOM_HALF"
         ma_delta_pct = (price - ma100) / max(ma100, 1e-12) * 100.0
         s = Signal(
             ok=True,
@@ -507,14 +544,26 @@ def get_short_entry_signal(
             reasons=[
                 "SCALE_IN",
                 f"#ENTRY {next_no}",
-                f"MA100 +{momentum_threshold * 100:.2f}%",
-                f"3m +{momentum_threshold * 100:.2f}%",
+                f"MODE={scale_mode}",
+                f"MA100 +{ma_thr_eff * 100:.2f}%" if ma_full_ok else f"MA100 +{(ma_thr_eff / 2) * 100:.2f}%",
+                f"3m +{momentum_threshold * 100:.2f}%" if mom_ok else "3m not required",
             ],
             price=price,
             ma100=ma100,
             ma_delta_pct=ma_delta_pct,
             momentum_pct=mom,
-            thresholds={"ma": ma_thr_eff, "momentum": float(momentum_threshold), "entry_easing": entry_easing},
+            thresholds={
+                "ma": ma_thr_eff,
+                "momentum": float(momentum_threshold),
+                "entry_easing": entry_easing,
+                "ma_half": ma_thr_eff / 2,
+                "ma_full": ma_thr_eff,
+                "adverse": bool(adverse),
+                "mom_ok": bool(mom_ok),
+                "ma_half_ok": bool(ma_half_ok),
+                "ma_full_ok": bool(ma_full_ok),
+                "scale_mode": scale_mode,
+            },
             extra={"is_scale_in": True, "anchor_open_signal_id": newest_id},
         )
         return _signal_to_dict(s)
