@@ -11,16 +11,17 @@ from .basic_utils import (
 
 INIT_WATCH_SEC = 15 * 60  # ✅ INIT 이후 15분간 INIT2/INIT3 감시
 MAX_OPEN = 10
-BOOST_ENTRY_WINDOW_SEC = 15 * 60      # anchor 이후 15분 동안 BOOST 진입 가능
-BOOST_MIN_DELAY_SEC = 2 * 60          # anchor 발생 후 최소 2분 뒤부터 BOOST 가능
-BOOST_INTERVAL_SEC = 5 * 60           # BOOST끼리는 최소 5분 간격
-BOOST_MAX_PER_ANCHOR = 2              # anchor 하나당 BOOST 최대 2번
+BOOST_ENTRY_WINDOW_SEC = 15 * 60  # anchor 이후 15분 동안 BOOST 진입 가능
+BOOST_MIN_DELAY_SEC = 2 * 60  # anchor 발생 후 최소 2분 뒤부터 BOOST 가능
+BOOST_INTERVAL_SEC = 5 * 60  # BOOST끼리는 최소 5분 간격
+BOOST_MAX_PER_ANCHOR = 2  # anchor 하나당 BOOST 최대 2번
 
 BOOST_FROM_INIT = "BOOST_FROM_INIT"
 BOOST_FROM_SCALE_IN = "BOOST_FROM_SCALE_IN"
 
 BOOST_ANCHOR_TAGS = {"INIT", "SCALE_IN"}
 BOOST_TAGS = {BOOST_FROM_INIT, BOOST_FROM_SCALE_IN}
+
 
 def _find_latest_boost_anchor(items: List[Item]):
     """
@@ -32,12 +33,14 @@ def _find_latest_boost_anchor(items: List[Item]):
             return sid, ts, entry_price, str(tag)
     return None
 
+
 def _boost_tag_from_anchor(anchor_tag: str) -> str:
     if anchor_tag == "INIT":
         return BOOST_FROM_INIT
     if anchor_tag == "SCALE_IN":
         return BOOST_FROM_SCALE_IN
     return "BOOST"
+
 
 def _boost_items_after_anchor(items: List[Item], anchor_ts: int, boost_tag: str) -> List[Item]:
     out = []
@@ -47,14 +50,16 @@ def _boost_items_after_anchor(items: List[Item], anchor_ts: int, boost_tag: str)
             out.append(item)
     return out
 
+
 def get_long_entry_signal(
-    price: float,
-    ma100: float,
-    prev3_candle: Optional[Dict[str, Any]],
-    open_items: List[Item],
-    ma_threshold: float = 0.01,
-    momentum_threshold: float = 0.001,
-    reentry_cooldown_sec: int = 30 * 60,
+        price: float,
+        ma100: float,
+        prev3_candle: Optional[Dict[str, Any]],
+        open_items: List[Item],
+        boost_attempts_by_anchor: Optional[Dict[str, int]] = None,
+        ma_threshold: float = 0.01,
+        momentum_threshold: float = 0.001,
+        reentry_cooldown_sec: int = 30 * 60,
 ) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
@@ -152,7 +157,15 @@ def get_long_entry_signal(
 
             boost_tag = _boost_tag_from_anchor(anchor_tag)
             boost_items = _boost_items_after_anchor(items, int(anchor_ts), boost_tag)
-            boost_count = len(boost_items)
+
+            # 현재 열려 있는 BOOST 수
+            open_boost_count = len(boost_items)
+
+            # 이 anchor로 지금까지 발생한 BOOST 누적 수
+            anchor_key = str(anchor_id)
+            lifetime_boost_count = int(
+                (boost_attempts_by_anchor or {}).get(anchor_key, open_boost_count)
+            )
 
             # 마지막 BOOST 이후 5분 간격 확인
             last_boost_elapsed_sec = None
@@ -163,10 +176,10 @@ def get_long_entry_signal(
                 interval_ok = last_boost_elapsed_sec >= BOOST_INTERVAL_SEC
 
             window_ok = (
-                anchor_entry > 0
-                and BOOST_MIN_DELAY_SEC <= anchor_age_sec <= BOOST_ENTRY_WINDOW_SEC
-                and boost_count < BOOST_MAX_PER_ANCHOR
-                and interval_ok
+                    anchor_entry > 0
+                    and BOOST_MIN_DELAY_SEC <= anchor_age_sec <= BOOST_ENTRY_WINDOW_SEC
+                    and lifetime_boost_count < BOOST_MAX_PER_ANCHOR
+                    and interval_ok
             )
 
             # LONG BOOST 조건
@@ -187,7 +200,7 @@ def get_long_entry_signal(
                         mode,
                         f"#ENTRY {next_no}",
                         f"ANCHOR={anchor_tag}",
-                        f"BOOST {boost_count + 1}/{BOOST_MAX_PER_ANCHOR}",
+                        f"BOOST {lifetime_boost_count + 1}/{BOOST_MAX_PER_ANCHOR}",
                         f"⏱ anchor_age={anchor_age_sec}s",
                         f"COND={'MOM' if mom_ok else 'ADVERSE'}",
                     ],
@@ -205,7 +218,8 @@ def get_long_entry_signal(
                         "boost_max_per_anchor": BOOST_MAX_PER_ANCHOR,
                         "anchor_entry_price": anchor_entry,
                         "anchor_age_sec": anchor_age_sec,
-                        "boost_count": boost_count,
+                        "open_boost_count": open_boost_count,
+                        "lifetime_boost_count": lifetime_boost_count,
                     },
                     extra={
                         "is_boost": True,
@@ -214,7 +228,9 @@ def get_long_entry_signal(
                         "anchor_tag": anchor_tag,
                         "anchor_entry_price": anchor_entry,
                         "anchor_age_sec": anchor_age_sec,
-                        "boost_count_before": boost_count,
+                        "open_boost_count_before": open_boost_count,
+                        "boost_count_before": lifetime_boost_count,
+                        "lifetime_boost_count_before": lifetime_boost_count,
                         "last_boost_elapsed_sec": last_boost_elapsed_sec,
                     },
                 )
@@ -287,13 +303,14 @@ def get_long_entry_signal(
 
 
 def get_short_entry_signal(
-    price: float,
-    ma100: float,
-    prev3_candle: Optional[Dict[str, Any]],
-    open_items: List[Item],
-    ma_threshold: float = 0.01,
-    momentum_threshold: float = 0.001,
-    reentry_cooldown_sec: int = 30 * 60,
+        price: float,
+        ma100: float,
+        prev3_candle: Optional[Dict[str, Any]],
+        open_items: List[Item],
+        boost_attempts_by_anchor: Optional[Dict[str, int]] = None,
+        ma_threshold: float = 0.01,
+        momentum_threshold: float = 0.001,
+        reentry_cooldown_sec: int = 30 * 60,
 ) -> Optional[Dict[str, Any]]:
     if price is None or ma100 is None or prev3_candle is None:
         return None
@@ -306,7 +323,6 @@ def get_short_entry_signal(
     ma_thr_eff = max(0.0, float(ma_threshold) - float(entry_easing))
 
     items = _sorted_items(open_items)
-
 
     if len(items) >= MAX_OPEN:
         return None
@@ -387,7 +403,15 @@ def get_short_entry_signal(
 
             boost_tag = _boost_tag_from_anchor(anchor_tag)
             boost_items = _boost_items_after_anchor(items, int(anchor_ts), boost_tag)
-            boost_count = len(boost_items)
+
+            # 현재 열려 있는 BOOST 수
+            open_boost_count = len(boost_items)
+
+            # 이 anchor로 지금까지 발생한 BOOST 누적 수
+            anchor_key = str(anchor_id)
+            lifetime_boost_count = int(
+                (boost_attempts_by_anchor or {}).get(anchor_key, open_boost_count)
+            )
 
             # 마지막 BOOST 이후 5분 간격 확인
             last_boost_elapsed_sec = None
@@ -398,10 +422,10 @@ def get_short_entry_signal(
                 interval_ok = last_boost_elapsed_sec >= BOOST_INTERVAL_SEC
 
             window_ok = (
-                anchor_entry > 0
-                and BOOST_MIN_DELAY_SEC <= anchor_age_sec <= BOOST_ENTRY_WINDOW_SEC
-                and boost_count < BOOST_MAX_PER_ANCHOR
-                and interval_ok
+                    anchor_entry > 0
+                    and BOOST_MIN_DELAY_SEC <= anchor_age_sec <= BOOST_ENTRY_WINDOW_SEC
+                    and lifetime_boost_count < BOOST_MAX_PER_ANCHOR
+                    and interval_ok
             )
 
             # SHORT BOOST 조건
@@ -422,7 +446,7 @@ def get_short_entry_signal(
                         mode,
                         f"#ENTRY {next_no}",
                         f"ANCHOR={anchor_tag}",
-                        f"BOOST {boost_count + 1}/{BOOST_MAX_PER_ANCHOR}",
+                        f"BOOST {lifetime_boost_count + 1}/{BOOST_MAX_PER_ANCHOR}",
                         f"⏱ anchor_age={anchor_age_sec}s",
                         f"COND={'MOM' if mom_ok else 'ADVERSE'}",
                     ],
@@ -440,7 +464,8 @@ def get_short_entry_signal(
                         "boost_max_per_anchor": BOOST_MAX_PER_ANCHOR,
                         "anchor_entry_price": anchor_entry,
                         "anchor_age_sec": anchor_age_sec,
-                        "boost_count": boost_count,
+                        "open_boost_count": open_boost_count,
+                        "lifetime_boost_count": lifetime_boost_count,
                     },
                     extra={
                         "is_boost": True,
@@ -449,7 +474,9 @@ def get_short_entry_signal(
                         "anchor_tag": anchor_tag,
                         "anchor_entry_price": anchor_entry,
                         "anchor_age_sec": anchor_age_sec,
-                        "boost_count_before": boost_count,
+                        "open_boost_count_before": open_boost_count,
+                        "boost_count_before": lifetime_boost_count,
+                        "lifetime_boost_count_before": lifetime_boost_count,
                         "last_boost_elapsed_sec": last_boost_elapsed_sec,
                     },
                 )

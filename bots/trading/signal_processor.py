@@ -56,9 +56,34 @@ class SignalProcessor:
         self.deps = deps
         self.system_logger = system_logger
 
+        # (symbol, side, anchor_signal_id) -> BOOST 누적 진입 횟수
+        self._boost_attempts_by_anchor: Dict[tuple[str, str, str], int] = {}
+
     def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
         str, int]:
         return self.deps.log_signal(symbol, side, kind, price, sig)
+
+    def _get_boost_attempts_by_anchor(self, symbol: str, side: str) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+
+        for (sym, sd, anchor_id), cnt in self._boost_attempts_by_anchor.items():
+            if sym == symbol and sd == side:
+                out[str(anchor_id)] = int(cnt)
+
+        return out
+
+    def _remember_boost_attempt(self, symbol: str, side: str, sig: Dict[str, Any]) -> None:
+        extra = sig.get("extra") or {}
+
+        if not extra.get("is_boost"):
+            return
+
+        anchor_id = extra.get("anchor_signal_id")
+        if not anchor_id:
+            return
+
+        key = (str(symbol), str(side), str(anchor_id))
+        self._boost_attempts_by_anchor[key] = self._boost_attempts_by_anchor.get(key, 0) + 1
 
     async def process_symbol(self, symbol: str, price: Optional[float]) -> List[TradeAction]:
         if price is None:
@@ -185,12 +210,14 @@ class SignalProcessor:
                 price=price,
                 ma100=now_ma100,
                 prev3_candle=prev3,
-                open_items=open_short,  # ✅ 4튜플 그대로
+                open_items=open_short,
+                boost_attempts_by_anchor=self._get_boost_attempts_by_anchor(symbol, "SHORT"),
                 ma_threshold=float(thr),
                 momentum_threshold=mom_thr,
             )
             if sig_s:
                 signal_id, _ = self._record(symbol, "SHORT", "ENTRY", price, sig_s)
+                self._remember_boost_attempt(symbol, "SHORT", sig_s)
                 actions.append(TradeAction(
                     action="ENTRY",
                     symbol=symbol,
@@ -210,12 +237,15 @@ class SignalProcessor:
                 price=price,
                 ma100=now_ma100,
                 prev3_candle=prev3,
-                open_items=open_long,  # ✅ 4튜플 그대로
+                open_items=open_long,
+                boost_attempts_by_anchor=self._get_boost_attempts_by_anchor(symbol, "LONG"),
                 ma_threshold=float(thr),
                 momentum_threshold=mom_thr,
             )
             if sig_l:
                 signal_id, _ = self._record(symbol, "LONG", "ENTRY", price, sig_l)
+                self._remember_boost_attempt(symbol, "LONG", sig_l)
+
                 actions.append(TradeAction(
                     action="ENTRY",
                     symbol=symbol,
