@@ -18,8 +18,7 @@ BOOST_TAGS = {BOOST_FROM_INIT, BOOST_FROM_SCALE_IN}
 BOOST_FAIL_SEC = 20 * 60          # 20분 지나면 실패 BOOST로 간주
 BOOST_TIMEOUT_SEC = 30 * 60       # 30분 지나면 BOOST 강제 종료
 
-BOOST_ALL_AVG_TP_PCT = 0.003      # 전체 평균 +0.3%
-BOOST_ANCHOR_AVG_TP_PCT = 0.005   # anchor + boost 평균 +0.5%
+BOOST_ANCHOR_BOOST_TP_PCT = 0.003  # anchor + boost 평균 +0.3%
 
 def _is_boost_tag(tag: str) -> bool:
     return str(tag) in BOOST_TAGS
@@ -168,7 +167,7 @@ def get_exit_signal(
         oldest_entry = 0.0
 
     # SL: 항상 ma_thr_eff * 7
-    age_band_sl, age_factor_sl = ("ALL", 7.0)
+    age_band_sl, age_factor_sl = ("", 7.0)
 
     # TP: 1시간 전에는 ma_thr_eff * 2, 1시간 후에는 ma_thr_eff * 1
     if oldest_elapsed_sec < 60 * 60:
@@ -255,7 +254,7 @@ def get_exit_signal(
                 all_avg = _avg_entry(items)
                 anchor_boost_avg = _avg_entry([anchor_item] + boost_items)
 
-                if all_avg <= 0 or anchor_boost_avg <= 0:
+                if anchor_boost_avg <= 0:
                     continue
 
                 # 1) BOOST_TIMEOUT: anchor 후 30분 경과 → BOOST 전부 강제청산
@@ -338,27 +337,20 @@ def get_exit_signal(
                             },
                         }
 
-                # 3) BOOST_TP: 전체 평균 +0.3% 또는 anchor+boost 평균 +0.5%
+                # 3) BOOST_TP: anchor + boost 평균 +0.3%
                 if side == "LONG":
-                    all_avg_hit = price >= all_avg * (1 + BOOST_ALL_AVG_TP_PCT)
-                    anchor_avg_hit = price >= anchor_boost_avg * (1 + BOOST_ANCHOR_AVG_TP_PCT)
+                    anchor_boost_hit = price >= anchor_boost_avg * (1 + BOOST_ANCHOR_BOOST_TP_PCT)
                     profit_sign = "+"
                 elif side == "SHORT":
-                    all_avg_hit = price <= all_avg * (1 - BOOST_ALL_AVG_TP_PCT)
-                    anchor_avg_hit = price <= anchor_boost_avg * (1 - BOOST_ANCHOR_AVG_TP_PCT)
+                    anchor_boost_hit = price <= anchor_boost_avg * (1 - BOOST_ANCHOR_BOOST_TP_PCT)
                     profit_sign = "-"
                 else:
-                    all_avg_hit = False
-                    anchor_avg_hit = False
+                    anchor_boost_hit = False
                     profit_sign = ""
 
-                if all_avg_hit or anchor_avg_hit:
-                    mode = "BOOST_TP_ALL_AVG" if all_avg_hit else "BOOST_TP_ANCHOR_AVG"
-                    hit_label = (
-                        f"ALL_AVG {profit_sign}{BOOST_ALL_AVG_TP_PCT * 100:.2f}%"
-                        if all_avg_hit
-                        else f"ANCHOR_BOOST_AVG {profit_sign}{BOOST_ANCHOR_AVG_TP_PCT * 100:.2f}%"
-                    )
+                if anchor_boost_hit:
+                    mode = "BOOST_TP_ANCHOR_AVG"
+                    hit_label = f"ANCHOR_BOOST_AVG {profit_sign}{BOOST_ANCHOR_BOOST_TP_PCT * 100:.2f}%"
 
                     return {
                         "kind": "EXIT",
@@ -375,8 +367,7 @@ def get_exit_signal(
                             f"⏱ anchor_age={fmt_dur_smh_d(anchor_age_sec)}",
                         ],
                         "thresholds": {
-                            "boost_all_avg_tp_pct": BOOST_ALL_AVG_TP_PCT,
-                            "boost_anchor_avg_tp_pct": BOOST_ANCHOR_AVG_TP_PCT,
+                            "boost_anchor_boost_tp_pct": BOOST_ANCHOR_BOOST_TP_PCT,
                             "anchor_age_sec": int(anchor_age_sec),
                             "anchor_boost_avg_entry": float(anchor_boost_avg),
                             "all_avg_entry": float(all_avg),
@@ -391,8 +382,7 @@ def get_exit_signal(
                             "anchor_tag": anchor_tag,
                             "anchor_signal_id": anchor_id,
                             "close_boost_n": len(target_ids),
-                            "all_avg_hit": bool(all_avg_hit),
-                            "anchor_avg_hit": bool(anchor_avg_hit),
+                            "anchor_boost_hit": True,
                         },
                     }
 
