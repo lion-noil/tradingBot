@@ -10,15 +10,15 @@ from .basic_utils import (
     easing_from_thr, momentum_vs_prev_candle_ohlc,
 )
 
-
 BOOST_FROM_INIT = "BOOST_FROM_INIT"
 BOOST_FROM_SCALE_IN = "BOOST_FROM_SCALE_IN"
 BOOST_TAGS = {BOOST_FROM_INIT, BOOST_FROM_SCALE_IN}
 
-BOOST_FAIL_SEC = 20 * 60          # 20분 지나면 실패 BOOST로 간주
-BOOST_TIMEOUT_SEC = 30 * 60       # 30분 지나면 BOOST 강제 종료
+BOOST_FAIL_SEC = 20 * 60  # 20분 지나면 실패 BOOST로 간주
+BOOST_TIMEOUT_SEC = 30 * 60  # 30분 지나면 BOOST 강제 종료
 
 BOOST_ANCHOR_BOOST_TP_PCT = 0.003  # anchor + boost 평균 +0.3%
+
 
 def _is_boost_tag(tag: str) -> bool:
     return str(tag) in BOOST_TAGS
@@ -94,6 +94,7 @@ def _find_boost_groups(items: List[Item]):
                 })
 
     return groups
+
 
 def get_exit_signal(
         *,
@@ -540,7 +541,6 @@ def get_exit_signal(
     else:
         return None
 
-
     pct_abs_txt = fmt_pct2(abs(trigger_pct))
     sign = ("-" if side == "LONG" else "+") if band == "NEAR" else ("+" if side == "LONG" else "-")
     head = f"MA100 {sign}{pct_abs_txt} {trigger_name}"
@@ -576,20 +576,38 @@ def get_exit_signal(
 
         if prev_entry > 0 and price is not None:
             if side == "LONG":
-                # LONG: price가 prev_entry 이상으로 회복 + MA100 위로 ma_eff/2
-                ref_ok = price >= prev_entry
-                ma_ok = price >= ma100 * (1 + ma_thr_eff / 2)
-                sign_ma = "+"
-            elif side == "SHORT":
-                # SHORT: price가 prev_entry 이하로 회귀 + MA100 아래로 ma_eff/2
-                ref_ok = price <= prev_entry
-                ma_ok = price <= ma100 * (1 - ma_thr_eff / 2)
-                sign_ma = "-"
-            else:
-                ref_ok = ma_ok = False
-                sign_ma = ""
+                better_than_prev = price >= prev_entry
 
-            if ref_ok and ma_ok:
+                if better_than_prev:
+                    scaleout_factor = 0.5
+                    ref_label = "BETTER_THAN_PREV"
+                else:
+                    scaleout_factor = 2 / 3
+                    ref_label = "WORSE_THAN_PREV"
+
+                ma_ok = price >= ma100 * (1 + ma_thr_eff * scaleout_factor)
+                sign_ma = "+"
+
+            elif side == "SHORT":
+                better_than_prev = price <= prev_entry
+
+                if better_than_prev:
+                    scaleout_factor = 0.5
+                    ref_label = "BETTER_THAN_PREV"
+                else:
+                    scaleout_factor = 2 / 3
+                    ref_label = "WORSE_THAN_PREV"
+
+                ma_ok = price <= ma100 * (1 - ma_thr_eff * scaleout_factor)
+                sign_ma = "-"
+
+            else:
+                ma_ok = False
+                sign_ma = ""
+                scaleout_factor = 0.5
+                ref_label = ""
+
+            if ma_ok:
                 return {
                     "kind": "EXIT",
                     "mode": "SCALE_OUT",
@@ -598,14 +616,16 @@ def get_exit_signal(
                     "reasons": [
                         "SCALE_OUT",
                         f"#EXIT {fmt_targets_idx(open_idx, [newest_id])}/{total_n}",
-                        "REF=PREV_ENTRY",
-                        f"MA100 {sign_ma}{(ma_thr_eff / 2) * 100:.2f}%",
+                        ref_label,
+                        f"MA100 {sign_ma}{(ma_thr_eff * scaleout_factor) * 100:.2f}%",
                         f"⏱ new:{fmt_dur_smh_d(newest_elapsed_sec)}",
                         f"CD {scaleout_cooldown_sec}s" if scaleout_cooldown_sec else "",
                     ],
                     "thresholds": {
                         "ma": ma_thr_eff,
                         "exit_easing": exit_easing,
+                        "scaleout_factor": float(scaleout_factor),
+                        "scaleout_ma_pct": float(ma_thr_eff * scaleout_factor),
                         "scaleout_cooldown_sec": int(scaleout_cooldown_sec),
                         "x": x, "y": y,
                         "prev_entry_price": float(prev_entry),
@@ -613,6 +633,7 @@ def get_exit_signal(
                     "extra": {
                         "scale_out_latest_only": True,
                         "ref_prev_entry_price": float(prev_entry),
+                        "better_than_prev": bool(better_than_prev),
                     },
                 }
 
