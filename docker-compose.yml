@@ -1,0 +1,44 @@
+services:
+
+  # ─── Signal bots ────────────────────────────────────────────────────────────
+
+  signal-bybit:
+    build: .
+    restart: always
+    command: python -m app.main_only_bybit
+    env_file: .env
+    environment:
+      - BYBIT_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-mt5:
+    build: .
+    restart: always
+    command: python -m app.main_only_mt
+    env_file: .env
+    environment:
+      # executor-a2는 로컬 Windows에서 실행 → host.docker.internal로 접근
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
+  # ─── Executors ──────────────────────────────────────────────────────────────
+
+  executor-a1:
+    build: .
+    restart: always
+    command: python -m app.local_executor
+    env_file: .env
+    environment:
+      - EXEC_ACCOUNT_ID=${EXEC_A1_ACCOUNT_ID}
+      - EXEC_LISTEN_HOST=0.0.0.0
+    volumes:
+      - ./logs:/app/logs
+
+  # executor-a2 (MT5 주문)는 MetaTrader5 Python 라이브러리가 Windows 전용이라
+  # Linux Docker에서 실행 불가 → 로컬 Windows PyCharm에서 직접 실행 유지

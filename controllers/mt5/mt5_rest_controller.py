@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None  # Windows-only; Linux/Docker에서는 None
 
 from controllers.mt5.mt5_rest_base import Mt5RestBase
 from controllers.mt5.mt5_rest_market import Mt5RestMarketMixin

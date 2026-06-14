@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-playwright
 requests
-python-binance
 websocket-client
+redis
+python-dotenv

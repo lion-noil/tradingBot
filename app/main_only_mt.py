@@ -169,10 +169,10 @@ async def startup_event():
 
     mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger, price_ws_url=PRICE_WS_URL, api_key=MT5_API_KEY)
     mt5_rest_controller = Mt5RestController(system_logger=system_logger, price_base_url=PRICE_REST_URL, api_key=MT5_API_KEY)
+    _raw_targets = _env("MT5_EXECUTOR_TARGETS", "127.0.0.1:9010")
+    _targets = [Target(h, int(p)) for t in _raw_targets.split(",") if ":" in t for h, p in [t.strip().rsplit(":", 1)]]
     local_sender = LocalActionSender(
-        targets=[
-            Target("127.0.0.1", 9010),
-        ],
+        targets=_targets,
         system_logger=system_logger,
         ping_sec=10,
     )

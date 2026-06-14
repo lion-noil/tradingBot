@@ -6,7 +6,10 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 
 KST = timezone(timedelta(hours=9))
 

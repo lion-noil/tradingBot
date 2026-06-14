@@ -182,11 +182,10 @@ async def startup_event():
                                                    price_ws_url=PRICE_WS_URL)
     bybit_rest_controller = BybitRestController(system_logger=system_logger,
                                                 trade_base_url=TRADE_REST_URL, price_base_url=PRICE_REST_URL)
+    _raw_targets = _env("BYBIT_EXECUTOR_TARGETS", "127.0.0.1:9009,127.0.0.1:9007")
+    _targets = [Target(h, int(p)) for t in _raw_targets.split(",") if ":" in t for h, p in [t.strip().rsplit(":", 1)]]
     local_sender = LocalActionSender(
-        targets=[
-            Target("127.0.0.1", 9009),
-            Target("127.0.0.1", 9007),
-        ],
+        targets=_targets,
         system_logger=system_logger,
         ping_sec=10,
     )

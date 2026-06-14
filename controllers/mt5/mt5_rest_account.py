@@ -1,7 +1,10 @@
 # controllers/mt5/mt5_rest_account.py
 
 import json
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 from datetime import datetime, timezone, timedelta
 from typing import List
 
