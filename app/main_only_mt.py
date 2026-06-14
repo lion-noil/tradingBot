@@ -165,9 +165,10 @@ async def startup_event():
 
     PRICE_REST_URL = _env(f"MT5_PRICE_REST_URL", "")
     PRICE_WS_URL = _env(f"MT5_PRICE_WS_URL", "")
+    MT5_API_KEY = _env("MT5_API_KEY", "")
 
-    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger,price_ws_url=PRICE_WS_URL)
-    mt5_rest_controller = Mt5RestController(system_logger=system_logger,price_base_url=PRICE_REST_URL)
+    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger, price_ws_url=PRICE_WS_URL, api_key=MT5_API_KEY)
+    mt5_rest_controller = Mt5RestController(system_logger=system_logger, price_base_url=PRICE_REST_URL, api_key=MT5_API_KEY)
     local_sender = LocalActionSender(
         targets=[
             Target("127.0.0.1", 9010),

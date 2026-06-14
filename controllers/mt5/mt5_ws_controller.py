@@ -7,7 +7,7 @@ from websocket import WebSocketApp
 
 
 class Mt5WebSocketController:
-    def __init__(self, symbols=("EURUSD",), system_logger=None,price_ws_url=None):
+    def __init__(self, symbols=("EURUSD",), system_logger=None, price_ws_url=None, api_key=None):
         self.kline_interval = "1"
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
@@ -15,13 +15,16 @@ class Mt5WebSocketController:
         self._last_recv_monotonic_global = 0.0
         self._last_recv_monotonic: dict[str, float] = {}
 
-
         self.symbols = list(symbols)
         self.system_logger = system_logger
 
         self.ws_url = price_ws_url
         if not self.ws_url:
             raise RuntimeError("MT5_PRICE_WS_URL is missing (.env)")
+
+        if api_key:
+            sep = "&" if "?" in self.ws_url else "?"
+            self.ws_url = f"{self.ws_url}{sep}api_key={api_key}"
 
         # 공유 상태
         self._lock = threading.Lock()

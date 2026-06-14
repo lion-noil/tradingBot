@@ -50,9 +50,8 @@ class Mt5RestBase:
 
     def _get_headers(self, *, use: str = "price") -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        # ✅ 키는 trade에만 (있을 때만) 붙임
-        if use == "trade" and self.api_key:
-            headers["X-API-KEY"] = self.api_key
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         return headers
 
     # -------------------------
