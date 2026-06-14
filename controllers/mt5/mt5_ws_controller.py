@@ -7,7 +7,8 @@ from websocket import WebSocketApp
 
 
 class Mt5WebSocketController:
-    def __init__(self, symbols=("EURUSD",), system_logger=None, price_ws_url=None, api_key=None):
+    def __init__(self, symbols=("EURUSD",), system_logger=None, price_ws_url=None, api_key=None, symbol_map=None):
+        self._symbol_map = symbol_map  # SymbolAliasMap | None
         self.kline_interval = "1"
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
@@ -132,7 +133,8 @@ class Mt5WebSocketController:
             ws = self.ws  # ✅ lock 안에서 핸들 스냅샷
 
         if ws:
-            args = [f"tickers.{s}" for s in to_add] + [f"kline.{self.kline_interval}.{s}" for s in to_add]
+            broker_add = [self._symbol_map.to_broker(s) if self._symbol_map else s for s in to_add]
+            args = [f"tickers.{s}" for s in broker_add] + [f"kline.{self.kline_interval}.{s}" for s in broker_add]
             msg = {"op": "subscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
@@ -150,7 +152,8 @@ class Mt5WebSocketController:
             ws = self.ws
 
         if ws:
-            args = [f"tickers.{s}" for s in to_remove] + [f"kline.{self.kline_interval}.{s}" for s in to_remove]
+            broker_remove = [self._symbol_map.to_broker(s) if self._symbol_map else s for s in to_remove]
+            args = [f"tickers.{s}" for s in broker_remove] + [f"kline.{self.kline_interval}.{s}" for s in broker_remove]
             msg = {"op": "unsubscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
@@ -175,7 +178,8 @@ class Mt5WebSocketController:
             with self._lock:
                 syms = list(self.symbols)
 
-            args = [f"tickers.{sym}" for sym in syms] + [f"kline.{self.kline_interval}.{sym}" for sym in syms]
+            broker_syms = [self._symbol_map.to_broker(s) if self._symbol_map else s for s in syms]
+            args = [f"tickers.{s}" for s in broker_syms] + [f"kline.{self.kline_interval}.{s}" for s in broker_syms]
             msg = {"op": "subscribe", "args": args}
             try:
                 ws.send(json.dumps(msg))
@@ -224,6 +228,8 @@ class Mt5WebSocketController:
                     return
 
                 sym = item.get("symbol") or topic.split(".")[1]
+                if self._symbol_map:
+                    sym = self._symbol_map.to_canonical(sym)
 
                 # ✅ 원천 값들
                 def _to_float(v):
@@ -273,6 +279,8 @@ class Mt5WebSocketController:
                 if len(parts) < 3:
                     return
                 interval, sym = parts[1], parts[2]
+                if self._symbol_map:
+                    sym = self._symbol_map.to_canonical(sym)
 
                 items = data if isinstance(data, list) else [data]
 

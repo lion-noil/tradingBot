@@ -39,6 +39,7 @@ class Mt5RestController(
             api_secret: str | None = None,
             leverage: int = 50,
             taker_fee_rate: float = 0.00055,
+            symbol_map=None,
     ):
         super().__init__(
             system_logger=system_logger,
@@ -46,6 +47,7 @@ class Mt5RestController(
             price_base_url=price_base_url,
             api_key=api_key,
             api_secret=api_secret,
+            symbol_map=symbol_map,
         )
         self.leverage = int(leverage)
         self.TAKER_FEE_RATE = float(taker_fee_rate)

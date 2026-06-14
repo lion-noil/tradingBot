@@ -1,4 +1,4 @@
-# controllers/mt5/mt5_rest_market.py
+﻿# controllers/mt5/mt5_rest_market.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -16,14 +16,14 @@ def _safe_int(x):
 
 class Mt5RestMarketMixin:
     """
-    시세/캔들/시장 관련 기능 (가격은 URL 서버로 계속 받는 버전)
-    - update_candles: ONLINE(price) 서버 사용
+    ?쒖꽭/罹붾뱾/?쒖옣 愿??湲곕뒫 (媛寃⑹? URL ?쒕쾭濡?怨꾩냽 諛쏅뒗 踰꾩쟾)
+    - update_candles: ONLINE(price) ?쒕쾭 ?ъ슜
     """
 
     def update_candles(self, candles: list, symbol: str | None = None, count: int | None = None):
         """
-        - 서버 엔드포인트: GET /v5/market/candles/with-gaps
-        - 응답:
+        - ?쒕쾭 ?붾뱶?ъ씤?? GET /v5/market/candles/with-gaps
+        - ?묐떟:
             {
               "retCode": 0,
               "retMsg": "OK",
@@ -35,15 +35,14 @@ class Mt5RestMarketMixin:
             }
         """
         try:
-            symbol = symbol or "US100"
-            sym = symbol.upper()
+            sym = self._broker_sym(symbol or "US100")
             endpoint = "/v5/market/candles/with-gaps"
 
             target = count if (isinstance(count, int) and count > 0) else 1000
             all_candles: List[Dict[str, Any]] = []
             end_ms: Optional[int] = None
 
-            seen_starts: set[int] = set()  # 중복 제거용
+            seen_starts: set[int] = set()  # 以묐났 ?쒓굅??
 
             while len(all_candles) < target:
                 req_limit = min(1000, target - len(all_candles))
@@ -56,7 +55,7 @@ class Mt5RestMarketMixin:
                 if end_ms is not None:
                     params["end"] = int(end_ms)
 
-                # ✅ ONLINE(price) 서버로 호출 (Mixin을 쓰는 상위 클래스가 _request 제공해야 함)
+                # ??ONLINE(price) ?쒕쾭濡??몄텧 (Mixin???곕뒗 ?곸쐞 ?대옒?ㅺ? _request ?쒓났?댁빞 ??
                 data = self._request("GET", endpoint, params=params, use="price")
 
                 if not isinstance(data, dict):
@@ -76,7 +75,7 @@ class Mt5RestMarketMixin:
                 if not rows:
                     break
 
-                # 안전 정렬
+                # ?덉쟾 ?뺣젹
                 rows.sort(key=lambda x: x[0])
 
                 chunk: List[Dict[str, Any]] = []
@@ -105,12 +104,12 @@ class Mt5RestMarketMixin:
                         continue
 
                 if chunk:
-                    # 과거 chunk를 앞에 붙여 "옛날→최신" 유지
+                    # 怨쇨굅 chunk瑜??욎뿉 遺숈뿬 "?쏅궇?믪턀?? ?좎?
                     all_candles = chunk + all_candles
                 else:
                     break
 
-                # 페이징: nextCursor 사용
+                # ?섏씠吏? nextCursor ?ъ슜
                 next_cursor = result.get("nextCursor")
                 if next_cursor is None:
                     break
@@ -132,13 +131,14 @@ class Mt5RestMarketMixin:
             if getattr(self, "system_logger", None):
                 if last:
                     self.system_logger.debug(
-                        f"📊 [MT5] ({sym}) 캔들 갱신 완료: {len(candles)}개, "
+                        f"?뱤 [MT5] ({sym}) 罹붾뱾 媛깆떊 ?꾨즺: {len(candles)}媛? "
                         f"last OHLC=({last['open']}, {last['high']}, {last['low']}, {last['close']}), "
                         f"vol={last['volume']}"
                     )
                 else:
-                    self.system_logger.debug(f"📊 [MT5] ({sym}) 캔들 갱신: 결과 없음")
+                    self.system_logger.debug(f"?뱤 [MT5] ({sym}) 罹붾뱾 媛깆떊: 寃곌낵 ?놁쓬")
 
         except Exception as e:
             if getattr(self, "system_logger", None):
-                self.system_logger.warning(f"❌ [MT5] ({symbol}) 캔들 요청 실패: {e}")
+                self.system_logger.warning(f"??[MT5] ({symbol}) 罹붾뱾 ?붿껌 ?ㅽ뙣: {e}")
+

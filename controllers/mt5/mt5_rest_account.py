@@ -1,4 +1,4 @@
-# controllers/mt5/mt5_rest_account.py
+﻿# controllers/mt5/mt5_rest_account.py
 
 import json
 try:
@@ -12,7 +12,7 @@ KST = timezone(timedelta(hours=9))
 
 class Mt5RestAccountMixin:
     # -------------------------
-    # 내부: MT5 연결 보장
+    # ?대?: MT5 ?곌껐 蹂댁옣
     # -------------------------
     def _ensure_mt5(self):
         if mt5.initialize():
@@ -28,8 +28,8 @@ class Mt5RestAccountMixin:
 
     def get_position_entries(self, symbol: str, side: str) -> List[dict]:
         """
-        MT5의 ticket-level entries 반환.
-        return: [{ "ts": ms, "qty": float, "price": float }, ...]  (ts 오름차순 권장)
+        MT5??ticket-level entries 諛섑솚.
+        return: [{ "ts": ms, "qty": float, "price": float }, ...]  (ts ?ㅻ쫫李⑥닚 沅뚯옣)
         """
         if not self._ensure_mt5():
             return []
@@ -62,7 +62,7 @@ class Mt5RestAccountMixin:
         return out
 
     # -------------------------
-    # 계좌(자산) 조회
+    # 怨꾩쥖(?먯궛) 議고쉶
     # -------------------------
     def get_account_balance(self):
         try:
@@ -80,8 +80,8 @@ class Mt5RestAccountMixin:
 
             return {
                 "currency": currency,
-                "wallet_balance": balance,  # ✅ 핵심: 통일 필드
-                "balance": balance,  # (선택) 기존 필드 유지해도 됨
+                "wallet_balance": balance,  # ???듭떖: ?듭씪 ?꾨뱶
+                "balance": balance,  # (?좏깮) 湲곗〈 ?꾨뱶 ?좎??대룄 ??
                 "equity": float(getattr(acc, "equity", 0.0) or 0.0),
                 "margin": float(getattr(acc, "margin", 0.0) or 0.0),
                 "free_margin": float(getattr(acc, "margin_free", 0.0) or 0.0),
@@ -90,11 +90,11 @@ class Mt5RestAccountMixin:
 
         except Exception as e:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] 계좌 조회 실패: {e}")
+                self.system_logger.error(f"[ERROR] 怨꾩쥖 議고쉶 ?ㅽ뙣: {e}")
             return None
 
     # -------------------------
-    # 특정 심볼 포지션 조회
+    # ?뱀젙 ?щ낵 ?ъ???議고쉶
     # -------------------------
     def get_positions(self, symbol: str = None):
         try:
@@ -102,7 +102,7 @@ class Mt5RestAccountMixin:
                 return []
 
             if symbol:
-                rows = mt5.positions_get(symbol=symbol) or []
+                rows = mt5.positions_get(symbol=self._broker_sym(symbol)) or []
             else:
                 rows = mt5.positions_get() or []
 
@@ -110,12 +110,12 @@ class Mt5RestAccountMixin:
 
         except Exception as e:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"[ERROR] positions_get 실패: {e}")
+                self.system_logger.error(f"[ERROR] positions_get ?ㅽ뙣: {e}")
             return []
 
     def get_position_qty_sum(self, symbol: str, side: str) -> float:
         """
-        심볼과 방향(LONG/SHORT)을 주면 현재 보유 수량(Volume) 합계를 반환하는 경량 함수
+        ?щ낵怨?諛⑺뼢(LONG/SHORT)??二쇰㈃ ?꾩옱 蹂댁쑀 ?섎웾(Volume) ?⑷퀎瑜?諛섑솚?섎뒗 寃쎈웾 ?⑥닔
         """
         if not self._ensure_mt5():
             return 0.0
@@ -123,11 +123,11 @@ class Mt5RestAccountMixin:
         sym = (symbol or "").upper()
         target_side = (side or "").upper()
 
-        # 1. API 호출 (해당 심볼의 포지션만 조회)
+        # 1. API ?몄텧 (?대떦 ?щ낵???ъ??섎쭔 議고쉶)
         rows = self.get_positions(symbol=sym)
         total_vol = 0.0
 
-        # 2. 집계 (단순 합산)
+        # 2. 吏묎퀎 (?⑥닚 ?⑹궛)
         for p in rows:
             vol = float(getattr(p, "volume", 0.0) or 0.0)
             if vol <= 0:
@@ -144,3 +144,4 @@ class Mt5RestAccountMixin:
 
 
         return float(total_vol)
+

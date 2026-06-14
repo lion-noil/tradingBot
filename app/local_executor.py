@@ -344,7 +344,8 @@ def make_rest(engine: str):
         return BybitRestController(system_logger=system_logger, **kwargs)
 
     if eng == "MT5":
-        return Mt5RestController(system_logger=system_logger, **kwargs)
+        from utils.symbol_mapper import SymbolAliasMap
+        return Mt5RestController(system_logger=system_logger, symbol_map=SymbolAliasMap.from_env(), **kwargs)
     raise ValueError(f"Unknown engine={engine}")
 
 

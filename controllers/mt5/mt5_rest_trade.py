@@ -1,4 +1,4 @@
-# controllers/mt5/mt5_rest_trade.py
+﻿# controllers/mt5/mt5_rest_trade.py
 from __future__ import annotations
 
 import math
@@ -24,13 +24,13 @@ class Mt5RestTradeMixin:
         return False
 
     # -------------------------
-    # 심볼 룰(랏 규칙) 조회
+    # ?щ낵 猷???洹쒖튃) 議고쉶
     # -------------------------
     def fetch_symbol_rules(self, symbol: str, category: str = "linear") -> dict:
         if not self._ensure_mt5():
             raise RuntimeError("mt5 initialize failed")
 
-        sym = (symbol or "").upper().strip()
+        sym = self._broker_sym(symbol)
         if not sym:
             raise RuntimeError("empty symbol")
 
@@ -47,7 +47,7 @@ class Mt5RestTradeMixin:
         ask = float(getattr(tick, "ask", 0.0) or 0.0) if tick else 0.0
         last = float(getattr(tick, "last", 0.0) or 0.0) if tick else 0.0
 
-        # ✅ 최소 스키마만 유지
+        # ??理쒖냼 ?ㅽ궎留덈쭔 ?좎?
         rules = {
             "qtyStep": float(getattr(info, "volume_step", 0.0) or 0.0),
             "minOrderQty": float(getattr(info, "volume_min", 0.0) or 0.0),
@@ -57,7 +57,7 @@ class Mt5RestTradeMixin:
             "last": last,
         }
 
-        # ✅ 보정 (기존 로직 유지)
+        # ??蹂댁젙 (湲곗〈 濡쒖쭅 ?좎?)
         if rules["qtyStep"] <= 0:
             rules["qtyStep"] = 0.01
         if rules["minOrderQty"] <= 0:
@@ -65,14 +65,14 @@ class Mt5RestTradeMixin:
         if rules["maxOrderQty"] < 0:
             rules["maxOrderQty"] = 0.0
 
-        # ✅ 캐시 키는 항상 UPPER
+        # ??罹먯떆 ?ㅻ뒗 ??긽 UPPER
         if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
             self._symbol_rules = {}
         self._symbol_rules[sym] = rules
         return rules
 
     def get_symbol_rules(self, symbol: str) -> dict:
-        sym = (symbol or "").upper().strip()
+        sym = self._broker_sym(symbol)
         if not sym:
             return {}
         if not hasattr(self, "_symbol_rules") or not isinstance(getattr(self, "_symbol_rules", None), dict):
@@ -80,7 +80,7 @@ class Mt5RestTradeMixin:
         return self._symbol_rules.get(sym) or self.fetch_symbol_rules(sym)
 
     # -------------------------
-    # 수량(랏) 정규화
+    # ?섎웾(?? ?뺢퇋??
     # -------------------------
     def _round_step(self, value: float, step: float, mode: str = "floor") -> float:
         if step <= 0:
@@ -95,7 +95,7 @@ class Mt5RestTradeMixin:
         return float(f"{n * step:.8f}")
 
     def normalize_qty(self, symbol: str, qty: float, mode: str = "floor") -> float:
-        sym = (symbol or "").upper().strip()
+        sym = self._broker_sym(symbol)
         rules = self.get_symbol_rules(sym) or {}
 
         step = float(rules.get("qtyStep") or 0.0) or 0.0
@@ -120,7 +120,7 @@ class Mt5RestTradeMixin:
         return float(q)
 
     # -------------------------
-    # 주문 생성/청산 래퍼
+    # 二쇰Ц ?앹꽦/泥?궛 ?섑띁
     # -------------------------
 
     def submit_market_order(
@@ -128,33 +128,33 @@ class Mt5RestTradeMixin:
             symbol: str,
             order_side: str,  # "Buy"/"Sell"
             qty: float,
-            position_idx: int = 0,  # 호환용(무시)
+            position_idx: int = 0,  # ?명솚??臾댁떆)
             reduce_only: bool = False,
             ex_lot_id: int | None = None,
             deviation: int = 20,
             magic: int = 20251213,
             comment: str = "mt5-market",
             *,
-            # ✅ 추가: Market closed 재시도 옵션
+            # ??異붽?: Market closed ?ъ떆???듭뀡
             retry_on_market_closed: bool = True,
             market_closed_wait_sec: float = 30.0,
-            market_closed_max_retries: int = 6,  # "추가 시도 횟수" (총 시도 = 1 + retries)
+            market_closed_max_retries: int = 6,  # "異붽? ?쒕룄 ?잛닔" (珥??쒕룄 = 1 + retries)
     ) -> Optional[Dict[str, Any]]:
         """
-        MT5 시장가 주문 전송.
-        ✅ retcode=10018 (Market closed) 발생 시:
-           30초 대기 후 1~2회 재시도(옵션)
+        MT5 ?쒖옣媛 二쇰Ц ?꾩넚.
+        ??retcode=10018 (Market closed) 諛쒖깮 ??
+           30珥??湲???1~2???ъ떆???듭뀡)
         """
         if not self._ensure_mt5():
             return None
 
-        sym = symbol.upper()
+        sym = self._broker_sym(symbol)
         if not mt5.symbol_select(sym, True):
             if getattr(self, "system_logger", None):
                 self.system_logger.error(f"[ERROR] symbol_select({sym}) failed: {mt5.last_error()}")
             return None
 
-        # --- 내부: '실제 1회 주문 시도'를 함수로 분리 ---
+        # --- ?대?: '?ㅼ젣 1??二쇰Ц ?쒕룄'瑜??⑥닔濡?遺꾨━ ---
         def _try_once(*, log_fail: bool = True) -> Optional[Dict[str, Any]]:
             vol = self.normalize_qty(sym, qty, mode="floor")
             if vol <= 0:
@@ -271,7 +271,7 @@ class Mt5RestTradeMixin:
 
             return out
 
-        # --- ✅ 여기서 Market closed 재시도 ---
+        # --- ???ш린??Market closed ?ъ떆??---
         attempts_total = 1 + (market_closed_max_retries if retry_on_market_closed else 0)
 
         last_out: Optional[Dict[str, Any]] = None
@@ -290,20 +290,20 @@ class Mt5RestTradeMixin:
             will_retry = retry_on_market_closed and is_market_closed and attempt < attempts_total
 
             if not will_retry:
-                # ✅ 최종 실패인 경우에만 에러 로그
+                # ??理쒖쥌 ?ㅽ뙣??寃쎌슦?먮쭔 ?먮윭 濡쒓렇
                 if getattr(self, "system_logger", None):
                     self.system_logger.error(f"[ERROR] mt5 order failed: {last_out}")
                 return last_out
 
             time.sleep(float(market_closed_wait_sec))
-            # 다음 시도에서 tick/price는 _try_once()가 다시 읽음
+            # ?ㅼ쓬 ?쒕룄?먯꽌 tick/price??_try_once()媛 ?ㅼ떆 ?쎌쓬
 
         return last_out
 
     def _pick_balance(self, wallet: dict) -> tuple[str, float]:
         """
-        wallet에서 기준통화/잔고를 선택.
-        우선순위: USD → USDT → 그 외 첫 키
+        wallet?먯꽌 湲곗??듯솕/?붽퀬瑜??좏깮.
+        ?곗꽑?쒖쐞: USD ??USDT ??洹???泥???
         """
         if not isinstance(wallet, dict) or not wallet:
             return ("", 0.0)
@@ -324,7 +324,7 @@ class Mt5RestTradeMixin:
             return (str(k0), 0.0)
 
     def calc_margin(self, symbol: str, lot: float, side: str = "buy") -> float | None:
-        sym = symbol.upper()
+        sym = self._broker_sym(symbol)
         if not mt5.initialize():
             return None
 
@@ -335,12 +335,12 @@ class Mt5RestTradeMixin:
         order_type = mt5.ORDER_TYPE_BUY if side.lower() == "buy" else mt5.ORDER_TYPE_SELL
         price = float(tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid)
 
-        # ✅ MT5 서버가 실제 규칙으로 계산해줌 (FX/CFD/고정 notional 전부 커버)
+        # ??MT5 ?쒕쾭媛 ?ㅼ젣 洹쒖튃?쇰줈 怨꾩궛?댁쨲 (FX/CFD/怨좎젙 notional ?꾨? 而ㅻ쾭)
         m = mt5.order_calc_margin(order_type, sym, float(lot), price)
         return float(m) if m is not None else None
 
     def _mid_price(self, sym: str) -> float | None:
-        sym = sym.upper()
+        sym = self._broker_sym(sym)
         if not mt5.symbol_select(sym, True):
             return None
         t = mt5.symbol_info_tick(sym)
@@ -355,21 +355,21 @@ class Mt5RestTradeMixin:
 
     def _fx_rate(self, ccy_from: str, ccy_to: str) -> tuple[float | None, str]:
         """
-        ccy_from -> ccy_to 환산 레이트(중간값)
-        예: KRW -> USD면 'USDKRW' 있으면 1/price, 'KRWUSD' 있으면 price
+        ccy_from -> ccy_to ?섏궛 ?덉씠??以묎컙媛?
+        ?? KRW -> USD硫?'USDKRW' ?덉쑝硫?1/price, 'KRWUSD' ?덉쑝硫?price
         """
         a = (ccy_from or "").upper()
         b = (ccy_to or "").upper()
         if not a or not b or a == b:
             return (1.0, "SAME")
 
-        # 1) 직접 페어 a+b
+        # 1) 吏곸젒 ?섏뼱 a+b
         sym1 = f"{a}{b}"
         p1 = self._mid_price(sym1)
         if p1 and p1 > 0:
             return (p1, sym1)
 
-        # 2) 역페어 b+a (invert)
+        # 2) ??럹??b+a (invert)
         sym2 = f"{b}{a}"
         p2 = self._mid_price(sym2)
         if p2 and p2 > 0:
@@ -386,14 +386,14 @@ class Mt5RestTradeMixin:
             return None
         return {
             "accountCcy": per.get("accountCcy"),
-            "notionalPerQtyAccount": n,  # MT5는 qty=lot
+            "notionalPerQtyAccount": n,  # MT5??qty=lot
             "method": "mt5_notionalPerLot",
             "per": per,
         }
 
 
     def calc_notional_per_lot_account(self, symbol: str, side: str = "buy") -> dict | None:
-        sym = symbol.upper()
+        sym = self._broker_sym(symbol)
         if not self._ensure_mt5():
             return None
 
@@ -405,7 +405,7 @@ class Mt5RestTradeMixin:
         if not tick:
             return None
 
-        # 계정통화
+        # 怨꾩젙?듯솕
         acc = mt5.account_info()
         account_ccy = str(getattr(acc, "currency", "") or "USD").upper()
 
@@ -417,15 +417,15 @@ class Mt5RestTradeMixin:
             contract_size = 1.0
 
         base_ccy = str(getattr(info, "currency_base", "") or "").upper()
-        quote_ccy = str(getattr(info, "currency_profit", "") or "").upper()  # 보통 quote로 쓰기 좋음
+        quote_ccy = str(getattr(info, "currency_profit", "") or "").upper()  # 蹂댄넻 quote濡??곌린 醫뗭쓬
 
-        # 1 lot 명목(quote 통화 기준) = contract_size * price
+        # 1 lot 紐낅ぉ(quote ?듯솕 湲곗?) = contract_size * price
         notional_quote = contract_size * price
 
-        # quote -> account 환산
+        # quote -> account ?섏궛
         rate, used = self._fx_rate(quote_ccy, account_ccy)
         if rate is None:
-            # 환산 못 하면 최소한 quote 기준 값이라도 리턴
+            # ?섏궛 紐??섎㈃ 理쒖냼??quote 湲곗? 媛믪씠?쇰룄 由ы꽩
             return {
                 "symbol": sym,
                 "price": price,
@@ -453,16 +453,16 @@ class Mt5RestTradeMixin:
     def _calc_raw_lot_from_percent_notional(
             self,
             symbol: str,
-            price: float,  # 지금 코드 유지용(사실 tick에서 다시 읽음)
+            price: float,  # 吏湲?肄붾뱶 ?좎????ъ떎 tick?먯꽌 ?ㅼ떆 ?쎌쓬)
             percent: float,
             wallet: dict,
             side: str = "buy",
     ) -> tuple[float, dict]:
 
-        cc, balance = self._pick_balance(wallet)  # 네 엔진 잔고(대개 USD/USDT)
+        cc, balance = self._pick_balance(wallet)  # ???붿쭊 ?붽퀬(?媛?USD/USDT)
         pct = float(percent or 0.0)
 
-        # ✅ 목표 명목가치(계정통화 기준)
+        # ??紐⑺몴 紐낅ぉ媛移?怨꾩젙?듯솕 湲곗?)
         target_notional = float(balance) * (pct / 100.0) * self.leverage
 
         per = self.calc_notional_per_lot_account(symbol, side=side)
@@ -493,13 +493,13 @@ class Mt5RestTradeMixin:
         qty = float(qty or 0.0)
         qty = self.normalize_qty(symbol, qty, mode="floor")
 
-        # 1) qty 체크
+        # 1) qty 泥댄겕
         if qty <= 0:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"❌ open_market 수량 오류: {qty} ({symbol})")
+                self.system_logger.error(f"??open_market ?섎웾 ?ㅻ쪟: {qty} ({symbol})")
             return None
 
-        # 2) side 매핑
+        # 2) side 留ㅽ븨
         s = (side or "").strip().lower()
         if s == "long":
             order_side, position_idx = "Buy", 1
@@ -507,17 +507,17 @@ class Mt5RestTradeMixin:
             order_side, position_idx = "Sell", 2
         else:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
+                self.system_logger.error(f"???????녿뒗 side 媛? {side}")
             return None
 
-        # 3) 로그
+        # 3) 濡쒓렇
         if getattr(self, "system_logger", None):
-            self.system_logger.debug(f"📥 {side.upper()} 진입 주문 전송 | qty={qty} ({symbol})")
+            self.system_logger.debug(f"?뱿 {side.upper()} 吏꾩엯 二쇰Ц ?꾩넚 | qty={qty} ({symbol})")
 
-        # 4) 주문 전송
+        # 4) 二쇰Ц ?꾩넚
         res = self.submit_market_order(symbol, order_side, qty, position_idx, reduce_only=False)
 
-        # ✅ MT5는 ok=False dict를 줄 수 있으니 통일(실패면 None)
+        # ??MT5??ok=False dict瑜?以????덉쑝???듭씪(?ㅽ뙣硫?None)
         if not res or (isinstance(res, dict) and (res.get("ok") is False)):
             return None
 
@@ -525,7 +525,7 @@ class Mt5RestTradeMixin:
         return res
 
     # -------------------------
-    # Bybit 스타일 래퍼: 청산
+    # Bybit ?ㅽ????섑띁: 泥?궛
     # -------------------------
     # controllers/mt5/mt5_rest_trade.py
 
@@ -537,7 +537,7 @@ class Mt5RestTradeMixin:
             *,
             ex_lot_id: int | None = None,
     ):
-        sym = (symbol or "").upper()
+        sym = self._broker_sym(symbol)
         side_u = (side or "").upper()
 
         if side_u == "LONG":
@@ -546,14 +546,14 @@ class Mt5RestTradeMixin:
             order_side, position_idx = "Buy", 2
         else:
             if getattr(self, "system_logger", None):
-                self.system_logger.error(f"❌ 알 수 없는 side 값: {side}")
+                self.system_logger.error(f"???????녿뒗 side 媛? {side}")
             return None
 
-        # ✅ 기본: 전량청산 (ex_lot_id가 있을 때 그 티켓의 volume)
+        # ??湲곕낯: ?꾨웾泥?궛 (ex_lot_id媛 ?덉쓣 ??洹??곗폆??volume)
         if qty is None:
             if not ex_lot_id:
                 if getattr(self, "system_logger", None):
-                    self.system_logger.error("❌ qty=None 인데 ex_lot_id가 없음 (전량청산 불가)")
+                    self.system_logger.error("??qty=None ?몃뜲 ex_lot_id媛 ?놁쓬 (?꾨웾泥?궛 遺덇?)")
                 return None
 
             if not self._ensure_mt5():
@@ -570,16 +570,16 @@ class Mt5RestTradeMixin:
 
             qty = float(getattr(p, "volume", 0.0) or 0.0)
 
-        # 기존 normalize + submit
+        # 湲곗〈 normalize + submit
         qty = self.normalize_qty(sym, float(qty), mode="floor")
         if qty <= 0:
             if getattr(self, "system_logger", None):
-                self.system_logger.warning("❗ 청산 수량이 최소단위 미만입니다. 중단.")
+                self.system_logger.warning("??泥?궛 ?섎웾??理쒖냼?⑥쐞 誘몃쭔?낅땲?? 以묐떒.")
             return None
 
         if getattr(self, "system_logger", None):
             self.system_logger.debug(
-                f"📤 [MT5] {side_u} 포지션 청산 시도 | qty(lot)={qty:.4f} ({sym}) ex_lot_id={ex_lot_id or 0}"
+                f"?뱾 [MT5] {side_u} ?ъ???泥?궛 ?쒕룄 | qty(lot)={qty:.4f} ({sym}) ex_lot_id={ex_lot_id or 0}"
             )
 
         return self.submit_market_order(
@@ -590,4 +590,5 @@ class Mt5RestTradeMixin:
             reduce_only=True,
             ex_lot_id=ex_lot_id,
         )
+
 

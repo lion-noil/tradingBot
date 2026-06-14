@@ -17,6 +17,7 @@ from utils.logger import setup_logger
 
 from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
 from controllers.mt5.mt5_rest_controller import Mt5RestController
+from utils.symbol_mapper import SymbolAliasMap
 
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -167,8 +168,9 @@ async def startup_event():
     PRICE_WS_URL = _env(f"MT5_PRICE_WS_URL", "")
     MT5_API_KEY = _env("MT5_API_KEY", "")
 
-    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger, price_ws_url=PRICE_WS_URL, api_key=MT5_API_KEY)
-    mt5_rest_controller = Mt5RestController(system_logger=system_logger, price_base_url=PRICE_REST_URL, api_key=MT5_API_KEY)
+    symbol_map = SymbolAliasMap.from_env()
+    mt5_ws_controller = Mt5WebSocketController(symbols=symbols_mt5, system_logger=system_logger, price_ws_url=PRICE_WS_URL, api_key=MT5_API_KEY, symbol_map=symbol_map)
+    mt5_rest_controller = Mt5RestController(system_logger=system_logger, price_base_url=PRICE_REST_URL, api_key=MT5_API_KEY, symbol_map=symbol_map)
     _raw_targets = _env("MT5_EXECUTOR_TARGETS", "127.0.0.1:9010")
     _targets = [Target(h, int(p)) for t in _raw_targets.split(",") if ":" in t for h, p in [t.strip().rsplit(":", 1)]]
     local_sender = LocalActionSender(

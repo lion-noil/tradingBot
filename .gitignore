@@ -17,6 +17,11 @@ __pycache__/
 
 # 환경 파일
 .env
+.env.bak
+.env*.bak
+
+# PID 파일
+*.pid
 
 # 로그 파일
 logs/

@@ -21,13 +21,21 @@ class Mt5RestBase:
             price_base_url: str | None = None,
             api_key: str | None = None,
             api_secret: str | None = None,
+            symbol_map=None,
     ):
         self.system_logger = system_logger
         self.price_base_url = price_base_url
         self.trade_base_url = trade_base_url
         self.api_key = api_key
         self._symbol_rules: dict[str, dict] = {}
+        self.symbol_map = symbol_map  # SymbolAliasMap | None
 
+    def _broker_sym(self, symbol: str) -> str:
+        """Canonical → broker symbol. No-op if no mapping set."""
+        s = (symbol or "").upper().strip()
+        if s and self.symbol_map:
+            return self.symbol_map.to_broker(s)
+        return s
 
     # -------------------------
     # URL / 헤더 빌더
