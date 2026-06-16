@@ -17,10 +17,13 @@ KST = timezone(timedelta(hours=9))
 class Mt5RestTradeMixin:
 
     def _ensure_mt5(self) -> bool:
-        if mt5.initialize():
+        import os
+        path = os.getenv("MT5_TERMINAL_PATH") or None
+        ok = mt5.initialize(path=path) if path else mt5.initialize()
+        if ok:
             return True
         if getattr(self, "system_logger", None):
-            self.system_logger.error(f"[ERROR] MT5 initialize failed: {mt5.last_error()}")
+            self.system_logger.error(f"[ERROR] MT5 initialize failed (path={path}): {mt5.last_error()}")
         return False
 
     # -------------------------

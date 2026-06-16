@@ -232,27 +232,16 @@ def parse_symbols(s: str) -> Optional[Set[str]]:
     return out or None
 
 
-def pick_config_name(engine: str) -> str:
-    eng = (engine or "").upper().strip()
-    if eng == "BYBIT":
-        return "bybit"
-    if eng == "MT5":
-        return "MT5"
-
-
 def load_engine_config(engine: str) -> TradeConfig:
-    cfg_name = pick_config_name(engine)  # 위에서 만든 함수
-    n = (cfg_name or "default").strip()
+    eng = (engine or "").upper().strip()
 
-    # 1) name 기준으로 "의도"를 결정
-    if n == "bybit":
+    if eng == "BYBIT":
         return make_bybit_config().normalized()
 
-    # mt5_signal / mt5 / mt5_trade 등 "mt5 계열"이면 일단 mt5_signal 팩토리로 생성
-    if n.startswith("MT5"):
-        cfg = make_mt5_signal_config().normalized()
-        cfg.name = n
-        return cfg.normalized()
+    if eng == "MT5":
+        return make_mt5_signal_config().normalized()
+
+    raise ValueError(f"Unknown engine: {engine!r} (expected BYBIT or MT5)")
 
 
 def make_event_id(msg: Dict[str, Any]) -> str:

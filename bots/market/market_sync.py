@@ -192,7 +192,7 @@ class MarketSync:
         if not self._rest_fallback_on[symbol]:
             self._rest_fallback_on[symbol] = True
             if self.system_logger:
-                self.system_logger.error(f"[{symbol}] ⚠️ WS stale → REST 백필")
+                self.system_logger.warning(f"[{symbol}] ⚠️ WS stale → REST 백필")
 
         # ✅ 심볼별 쿨다운
         if not self._can_backfill_now(symbol, now_ts, cooldown_sec=30.0):
@@ -222,7 +222,7 @@ class MarketSync:
         except Exception as e:
             # 네트워크/DNS 흔들릴 때 예외가 바깥으로 퍼지는 걸 방지
             if self.system_logger:
-                self.system_logger.warning(
+                self.system_logger.debug(
                     f"❌ [REST backfill] ({symbol}) failed: {e}"
                 )
         finally:

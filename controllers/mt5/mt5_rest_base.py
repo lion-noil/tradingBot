@@ -105,7 +105,7 @@ class Mt5RestBase:
 
         if resp.status_code != 200:
             if self.system_logger:
-                self.system_logger.error(
+                self.system_logger.warning(
                     f"[MT5 REST] HTTP {resp.status_code} use={use} {resp.text[:200]}"
                 )
             resp.raise_for_status()

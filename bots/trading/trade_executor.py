@@ -501,7 +501,17 @@ class TradeExecutor:
         try:
             rules_map = getattr(self.rest, "_symbol_rules", None)
             if isinstance(rules_map, dict):
-                return rules_map.get(sym) or {}
+                result = rules_map.get(sym)
+                if result is not None:
+                    return result
+                # rules는 broker 심볼 키로 저장되므로 (e.g. ETHUSD -> #ETHUSD)
+                broker_fn = getattr(self.rest, "_broker_sym", None)
+                if callable(broker_fn):
+                    bsym = broker_fn(sym)
+                    if bsym and bsym != sym:
+                        result = rules_map.get(bsym)
+                        if result is not None:
+                            return result
         except Exception:
             pass
         return {}
@@ -537,6 +547,10 @@ class TradeExecutor:
         qn = self._round_step(q, step, mode=mode)
 
         if qn < min_qty:
+            if self.system_logger:
+                self.system_logger.info(
+                    f"[normalize_qty] below min_qty (sym={symbol} raw={q:.6f} step={step} qn={qn:.6f} min={min_qty:.6f}) -> 0"
+                )
             return 0.0
 
         if max_qty > 0 and qn > max_qty:

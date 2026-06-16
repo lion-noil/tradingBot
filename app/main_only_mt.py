@@ -43,7 +43,7 @@ class BurstWarningTerminator(logging.Handler):
         logging.captureWarnings(True)
 
     def emit(self, record: logging.LogRecord):
-        if record.levelno < logging.WARNING or not self._armed:
+        if record.levelno < logging.ERROR or not self._armed:
             return
         now = time.monotonic()
         with self._lock:
@@ -116,17 +116,26 @@ mt5_rest_controller: Mt5RestController | None = None
 
 async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
     MIN_TICKS = bot.jump.history_num
+    WARMUP_TIMEOUT_SEC = 120.0  # 2분 내 틱 없는 심볼은 시장 폐장으로 간주하고 스킵
+    started_at = time.monotonic()
+
     while True:
         try:
+            elapsed = time.monotonic() - started_at
             missing: dict[str, int] = {}
             for sym in bot.symbols:
                 price = ws.get_price(sym)
                 exchange_ts = ws.get_last_exchange_ts(sym)
-                if price is not None:  # ✅ 여기 수정
+                if price is not None:
                     bot.jump.record_price(sym, price, exchange_ts)
                 cur = len(bot.jump.price_history.get(sym, []))
                 if cur < MIN_TICKS:
-                    missing[sym] = cur
+                    if elapsed >= WARMUP_TIMEOUT_SEC:
+                        system_logger.warning(
+                            f"[{name}] ⏭ [{sym}] 틱 부족({cur}/{MIN_TICKS}), {elapsed:.0f}s 타임아웃 → 스킵"
+                        )
+                    else:
+                        missing[sym] = cur
 
             if not missing:
                 system_logger.debug(f"✅ [{name}] 데이터 준비 완료, 메인 루프 시작")
