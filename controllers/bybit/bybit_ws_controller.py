@@ -227,16 +227,11 @@ class BybitWebSocketController:
         def on_close(ws, *args):
             if self.system_logger:
                 self.system_logger.debug("🔌 WebSocket closed.")
-
             with self._lock:
                 self.ws = None
-
-            delay = self._reconnect_delay
-            if self.system_logger:
-                self.system_logger.debug(f"⏳ {delay}s 후 재연결 시도…")
-            time.sleep(delay)
-            self._reconnect_delay = min(self._reconnect_delay * 2, 60)
-            self._start_public_websocket()
+            # ⚠️ 재연결은 아래 run() 루프가 '전담'한다. 여기서 _start_public_websocket()를
+            # 호출하면(예전 코드) 끊길 때마다 [while 루프 + on_close 새 스레드]로 재연결 경로가
+            # 2배씩 증식 → 스레드 폭주 → Bybit "too many requests" 403 자초 + lock 경합으로 hang.
 
         def run():
             while True:
@@ -253,8 +248,18 @@ class BybitWebSocketController:
                 except Exception as e:
                     if self.system_logger:
                         self.system_logger.exception(f"🔥 Public WebSocket 스레드 예외: {e}")
-                    time.sleep(self._reconnect_delay)
-                    self._reconnect_delay = min(self._reconnect_delay * 2, 60)
 
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
+                # run_forever가 반환됨(정상 close 또는 예외) → 지수 백오프 후 재연결.
+                # backoff는 on_open 성공 시 5로 리셋됨.
+                delay = self._reconnect_delay
+                if self.system_logger:
+                    self.system_logger.debug(f"⏳ {delay}s 후 재연결 시도…")
+                time.sleep(delay)
+                self._reconnect_delay = min(self._reconnect_delay * 2, 60)
+
+        # ✅ 단일 재연결 스레드만 유지 (중복 호출돼도 새 스레드 안 띄움)
+        existing = getattr(self, "_ws_thread", None)
+        if existing is not None and existing.is_alive():
+            return
+        self._ws_thread = threading.Thread(target=run, daemon=True)
+        self._ws_thread.start()
