@@ -1,4 +1,5 @@
 # bots/trade_bot.py
+import asyncio
 import time
 from typing import List
 from bots.state.signals import OpenSignalsIndex, record_and_index_signal
@@ -224,10 +225,16 @@ class TradeBot:
         self.entry_percent = cfg.entry_percent
 
     async def run_once(self):
+        loop = asyncio.get_running_loop()
         for symbol in self.symbols:
             try:
                 now = time.time()
-                price = self.market.tick(symbol, now)
+                # market.tick()은 WS stale 시 동기 REST 백필(블로킹 requests ×N)을 수행한다.
+                # 이벤트 루프에서 직접 돌리면 그동안 루프가 얼어 안전브레이커(loop.call_later)까지
+                # 못 떠 영구 hang이 됨 → executor 스레드로 빼서 루프가 항상 살아있게 한다.
+                # tick은 run_once에서만 순차 await로 호출되므로 동시 tick이 없고(캔들 엔진 유일 접근자),
+                # WS 컨트롤러는 자체 락으로 thread-safe → 추가 락 불필요.
+                price = await loop.run_in_executor(None, self.market.tick, symbol, now)
 
                 actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
