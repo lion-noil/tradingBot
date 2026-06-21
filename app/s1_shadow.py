@@ -26,6 +26,33 @@ except ImportError:
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "s1_state")
 BASE = "https://api.bybit.com"
 
+# --redis 모드에서만 lazy 로드 (봇의 표준 writer 재사용 → 포맷 자동 일치)
+_record = None
+def _get_recorder():
+    global _record
+    if _record is None:
+        from bots.state.signals import record_signal_with_ts
+        from core.redis_client import redis_ping
+        if not redis_ping():
+            raise RuntimeError("Redis 연결 실패 (.env REDIS_URL 확인)")
+        _record = record_signal_with_ts
+    return _record
+
+
+def _redis_record_entry(ns, symbol, price, z, ma, tp, sl, p) -> str:
+    rec = _get_recorder()
+    sid, _ = rec(namespace=ns, symbol=symbol, side="LONG", kind="ENTRY", price=price,
+                 payload={"reasons": ["S1"], "strategy": "S1", "z": z, "ma": ma,
+                          "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b})
+    return sid
+
+
+def _redis_record_exit(ns, symbol, price, open_sid, reason, entry_price, pnl_pct) -> None:
+    rec = _get_recorder()
+    rec(namespace=ns, symbol=symbol, side="LONG", kind="EXIT", price=price,
+        payload={"open_signal_id": open_sid, "reasons": [f"S1_{reason}"], "strategy": "S1",
+                 "entry_price": entry_price, "pnl_pct": pnl_pct})
+
 
 def fetch_1m(symbol: str, need: int) -> list[dict]:
     """최근 need개 1분봉(오래된→최신). 공개 API, 페이지네이션."""
@@ -68,7 +95,7 @@ def save_state(symbol: str, st: dict) -> None:
         json.dump(st, f, indent=2)
 
 
-def check_symbol(symbol: str, p: S1Params, log=print) -> None:
+def check_symbol(symbol: str, p: S1Params, log=print, *, redis_ns: Optional[str] = None) -> None:
     candles = fetch_1m(symbol, p.win + 5)
     if len(candles) < p.win:
         log(f"[{symbol}] 데이터 부족 {len(candles)}/{p.win}"); return
@@ -89,10 +116,14 @@ def check_symbol(symbol: str, p: S1Params, log=print) -> None:
         lv = s1_entry_levels(z, ma, sd, price, p)
         if lv:
             tp, sl = lv
+            sid = None
+            if redis_ns:
+                sid = _redis_record_entry(redis_ns, symbol, price, z, ma, tp, sl, p)
             st["position"] = {"entry_price": price, "tp_price": tp, "sl_price": sl,
-                              "entry_ts_ms": now_ms}
+                              "entry_ts_ms": now_ms, "signal_id": sid}
+            tag = f"[REDIS sid={sid[:6]}]" if sid else "[SIGNAL ONLY]"
             log(f"{head} | ▲ ENTER LONG @ {price:.4f}  TP {tp:.4f}(+{(tp/price-1)*100:.2f}%) "
-                f"SL {sl:.4f}(-{(1-sl/price)*100:.2f}%)  [SIGNAL ONLY]")
+                f"SL {sl:.4f}(-{(1-sl/price)*100:.2f}%)  {tag}")
         else:
             log(f"{head} | flat (진입조건 미충족, z>{-p.k1})")
     else:
@@ -100,11 +131,20 @@ def check_symbol(symbol: str, p: S1Params, log=print) -> None:
         reason = s1_exit_on_tick(P, price)
         if reason:
             ret = (price / P.entry_price - 1) - p.fee_roundtrip
+            open_sid = pos.get("signal_id")
+            tag = "[SIGNAL ONLY]"
+            if redis_ns:
+                if open_sid:
+                    _redis_record_exit(redis_ns, symbol, price, open_sid, reason,
+                                       P.entry_price, (price / P.entry_price - 1) * 100)
+                    tag = f"[REDIS close={open_sid[:6]}]"
+                else:
+                    tag = "[REDIS skip: open_signal_id 없음(파일모드 진입분)]"
             st["trades"].append({"entry": P.entry_price, "exit": price, "reason": reason,
                                  "ret_pct": ret * 100, "exit_ts_ms": now_ms})
             st["position"] = None; st["last_exit_ts_ms"] = now_ms
             log(f"{head} | ⊖ EXIT {reason} @ {price:.4f}  진입 {P.entry_price:.4f}  "
-                f"손익 {ret*100:+.2f}%  [SIGNAL ONLY]")
+                f"손익 {ret*100:+.2f}%  {tag}")
         else:
             log(f"{head} | 보유중 진입 {P.entry_price:.4f} / TP {P.tp_price:.4f} / SL {P.sl_price:.4f}")
     save_state(symbol, st)
@@ -118,16 +158,28 @@ def main():
     ap.add_argument("--cooldown-h", type=float, default=12.0)
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--loop", type=int, default=0, help="N초 간격 반복")
+    ap.add_argument("--redis", action="store_true", help="봇 Redis에 신호 기록(포맷 동일)")
+    ap.add_argument("--namespace", default="bybit", help="Redis 네임스페이스")
     args = ap.parse_args()
     p = S1Params(win=10080, k1=args.k1, b=args.b, cooldown_sec=int(args.cooldown_h * 3600))
     p.validate()
     syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    print(f"S1 섀도우 (signal-only) | {syms} | K1={p.k1} B={p.b} 쿨다운{args.cooldown_h}h | 상태→{STATE_DIR}")
+    redis_ns = args.namespace if args.redis else None
+    mode = f"Redis 기록(ns={redis_ns})" if redis_ns else "signal-only(파일)"
+    print(f"S1 섀도우 [{mode}] | {syms} | K1={p.k1} B={p.b} 쿨다운{args.cooldown_h}h | 상태→{STATE_DIR}")
+    if redis_ns:
+        # 시작 시 즉시 연결 점검 (봇 env에서 실행해야 함: redis 패키지 + .env REDIS_URL)
+        try:
+            _get_recorder()
+            print("  Redis 연결 OK — 신호는 봇과 동일 포맷(stream/hash/zset)으로 기록됩니다.")
+        except Exception as e:
+            print(f"  ⚠️ Redis 사용 불가: {e}\n  → 봇 가상환경에서 실행하고 .env의 REDIS_URL 확인하세요.")
+            return
 
     def tick():
         for s in syms:
             try:
-                check_symbol(s, p)
+                check_symbol(s, p, redis_ns=redis_ns)
             except Exception as e:
                 print(f"[{s}] 오류: {e}")
 
