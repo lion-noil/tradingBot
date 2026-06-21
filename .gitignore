@@ -41,3 +41,5 @@ build/
 
 __pycache__/
 *.pyc
+# S1 shadow runtime state
+s1_state/
