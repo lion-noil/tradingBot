@@ -54,6 +54,25 @@ def _redis_record_exit(ns, symbol, price, open_sid, reason, entry_price, pnl_pct
                  "entry_price": entry_price, "pnl_pct": pnl_pct})
 
 
+# ── 텔레그램 (봇과 동일 함수/채널 재사용) ──
+_tg_cfg = None
+def _telegram_send(msg: str, log=print) -> None:
+    global _tg_cfg
+    if _tg_cfg is None:
+        from utils.logger import send_telegram_message
+        token = os.getenv("Noil1_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_BOT_TOKEN")
+        chat = os.getenv("TELEGRAM_CHAT_ID")
+        _tg_cfg = (send_telegram_message, token, chat)
+    fn, token, chat = _tg_cfg
+    if not token or not chat:
+        log("  ⚠️ 텔레그램 토큰/챗ID 없음 (.env Noil1_TELEGRAM_CHAT_ID/TELEGRAM_CHAT_ID)")
+        return
+    try:
+        fn(token, chat, msg)
+    except Exception as e:
+        log(f"  ⚠️ 텔레그램 전송 실패: {e}")
+
+
 def fetch_1m(symbol: str, need: int) -> list[dict]:
     """최근 need개 1분봉(오래된→최신). 공개 API, 페이지네이션."""
     if requests is None:
@@ -95,7 +114,8 @@ def save_state(symbol: str, st: dict) -> None:
         json.dump(st, f, indent=2)
 
 
-def check_symbol(symbol: str, p: S1Params, log=print, *, redis_ns: Optional[str] = None) -> None:
+def check_symbol(symbol: str, p: S1Params, log=print, *, redis_ns: Optional[str] = None,
+                 telegram: bool = False) -> None:
     candles = fetch_1m(symbol, p.win + 5)
     if len(candles) < p.win:
         log(f"[{symbol}] 데이터 부족 {len(candles)}/{p.win}"); return
@@ -124,6 +144,11 @@ def check_symbol(symbol: str, p: S1Params, log=print, *, redis_ns: Optional[str]
             tag = f"[REDIS sid={sid[:6]}]" if sid else "[SIGNAL ONLY]"
             log(f"{head} | ▲ ENTER LONG @ {price:.4f}  TP {tp:.4f}(+{(tp/price-1)*100:.2f}%) "
                 f"SL {sl:.4f}(-{(1-sl/price)*100:.2f}%)  {tag}")
+            if telegram:
+                _telegram_send(
+                    f"🟢 S1 ENTER LONG {symbol} @ {price:.4f}\n"
+                    f"z={zstr}  TP {tp:.4f}(+{(tp/price-1)*100:.2f}%)  "
+                    f"SL {sl:.4f}(-{(1-sl/price)*100:.2f}%)", log)
         else:
             log(f"{head} | flat (진입조건 미충족, z>{-p.k1})")
     else:
@@ -145,6 +170,11 @@ def check_symbol(symbol: str, p: S1Params, log=print, *, redis_ns: Optional[str]
             st["position"] = None; st["last_exit_ts_ms"] = now_ms
             log(f"{head} | ⊖ EXIT {reason} @ {price:.4f}  진입 {P.entry_price:.4f}  "
                 f"손익 {ret*100:+.2f}%  {tag}")
+            if telegram:
+                emo = "✅" if ret > 0 else "❌"
+                _telegram_send(
+                    f"{emo} S1 EXIT {reason} {symbol} @ {price:.4f}\n"
+                    f"진입 {P.entry_price:.4f}  손익 {ret*100:+.2f}%", log)
         else:
             log(f"{head} | 보유중 진입 {P.entry_price:.4f} / TP {P.tp_price:.4f} / SL {P.sl_price:.4f}")
     save_state(symbol, st)
@@ -160,13 +190,14 @@ def main():
     ap.add_argument("--loop", type=int, default=0, help="N초 간격 반복")
     ap.add_argument("--redis", action="store_true", help="봇 Redis에 신호 기록(포맷 동일)")
     ap.add_argument("--namespace", default="bybit", help="Redis 네임스페이스")
+    ap.add_argument("--telegram", action="store_true", help="신호 발생 시 텔레그램 전송(봇과 동일 채널)")
     args = ap.parse_args()
     p = S1Params(win=10080, k1=args.k1, b=args.b, cooldown_sec=int(args.cooldown_h * 3600))
     p.validate()
     syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     redis_ns = args.namespace if args.redis else None
-    mode = f"Redis 기록(ns={redis_ns})" if redis_ns else "signal-only(파일)"
-    print(f"S1 섀도우 [{mode}] | {syms} | K1={p.k1} B={p.b} 쿨다운{args.cooldown_h}h | 상태→{STATE_DIR}")
+    parts = ["Redis기록" if redis_ns else "파일only", "텔레그램ON" if args.telegram else "텔레그램OFF"]
+    print(f"S1 섀도우 [{' / '.join(parts)}] | {syms} | K1={p.k1} B={p.b} 쿨다운{args.cooldown_h}h | 상태→{STATE_DIR}")
     if redis_ns:
         # 시작 시 즉시 연결 점검 (봇 env에서 실행해야 함: redis 패키지 + .env REDIS_URL)
         try:
@@ -179,7 +210,7 @@ def main():
     def tick():
         for s in syms:
             try:
-                check_symbol(s, p, redis_ns=redis_ns)
+                check_symbol(s, p, redis_ns=redis_ns, telegram=args.telegram)
             except Exception as e:
                 print(f"[{s}] 오류: {e}")
 
