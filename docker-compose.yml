@@ -42,3 +42,15 @@ services:
 
   # executor-a2 (MT5 주문)는 MetaTrader5 Python 라이브러리가 Windows 전용이라
   # Linux Docker에서 실행 불가 → 로컬 Windows PyCharm에서 직접 실행 유지
+
+  # ─── S1 섀도우 (역추세 롱 검증용) ─────────────────────────────────────────────
+  # 실주문 없음(signal-only). Bybit 공개 kline으로 S1 신호만 평가 → 텔레그램 알림.
+  # 심볼은 봇과 동일하게 BYBIT_SYMBOLS(.env) 추종. --redis 미사용(봇 신호 네임스페이스 비오염).
+  s1-shadow:
+    build: .
+    restart: unless-stopped
+    command: sh -c 'python -u -m app.s1_shadow --symbols "$${BYBIT_SYMBOLS:-BTCUSDT}" --telegram --loop 60'
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs
+      - ./s1_state:/app/s1_state   # 페이퍼 포지션 상태 영속(재시작 보존)
