@@ -60,6 +60,18 @@ class Mt5RestTradeMixin:
             "last": last,
         }
 
+        # USD 환산 lot당 노셔널 — _calc_eff_x FX 변환에 사용
+        contract_size = float(getattr(info, "trade_contract_size", 0.0) or 1.0)
+        quote_ccy = str(getattr(info, "currency_profit", "") or "").upper()
+        acc_info = mt5.account_info()
+        account_ccy = str(getattr(acc_info, "currency", "USD") or "USD").upper()
+        ref_price = ask if ask > 0 else (bid if bid > 0 else last)
+        if ref_price > 0:
+            notional_quote = contract_size * ref_price
+            rate, _ = self._fx_rate(quote_ccy, account_ccy)
+            if rate is not None:
+                rules["notionalPerLotAccount"] = notional_quote * rate
+
         # ??蹂댁젙 (湲곗〈 濡쒖쭅 ?좎?)
         if rules["qtyStep"] <= 0:
             rules["qtyStep"] = 0.01
@@ -126,6 +138,50 @@ class Mt5RestTradeMixin:
     # 二쇰Ц ?앹꽦/泥?궛 ?섑띁
     # -------------------------
 
+    def _filling_attempt_order(self, sym: str) -> list:
+        """이 심볼의 filling 모드 시도 순서를 반환(우선순위 + 전부 폴백).
+
+        근거(로그 확인): 이 브로커는 IOC를 전혀 안 받아 모든 주문이 매번
+        IOC→10030→FOK 폴백으로 체결돼 왔다. 그래서 '실제로 통하는' FOK를
+        먼저 시도해 매 주문의 불필요한 IOC 거절을 없앤다.
+
+        symbol_info().filling_mode 비트마스크(SYMBOL_FILLING_FOK=1, IOC=2)가
+        명시한 모드를 맨 앞으로 끌어올리되, 마스크가 부정확/누락이어도 막히지
+        않도록 FOK·IOC·RETURN을 모두 폴백으로 유지한다(중복 제거). FOK가 곧바로
+        체결되면 루프가 break 하므로 폴백 모드는 실제로 시도되지 않는다.
+        RETURN은 시장가엔 보통 무효라 항상 맨 뒤(최후의 수단).
+        """
+        fok = getattr(mt5, "ORDER_FILLING_FOK", 0)
+        ioc = getattr(mt5, "ORDER_FILLING_IOC", 1)
+        ret = getattr(mt5, "ORDER_FILLING_RETURN", 2)
+        bit_fok = getattr(mt5, "SYMBOL_FILLING_FOK", 1)
+        bit_ioc = getattr(mt5, "SYMBOL_FILLING_IOC", 2)
+
+        mask = 0
+        try:
+            info = mt5.symbol_info(sym)
+            mask = int(getattr(info, "filling_mode", 0) or 0)
+        except Exception:
+            mask = 0
+
+        order: list = []
+
+        def _add(m):
+            if m not in order:
+                order.append(m)
+
+        # 1) 마스크가 명시한 모드 먼저(있으면)
+        if mask & bit_fok:
+            _add(fok)
+        if mask & bit_ioc:
+            _add(ioc)
+        # 2) 폴백: FOK(이 브로커에서 실제로 통함) → IOC → 모두 유지
+        _add(fok)
+        _add(ioc)
+        # 3) 최후의 수단
+        _add(ret)
+        return order
+
     def submit_market_order(
             self,
             symbol: str,
@@ -139,9 +195,18 @@ class Mt5RestTradeMixin:
             comment: str = "mt5-market",
             *,
             # ??異붽?: Market closed ?ъ떆???듭뀡
+            # 신호측(trade_bot)의 심볼별 피드 게이트가 마감 심볼의 주문을 1차 차단하므로,
+            # 여기 재시도는 '장 열림 직전 경계'만 커버하는 안전망 → 짧게(최악 ~15초)만 잡는다.
+            # (과거 6×30초=최대 3분은 _sync_lock을 오래 점유해 다른 주문까지 묶었음)
             retry_on_market_closed: bool = True,
-            market_closed_wait_sec: float = 30.0,
-            market_closed_max_retries: int = 6,  # "異붽? ?쒕룄 ?잛닔" (珥??쒕룄 = 1 + retries)
+            market_closed_wait_sec: float = 15.0,
+            market_closed_max_retries: int = 1,  # "異붽? ?쒕룄 ?잛닔" (珥??쒕룄 = 1 + retries)
+            # ✅ 추가: 개장 중 '일시적 체결 거부'(10030/10006 등) 짧은 재시도.
+            #   세션 경계·순간 호가공백에서 deal=0(미체결)으로 거절되면 다음 틱엔 대개 체결됨.
+            #   미체결이라 중복체결 위험 없음.
+            retry_on_fill_reject: bool = True,
+            fill_reject_wait_sec: float = 2.0,
+            fill_reject_max_retries: int = 2,
     ) -> Optional[Dict[str, Any]]:
         """
         MT5 ?쒖옣媛 二쇰Ц ?꾩넚.
@@ -225,7 +290,7 @@ class Mt5RestTradeMixin:
                         return None
 
             last_res = None
-            for tf in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+            for tf in self._filling_attempt_order(sym):
                 req["type_filling"] = tf
                 res = mt5.order_send(req)
                 last_res = res
@@ -242,6 +307,13 @@ class Mt5RestTradeMixin:
                     if getattr(self, "system_logger", None):
                         self.system_logger.debug(
                             f"[MT5] {sym} filling={tf} rejected: ret={last_retcode} {last_comment}")
+                    continue
+
+                # 10006(Request rejected): IOC/FOK 브로커 거절 시 RETURN으로 폴백
+                if last_retcode == 10006 and tf != mt5.ORDER_FILLING_RETURN:
+                    if getattr(self, "system_logger", None):
+                        self.system_logger.debug(
+                            f"[MT5] {sym} filling={tf} rejected(10006): trying RETURN")
                     continue
 
                 break
@@ -275,10 +347,15 @@ class Mt5RestTradeMixin:
             return out
 
         # --- ???ш린??Market closed ?ъ떆??---
-        attempts_total = 1 + (market_closed_max_retries if retry_on_market_closed else 0)
+        # 두 종류의 '미체결 거절'에 각각 별도 재시도 예산(둘 다 deal=0이라 재시도 안전):
+        #   ① market closed(10018)         : 장 열림 직전 경계용 안전망
+        #   ② 일시적 체결 거부(10030/10006…): 개장 중 순간 호가공백/세션경계
+        # 예산이 매번 감소하므로 루프는 (1 + mc + fr)회로 반드시 종료된다.
+        mc_left = market_closed_max_retries if retry_on_market_closed else 0
+        fr_left = fill_reject_max_retries if retry_on_fill_reject else 0
 
         last_out: Optional[Dict[str, Any]] = None
-        for attempt in range(1, attempts_total + 1):
+        while True:
             last_out = _try_once(log_fail=False)
             if last_out is None:
                 return None
@@ -290,15 +367,37 @@ class Mt5RestTradeMixin:
             comment_s = str(last_out.get("comment", "") or "").lower()
 
             is_market_closed = (retcode == 10018) or ("market closed" in comment_s)
-            will_retry = retry_on_market_closed and is_market_closed and attempt < attempts_total
+            # 10030(filling)/10006(rejected)/10004(requote)/10021(no prices) = 미체결 일시 거부
+            is_fill_reject = retcode in (10030, 10006, 10004, 10021)
 
-            if not will_retry:
+            do_retry = False
+            wait_sec = 0.0
+            if is_market_closed and mc_left > 0:
+                mc_left -= 1
+                do_retry, wait_sec = True, float(market_closed_wait_sec)
+            elif is_fill_reject and fr_left > 0:
+                fr_left -= 1
+                do_retry, wait_sec = True, float(fill_reject_wait_sec)
+                if getattr(self, "system_logger", None):
+                    self.system_logger.warning(
+                        f"[MT5] {sym} 체결 거부(ret={retcode} '{last_out.get('comment')}') — "
+                        f"{fill_reject_wait_sec:.0f}s 후 재시도 (남은 {fr_left + 1}회)"
+                    )
+
+            if not do_retry:
                 # ??理쒖쥌 ?ㅽ뙣??寃쎌슦?먮쭔 ?먮윭 濡쒓렇
                 if getattr(self, "system_logger", None):
-                    self.system_logger.error(f"[ERROR] mt5 order failed: {last_out}")
+                    if is_market_closed:
+                        # 마감은 '에러'가 아니라 정상적인 거절 → 신호측 게이트가 정상이면 거의 안 옴.
+                        self.system_logger.warning(
+                            f"[MT5] {sym} market closed(10018) — 주문 보류 "
+                            f"(side={order_side} qty={qty} reduce_only={reduce_only})"
+                        )
+                    else:
+                        self.system_logger.error(f"[ERROR] mt5 order failed: {last_out}")
                 return last_out
 
-            time.sleep(float(market_closed_wait_sec))
+            time.sleep(wait_sec)
             # ?ㅼ쓬 ?쒕룄?먯꽌 tick/price??_try_once()媛 ?ㅼ떆 ?쎌쓬
 
         return last_out

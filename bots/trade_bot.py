@@ -104,6 +104,8 @@ class TradeBot:
         # bootstrap
         self.market.bootstrap(symbols=self.symbols)
         self._last_scaleout_ts_ms: dict[tuple[str, str], int] = {}
+        # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
+        self._feed_stale: dict[str, bool] = {}
         self._warmup_last_scaleout_ts()
 
         self.open_signals_index = OpenSignalsIndex()
@@ -224,6 +226,31 @@ class TradeBot:
         self.ws_global_stale_sec = cfg.ws_global_stale_sec
         self.entry_percent = cfg.entry_percent
 
+    def _feed_is_fresh(self, symbol: str) -> bool:
+        """이 심볼의 시세 피드가 살아있는지(= 장이 열려있는지) 판정.
+
+        ⚠️ 전역 heartbeat가 아니라 '이 심볼이 직접 갱신된 시각'만 본다.
+        ws_is_fresh()는 전역 recv(하트비트)로도 fresh를 주기 때문에, US 지수처럼
+        해당 심볼만 마감돼 틱이 끊겨도 다른 심볼/하트비트에 묻혀 'fresh'로 통과한다.
+        여기서는 심볼별 recv(monotonic)만 보므로 마감 심볼을 정확히 stale로 잡는다.
+        monotonic 기반이라 broker 서버 타임존 오프셋 문제도 없다.
+        """
+        get_recv = getattr(self.ws, "get_last_recv_time", None)
+        if callable(get_recv):
+            recv = get_recv(symbol)  # 심볼별 monotonic 수신시각
+            if recv is not None:
+                return (time.monotonic() - float(recv)) <= float(self.ws_stale_sec)
+
+        # 폴백: 거래소 ts(epoch). recv를 못 쓰는 컨트롤러용.
+        get_ex = getattr(self.ws, "get_last_exchange_ts", None)
+        ex = get_ex(symbol) if callable(get_ex) else None
+        if ex is None:
+            # 한 번도 들어온 적 없는 심볼 → 아직 거래 금지(보수적으로 stale 취급)
+            return False
+        ex = float(ex)
+        ex = ex / 1000.0 if ex > 1e12 else ex  # ms→sec 정규화
+        return (time.time() - ex) <= float(self.ws_stale_sec)
+
     async def run_once(self):
         loop = asyncio.get_running_loop()
         for symbol in self.symbols:
@@ -235,6 +262,23 @@ class TradeBot:
                 # tick은 run_once에서만 순차 await로 호출되므로 동시 tick이 없고(캔들 엔진 유일 접근자),
                 # WS 컨트롤러는 자체 락으로 thread-safe → 추가 락 불필요.
                 price = await loop.run_in_executor(None, self.market.tick, symbol, now)
+
+                # ✅ 세션/피드 게이트: 이 심볼의 시세 피드가 stale면(장 마감 등)
+                #    신호 생성 자체를 건너뛴다. tick()/get_price()는 장 마감 후에도
+                #    마지막 캐시 가격을 그대로 반환하므로, 이 게이트가 없으면 죽은
+                #    가격으로 ENTRY/EXIT가 발생해 거래소가 10018(Market closed)로 거절한다.
+                if not self._feed_is_fresh(symbol):
+                    if not self._feed_stale.get(symbol):
+                        self._feed_stale[symbol] = True
+                        if self.system_logger:
+                            self.system_logger.info(
+                                f"[{symbol}] ⏸️ 시세 피드 stale(장 마감 추정) → 신호 처리 보류"
+                            )
+                    continue
+                if self._feed_stale.get(symbol):
+                    self._feed_stale[symbol] = False
+                    if self.system_logger:
+                        self.system_logger.info(f"[{symbol}] ▶️ 시세 피드 복구 → 신호 처리 재개")
 
                 actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 
