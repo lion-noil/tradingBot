@@ -494,6 +494,12 @@ class TradeExecutor:
         if total_balance <= 0:
             return 0.0
         qty = self._get_pos_qty(asset, symbol, side)
+        # HKD/JPY 등 non-USD 심볼은 price를 그대로 쓰면 FX 배율만큼 부풀어오름.
+        # fetch_symbol_rules에서 미리 계산된 USD 환산값(notionalPerLotAccount)이 있으면 사용.
+        rules = self._get_rules(symbol)
+        n_per_lot = float(rules.get("notionalPerLotAccount") or 0.0)
+        if n_per_lot > 0:
+            return (qty * n_per_lot) / float(total_balance)
         return (qty * float(price)) / float(total_balance)
 
     def _get_rules(self, symbol: str) -> dict:

@@ -440,6 +440,8 @@ def build_ctx(engine: str) -> ExecContext:
     cfg = load_engine_config(engine)
 
     max_eff = float(getattr(cfg, "max_effective_leverage", 0.0) or 0.0)
+    if MAX_EFF_LEV > 0:  # .env EXEC_MAX_EFF_LEV로 오버라이드
+        max_eff = MAX_EFF_LEV
 
     rest = make_rest(engine)
     state_ns_engine = f"{STATE_NS}:{engine}"
