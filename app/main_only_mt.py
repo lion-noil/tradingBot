@@ -74,7 +74,7 @@ class BurstWarningTerminator(logging.Handler):
             pass
         _kill()
 
-tg_bot = os.getenv("Noil2_TELEGRAM_CHAT_ID")
+tg_bot = os.getenv("Noil2_TELEGRAM_BOT_TOKEN") or os.getenv("Noil2_TELEGRAM_CHAT_ID")  # 폴백: 옛 이름(_CHAT_ID에 봇 토큰 저장). .env 전환 후 폴백 제거
 tg_chat = os.getenv("TELEGRAM_CHAT_ID")
 
 system_logger = setup_logger(
