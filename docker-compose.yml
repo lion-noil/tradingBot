@@ -14,6 +14,19 @@ services:
     depends_on:
       - executor-a1
 
+  # S1(σ-복귀) 전략 — 큰틀 동일, strategy=s1. namespace "s1"로 장부 분리, executor-a1 공유.
+  signal-s1:
+    build: .
+    restart: always
+    command: python -m app.main_s1
+    env_file: .env
+    environment:
+      - S1_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
   signal-mt5:
     build: .
     restart: always

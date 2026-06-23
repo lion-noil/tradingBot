@@ -230,6 +230,58 @@ def make_bybit_config(
     return cfg.normalized()
 
 
+def make_s1_config(
+    *,
+    candles_num: int = 10160,            # win(10080) + 여유 (여유는 진입 준비 전용, 청산엔 무관)
+    ws_stale_sec: float = 30.0,
+    ws_global_stale_sec: float = 60.0,
+    leverage: int = 50,
+    entry_percent: float = 0.5,          # 실제 주문 사이징은 실행기(executor)가 담당 → 여기선 표시용
+    max_effective_leverage: float = 5.0,
+    signal_only: bool = False,
+    symbols: list[str] | tuple[str, ...] | None = None,
+) -> "TradeConfig":
+    """S1(σ-복귀 롱) 신호 설정. namespace='s1', strategy='s1'.
+    - 심볼: .env BYBIT_S1_SYMBOLS
+    - S1 파라미터: .env S1_K1 / S1_B / S1_COOLDOWN_H (없으면 백테스트 검증 기본값)
+    큰틀(TradeBot/실행기)은 그대로, strategy 분기만 타는 표준 전략 인스턴스.
+    """
+    _load_dotenv_once()
+    symbols = _parse_symbols(os.getenv("BYBIT_S1_SYMBOLS"))
+
+    def _f(key: str, d: float) -> float:
+        try:
+            return float(os.getenv(key) or d)
+        except Exception:
+            return d
+
+    s1_k1 = _f("S1_K1", 2.5)
+    s1_b = _f("S1_B", 2.0)
+    s1_cooldown_sec = int(_f("S1_COOLDOWN_H", 12.0) * 3600)
+
+    cfg = TradeConfig(
+        name="s1",                # 🔹 전략별 네임스페이스(오픈포지션 장부 분리)
+        strategy="s1",
+        symbols=list(symbols or []),
+
+        ws_stale_sec=ws_stale_sec,
+        ws_global_stale_sec=ws_global_stale_sec,
+
+        leverage=leverage,
+        entry_percent=entry_percent,
+        max_effective_leverage=max_effective_leverage,
+
+        candles_num=candles_num,
+        signal_only=signal_only,
+
+        s1_win=10080,
+        s1_k1=s1_k1,
+        s1_b=s1_b,
+        s1_cooldown_sec=s1_cooldown_sec,
+    )
+    return cfg.normalized()
+
+
 def make_mt5_signal_config(
     *,
     indicator_min_thr: float = 0.005,
