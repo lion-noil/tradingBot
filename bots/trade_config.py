@@ -92,6 +92,14 @@ class TradeConfig:
     # signal_only (True면 시그널만, 실제 주문 X)
     signal_only: bool = False
 
+    # ✅ 전략 선택: "basic"(기존 MA100 리버전) | "s1"(σ-복귀 롱)
+    strategy: str = "basic"
+    # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
+    s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
+    s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
+    s1_b: float = 2.0            # TP 복귀밴드 (b < k1 필수)
+    s1_cooldown_sec: int = 12 * 3600
+
     def to_redis(self, redis_client, publish: bool = True) -> None:
         """
         현재 설정을 Redis 해시에 저장하고, 옵션에 따라 브로드캐스트 채널로도 publish.

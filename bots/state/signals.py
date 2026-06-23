@@ -195,6 +195,8 @@ Item = Tuple[str, int, float, str]  # ✅ (signal_id, ts_ms, entry_price, tag)
 class OpenSignalsIndex:
     def __init__(self) -> None:
         self._dq: Dict[Key, Deque[Item]] = {}
+        # ✅ S1용: (namespace, sym, side) -> {signal_id: (tp_price, sl_price)}
+        self._levels: Dict[Key, Dict[str, tuple]] = {}
 
     def load_from_redis(self, *, namespace: str, symbols: List[str]) -> None:
         for sym in symbols:
@@ -211,6 +213,7 @@ class OpenSignalsIndex:
 
                 prices: List[float] = []
                 tags: List[str] = []
+                levels_list: List[tuple] = []  # ✅ S1: (tp_price, sl_price)
 
                 if sids:
                     pipe = redis_client.pipeline()
@@ -232,25 +235,37 @@ class OpenSignalsIndex:
                             p = 0.0
                         prices.append(p)
 
-                        # tag from payload_json.reasons[0]
+                        # tag from payload_json.reasons[0] (+ S1 tp/sl)
                         tag = ""
+                        tp = sl = None
                         try:
                             if isinstance(rpayload, (bytes, bytearray)):
                                 rpayload = rpayload.decode("utf-8", "ignore")
                             if rpayload:
                                 pd = json.loads(rpayload)
-                                rs = pd.get("reasons") if isinstance(pd, dict) else None
-                                if isinstance(rs, list) and rs:
-                                    tag = str(rs[0])
+                                if isinstance(pd, dict):
+                                    rs = pd.get("reasons")
+                                    if isinstance(rs, list) and rs:
+                                        tag = str(rs[0])
+                                    tp = pd.get("tp_price")
+                                    sl = pd.get("sl_price")
                         except Exception:
                             tag = ""
                         tags.append(tag)
+                        levels_list.append((tp, sl))
 
                 d: Deque[Item] = deque()
                 for sid, ts, p, tag in zip(sids, ts_list, prices, tags):
                     d.append((sid, ts, float(p), str(tag)))
 
                 self._dq[(namespace, sym, side)] = d
+
+                # ✅ S1: tp/sl 레벨 맵
+                lv_map: Dict[str, tuple] = {}
+                for sid, lv in zip(sids, levels_list):
+                    if lv[0] is not None or lv[1] is not None:
+                        lv_map[sid] = lv
+                self._levels[(namespace, sym, side)] = lv_map
 
     def stats(self, *, namespace: str, symbol: str, side: str) -> OpenSignalStats:
         d = self._dq.get((namespace, symbol, side))
@@ -268,9 +283,13 @@ class OpenSignalsIndex:
             ts_ms: int,
             entry_price: float,
             tag: str,  # ✅ 추가
+            tp_price: Optional[float] = None,  # ✅ S1
+            sl_price: Optional[float] = None,  # ✅ S1
     ) -> None:
         key = (namespace, symbol, side)
         self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price), str(tag or "")))
+        if tp_price is not None or sl_price is not None:
+            self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price)
 
     def list_open(
             self,
@@ -308,8 +327,28 @@ class OpenSignalsIndex:
                 d.rotate(-i)
                 item = d.popleft()
                 d.rotate(i)
+                self._levels.get(key, {}).pop(open_signal_id, None)  # ✅ S1
                 return item
         return None
+
+    def list_open_s1(
+            self,
+            *,
+            namespace: str,
+            symbol: str,
+            side: str,
+    ) -> List[tuple]:
+        """S1용: [(sid, ts_ms, entry_price, tp_price, sl_price), ...] (오래된→최신).
+        tp/sl이 기록 안 된 포지션은 (None, None)."""
+        d = self._dq.get((namespace, symbol, side))
+        if not d:
+            return []
+        lv = self._levels.get((namespace, symbol, side), {})
+        out: List[tuple] = []
+        for (sid, ts, p, _tag) in d:
+            tp, sl = lv.get(sid, (None, None))
+            out.append((sid, int(ts), float(p), tp, sl))
+        return out
 
 
 def record_and_index_signal(
@@ -371,6 +410,8 @@ def record_and_index_signal(
             ts_ms=ts_ms,
             entry_price=float(price or 0.0),
             tag=tag,  # ✅ 추가
+            tp_price=sig_dict.get("tp_price"),  # ✅ S1
+            sl_price=sig_dict.get("sl_price"),  # ✅ S1
         )
     else:
         open_id = _extract_open_signal_id(sig_dict)  # record_signal_with_ts에서 이미 검증됨

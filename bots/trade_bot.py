@@ -4,6 +4,7 @@ import time
 from typing import List
 from bots.state.signals import OpenSignalsIndex, record_and_index_signal
 from .trade_config import TradeConfig
+from strategies.s1_reversion import S1Params
 from core.engines import CandleEngine, IndicatorEngine, JumpDetector
 from core.redis_client import redis_client
 from .market.indicators import IndicatorState, bind_refresher
@@ -104,6 +105,7 @@ class TradeBot:
         # bootstrap
         self.market.bootstrap(symbols=self.symbols)
         self._last_scaleout_ts_ms: dict[tuple[str, str], int] = {}
+        self._last_exit_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 쿨다운용
         # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
         self._feed_stale: dict[str, bool] = {}
         self._warmup_last_scaleout_ts()
@@ -113,6 +115,9 @@ class TradeBot:
             namespace=self.namespace,
             symbols=self.symbols,
         )
+
+        if (getattr(self.config, "strategy", "basic") or "basic").lower() == "s1":
+            self._warmup_s1_last_exit()
 
         # signal processor
         self.signal_processor = SignalProcessor(
@@ -149,7 +154,26 @@ class TradeBot:
                     engine=self.namespace,
                     system_logger=self.system_logger,
                     trading_logger=self.trading_logger,
-                )
+                ),
+
+                # ✅ S1 전용 deps (strategy="s1"일 때만 사용; basic은 호출 안 함)
+                get_recent_closes=lambda s: [
+                    c["close"] for c in self.candle.get_candles(s) if c.get("close") is not None
+                ],
+                get_open_s1_positions=lambda sym, side: self.open_signals_index.list_open_s1(
+                    namespace=self.namespace, symbol=sym, side=(side or "").upper()
+                ),
+                get_last_exit_ts_ms=lambda sym, side: self._last_exit_ts_ms.get(
+                    ((sym or "").upper(), (side or "").upper())),
+                set_last_exit_ts_ms=lambda sym, side, ts_ms: self._last_exit_ts_ms.__setitem__(
+                    ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
+            ),
+            strategy=getattr(self.config, "strategy", "basic"),
+            s1_params=S1Params(
+                win=int(getattr(self.config, "s1_win", 10080)),
+                k1=float(getattr(self.config, "s1_k1", 2.5)),
+                b=float(getattr(self.config, "s1_b", 2.0)),
+                cooldown_sec=int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)),
             ),
         )
 
@@ -220,6 +244,33 @@ class TradeBot:
                 # 최신부터 읽으니까, 처음 발견한 게 최신임
                 if k not in self._last_scaleout_ts_ms:
                     self._last_scaleout_ts_ms[k] = ts_ms_i
+
+    def _warmup_s1_last_exit(self, *, count: int = 5000):
+        """S1 쿨다운 복원: 쿨다운 기간만큼 거슬러 올라가 (sym,side)별 최신 EXIT ts 적재."""
+        key = f"trading:{self.namespace}:signals"
+        now_ms = int(time.time() * 1000)
+        look_ms = (int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)) + 60) * 1000
+        rows = redis_client.xrevrange(key, max="+", min=f"{now_ms - look_ms}-0", count=count) or []
+        for _sid, fields in rows:
+            f = {}
+            for fk, fv in (fields or {}).items():
+                if isinstance(fk, (bytes, bytearray)): fk = fk.decode("utf-8", "ignore")
+                if isinstance(fv, (bytes, bytearray)): fv = fv.decode("utf-8", "ignore")
+                f[str(fk)] = str(fv)
+            if (f.get("kind") or "").upper() != "EXIT":
+                continue
+            sym = (f.get("symbol") or "").upper()
+            side = (f.get("side") or "").upper()
+            ts = f.get("ts_ms")
+            if not (sym and side and ts):
+                continue
+            try:
+                ts_i = int(ts)
+            except Exception:
+                continue
+            ek = (sym, side)
+            if ek not in self._last_exit_ts_ms:  # newest-first → 처음이 최신
+                self._last_exit_ts_ms[ek] = ts_i
 
     def _apply_config(self, cfg: TradeConfig) -> None:
         self.ws_stale_sec = cfg.ws_stale_sec
