@@ -263,7 +263,7 @@ def make_s1_config(
     s1_cooldown_sec = int(_f("S1_COOLDOWN_H", 12.0) * 3600)
 
     cfg = TradeConfig(
-        name="s1",                # 🔹 전략별 네임스페이스(오픈포지션 장부 분리)
+        name="bybit",             # 🔹 basic과 통일된 네임스페이스. 전략은 tag="S1"으로 구분, 장부는 필터로 분리
         strategy="s1",
         symbols=list(symbols or []),
 

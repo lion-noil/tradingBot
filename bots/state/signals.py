@@ -346,7 +346,10 @@ class OpenSignalsIndex:
         lv = self._levels.get((namespace, symbol, side), {})
         out: List[tuple] = []
         for (sid, ts, p, _tag) in d:
-            tp, sl = lv.get(sid, (None, None))
+            levels = lv.get(sid)
+            if not levels:          # tp/sl 없으면 S1 포지션 아님(타전략) → 제외
+                continue
+            tp, sl = levels
             out.append((sid, int(ts), float(p), tp, sl))
         return out
 

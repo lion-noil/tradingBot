@@ -31,6 +31,7 @@ class TradeBot:
             trading_logger=None,
             symbols=("BTCUSDT",),
             config: TradeConfig | None = None,
+            publish_config: bool = True,  # False면 config를 Redis에 브로드캐스트 안 함(네임스페이스 공유 시 충돌 방지)
     ):
         self.ws = ws_controller
         self.rest = rest_controller
@@ -43,7 +44,8 @@ class TradeBot:
         # config
         self.config = (TradeConfig().normalized() if config is None else config.normalized())
         self.namespace: str = getattr(self.config, "name", None) or "bybit"
-        self.config.to_redis(redis_client, publish=True)
+        if publish_config:
+            self.config.to_redis(redis_client, publish=True)
 
         # engines
         self.candle = CandleEngine(candles_num=self.config.candles_num)
@@ -134,9 +136,11 @@ class TradeBot:
 
                 get_position_max_hold_sec=lambda: self.config.position_max_hold_sec,
                 get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
-                get_open_signal_items=lambda sym, side: self.open_signals_index.list_open(
-                    namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True
-                ),
+                get_open_signal_items=lambda sym, side: [
+                    it for it in self.open_signals_index.list_open(
+                        namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True)
+                    if (len(it) < 4 or (it[3] or "").upper() != "S1")  # S1 포지션은 basic 로직에서 제외
+                ],
 
                 get_last_scaleout_ts_ms=lambda sym, side: self._last_scaleout_ts_ms.get(
                     ((sym or "").upper(), (side or "").upper())),
@@ -258,6 +262,8 @@ class TradeBot:
                 if isinstance(fv, (bytes, bytearray)): fv = fv.decode("utf-8", "ignore")
                 f[str(fk)] = str(fv)
             if (f.get("kind") or "").upper() != "EXIT":
+                continue
+            if "S1" not in (f.get("reasons_json") or ""):  # 공유 네임스페이스: S1 청산만(basic 제외)
                 continue
             sym = (f.get("symbol") or "").upper()
             side = (f.get("side") or "").upper()

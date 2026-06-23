@@ -187,6 +187,7 @@ async def startup_event():
         symbols=symbols_s1,
         config=cfg_s1,
         action_sender=local_sender,
+        publish_config=False,  # 'bybit' 네임스페이스 공유 → config는 signal-bybit이 소유, S1은 미발행
     )
 
     asyncio.create_task(bot_loop(bot_s1, ws_controller, "S1"))
