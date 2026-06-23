@@ -276,6 +276,8 @@ class TradeBot:
         self.ws_stale_sec = cfg.ws_stale_sec
         self.ws_global_stale_sec = cfg.ws_global_stale_sec
         self.entry_percent = cfg.entry_percent
+        # 피드 게이트 임계(플래핑 방지). ws_stale_sec보다 길게.
+        self.feed_gate_stale_sec = float(getattr(cfg, "feed_gate_stale_sec", 120.0))
 
     def _feed_is_fresh(self, symbol: str) -> bool:
         """이 심볼의 시세 피드가 살아있는지(= 장이 열려있는지) 판정.
@@ -290,7 +292,7 @@ class TradeBot:
         if callable(get_recv):
             recv = get_recv(symbol)  # 심볼별 monotonic 수신시각
             if recv is not None:
-                return (time.monotonic() - float(recv)) <= float(self.ws_stale_sec)
+                return (time.monotonic() - float(recv)) <= self.feed_gate_stale_sec
 
         # 폴백: 거래소 ts(epoch). recv를 못 쓰는 컨트롤러용.
         get_ex = getattr(self.ws, "get_last_exchange_ts", None)
@@ -300,7 +302,7 @@ class TradeBot:
             return False
         ex = float(ex)
         ex = ex / 1000.0 if ex > 1e12 else ex  # ms→sec 정규화
-        return (time.time() - ex) <= float(self.ws_stale_sec)
+        return (time.time() - ex) <= self.feed_gate_stale_sec
 
     async def run_once(self):
         loop = asyncio.get_running_loop()

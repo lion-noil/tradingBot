@@ -71,6 +71,9 @@ class TradeConfig:
     # 실행/네트워크
     ws_stale_sec: float = 30.0
     ws_global_stale_sec: float = 60.0
+    # 피드 게이트(장 마감 판정) 임계 — ws_stale_sec보다 길게 둬서 저유동성 심볼
+    # (예: ETHUSD)의 간헐적 틱공백으로 stale↔fresh 플래핑하는 걸 방지.
+    feed_gate_stale_sec: float = 120.0
 
     # 레버리지/진입
     leverage: int = 50
