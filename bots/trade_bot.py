@@ -322,14 +322,14 @@ class TradeBot:
                     if not self._feed_stale.get(symbol):
                         self._feed_stale[symbol] = True
                         if self.system_logger:
-                            self.system_logger.info(
+                            self.system_logger.debug(  # 마감/피드정지는 정상 → 텔레그램 안 보냄(파일만)
                                 f"[{symbol}] ⏸️ 시세 피드 stale(장 마감 추정) → 신호 처리 보류"
                             )
                     continue
                 if self._feed_stale.get(symbol):
                     self._feed_stale[symbol] = False
                     if self.system_logger:
-                        self.system_logger.info(f"[{symbol}] ▶️ 시세 피드 복구 → 신호 처리 재개")
+                        self.system_logger.debug(f"[{symbol}] ▶️ 시세 피드 복구 → 신호 처리 재개")  # 텔레그램 안 보냄
 
                 actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
 

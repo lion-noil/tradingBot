@@ -131,7 +131,7 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str):
                 cur = len(bot.jump.price_history.get(sym, []))
                 if cur < MIN_TICKS:
                     if elapsed >= WARMUP_TIMEOUT_SEC:
-                        system_logger.warning(
+                        system_logger.debug(  # 마감 심볼 워밍업 스킵은 정상 → 텔레그램 안 보냄(파일만)
                             f"[{name}] ⏭ [{sym}] 틱 부족({cur}/{MIN_TICKS}), {elapsed:.0f}s 타임아웃 → 스킵"
                         )
                     else:
