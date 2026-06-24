@@ -34,14 +34,18 @@ class ExcludeSIG(logging.Filter):
             return True
 
 class SigOrWarning(logging.Filter):
-    """텔레그램으로 보낼 것만 통과: 매매신호(SIG ...) 또는 WARNING 이상(운영 경보).
+    """텔레그램으로 보낼 것만 통과: 매매신호(SIG ...) / 체결확인(executor 거래 로거) / WARNING+.
 
     그 외 잡다한 INFO/DEBUG 로그가 텔레그램으로 새는 것을 막는다.
     ('both' 모드가 필터 없이 모든 INFO+를 보내던 게 텔레그램 폭주의 구조적 원인이었음)
+    단, executor의 체결 확인(local_executor_trade: '⊕ 진입 완료' 등)은 INFO지만
+    실거래 알림이라 반드시 통과시킨다(SIG 접두어가 없어 예전엔 같이 막히던 버그 수정).
     """
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             if record.levelno >= logging.WARNING:
+                return True
+            if record.name == "local_executor_trade":  # executor 체결 확인 → 통과
                 return True
             msg = record.getMessage()
             return isinstance(msg, str) and msg.lstrip().startswith("SIG ")
