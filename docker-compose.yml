@@ -5,9 +5,10 @@ services:
   signal-bybit:
     build: .
     restart: always
-    command: python -m app.main_only_bybit
+    command: python -m app.main
     env_file: .env
     environment:
+      - STRATEGY=bybit
       - BYBIT_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -18,9 +19,10 @@ services:
   signal-s1:
     build: .
     restart: always
-    command: python -m app.main_s1
+    command: python -m app.main
     env_file: .env
     environment:
+      - STRATEGY=s1
       - S1_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -30,9 +32,10 @@ services:
   signal-mt5:
     build: .
     restart: always
-    command: python -m app.main_only_mt
+    command: python -m app.main
     env_file: .env
     environment:
+      - STRATEGY=mt5
       # executor-a2는 로컬 Windows에서 실행 → host.docker.internal로 접근
       - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
     extra_hosts:
