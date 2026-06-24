@@ -33,6 +33,21 @@ class ExcludeSIG(logging.Filter):
         except Exception:
             return True
 
+class SigOrWarning(logging.Filter):
+    """텔레그램으로 보낼 것만 통과: 매매신호(SIG ...) 또는 WARNING 이상(운영 경보).
+
+    그 외 잡다한 INFO/DEBUG 로그가 텔레그램으로 새는 것을 막는다.
+    ('both' 모드가 필터 없이 모든 INFO+를 보내던 게 텔레그램 폭주의 구조적 원인이었음)
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if record.levelno >= logging.WARNING:
+                return True
+            msg = record.getMessage()
+            return isinstance(msg, str) and msg.lstrip().startswith("SIG ")
+        except Exception:
+            return False
+
 def send_telegram_message(bot_token: str, chat_id: str, message: str):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     requests.post(
@@ -239,6 +254,9 @@ def setup_logger(
             th.setFormatter(logging.Formatter("%(message)s"))
             if telegram_mode == "sig_only":
                 th.addFilter(OnlySIG())
+            elif telegram_mode == "both":
+                # 매매신호(SIG) + 운영경보(WARNING+)만. 잡 INFO 누수 차단.
+                th.addFilter(SigOrWarning())
             logger.addHandler(th)
 
     return logger

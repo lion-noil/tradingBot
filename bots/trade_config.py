@@ -241,7 +241,7 @@ def make_s1_config(
     leverage: int = 50,
     entry_percent: float = 0.5,          # 실제 주문 사이징은 실행기(executor)가 담당 → 여기선 표시용
     max_effective_leverage: float = 5.0,
-    signal_only: bool = False,
+    signal_only: bool = True,   # ✅ S1 미검증 → 기본 신호만(실주문 X). 백테스트 검증 후 False로 승격.
     symbols: list[str] | tuple[str, ...] | None = None,
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) 신호 설정. namespace='s1', strategy='s1'.

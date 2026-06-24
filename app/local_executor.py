@@ -143,6 +143,10 @@ HOST = _env("EXEC_LISTEN_HOST", "127.0.0.1")
 ENTRY_TTL_MS = int(_env("EXEC_ENTRY_TTL_MS", "60000"))
 DEDUP_TTL_SEC = int(_env("EXEC_DEDUP_TTL_SEC", str(5)))
 DRY_RUN = (_env("EXEC_DRY_RUN", "0") == "1")
+# ✅ 전략별 실행 게이트: 여기 든 전략(소문자, 콤마구분)은 신호만 기록하고 실주문 skip.
+#    미검증 전략을 라이브로 굴리며 신호 타이밍만 검증할 때 사용(검증 끝나면 env에서 빼면 실거래 전환).
+#    예: EXEC_SIGNAL_ONLY_STRATEGIES=s1
+SIGNAL_ONLY_STRATEGIES = {s.strip().lower() for s in _env("EXEC_SIGNAL_ONLY_STRATEGIES", "").split(",") if s.strip()}
 
 # profile-scoped
 DEFAULT_ENGINE = _env(f"EXEC_{PROFILE}_ENGINE", "BYBIT").upper()
@@ -634,6 +638,16 @@ async def handle_action(msg: Dict[str, Any]) -> None:
         )
         return
 
+    # 6b) 전략별 signal-only 게이트 — 검증 안 된 전략은 신호 기록(봇이 이미 redis/텔레그램에 기록)만 하고
+    #     실주문은 내지 않음. msg.signal_only(봇 config) 또는 executor의 SIGNAL_ONLY_STRATEGIES 중 하나라도 걸리면 skip.
+    strat = (msg.get("strategy") or "").lower().strip()
+    if bool(msg.get("signal_only")) or (strat and strat in SIGNAL_ONLY_STRATEGIES):
+        log.info(
+            f"[SIGNAL-ONLY] {engine} {action} {symbol} {side} strat={strat or '-'} "
+            f"px={price} sid={signal_id} close_open={close_open_signal_id} → 실주문 skip"
+        )
+        return
+
     # 7) 실행
     if action == "ENTRY":
         if price is None:
@@ -796,6 +810,7 @@ async def main():
     log.debug(f"STATE_NS={STATE_NS}  (lots/assets prefix)")
     log.debug(f"DEFAULT_ENGINE={DEFAULT_ENGINE}")
     log.debug(f"DRY_RUN={DRY_RUN} ENTRY_TTL_MS={ENTRY_TTL_MS}")
+    log.debug(f"SIGNAL_ONLY_STRATEGIES={sorted(SIGNAL_ONLY_STRATEGIES) or '(none)'}")
     log.debug(f"symbols(EXECUTE_SYMBOLS)={EX}")
     log.debug(f"STATE_NS={STATE_NS}")
 

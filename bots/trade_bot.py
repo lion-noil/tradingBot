@@ -110,6 +110,11 @@ class TradeBot:
         self._last_exit_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 쿨다운용
         # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
         self._feed_stale: dict[str, bool] = {}
+        # WS 링크(전역 heartbeat) 끊김 알림용. 끊김은 전 종목 동시 발생이라 심볼별이 아니라
+        # 링크 단위로 디바운스 후 텔레그램 1회만 경보한다. 정상 장 마감(특정 심볼만 조용)은
+        # 전역 heartbeat가 살아있어 여기 안 걸린다.
+        self._ws_link_down_since: float | None = None  # monotonic, 링크 stale 시작 시각
+        self._ws_link_alerted: bool = False            # 현재 끊김 구간에 대해 경보 보냈는지
         self._warmup_last_scaleout_ts()
 
         self.open_signals_index = OpenSignalsIndex()
@@ -284,6 +289,8 @@ class TradeBot:
         self.entry_percent = cfg.entry_percent
         # 피드 게이트 임계(플래핑 방지). ws_stale_sec보다 길게.
         self.feed_gate_stale_sec = float(getattr(cfg, "feed_gate_stale_sec", 120.0))
+        # WS 링크 끊김을 텔레그램 경보로 올리기 전 대기(초). 짧은 깜빡임/재접속은 알림 안 함.
+        self.ws_link_alert_after_sec = float(getattr(cfg, "ws_link_alert_after_sec", 180.0))
 
     def _feed_is_fresh(self, symbol: str) -> bool:
         """이 심볼의 시세 피드가 살아있는지(= 장이 열려있는지) 판정.
@@ -310,8 +317,57 @@ class TradeBot:
         ex = ex / 1000.0 if ex > 1e12 else ex  # ms→sec 정규화
         return (time.time() - ex) <= self.feed_gate_stale_sec
 
+    def _ws_link_alive(self) -> bool:
+        """WS 소켓 자체가 살아있는지(특정 심볼과 무관). 전역 recv(heartbeat 포함)만 본다.
+
+        heartbeat 프레임도 전역 recv를 갱신하므로, 장 마감으로 특정 심볼 틱만 끊겨도
+        소켓이 살아있으면 fresh로 나온다. 따라서 '전역이 stale = 소켓/연결 자체가 죽음
+        = 진짜 끊김'으로 해석할 수 있다. (per-symbol stale은 장 마감일 수 있어 구분됨)
+        판단 근거가 없으면(초기/미지원 컨트롤러) 과경보 방지를 위해 살아있다고 가정한다.
+        """
+        get_recv = getattr(self.ws, "get_last_recv_time", None)
+        if callable(get_recv):
+            g = get_recv(None)  # 전역 monotonic 수신시각(heartbeat 포함)
+            if g is not None:
+                return (time.monotonic() - float(g)) <= self.ws_global_stale_sec
+
+        get_frame = getattr(self.ws, "get_last_frame_time", None)
+        if callable(get_frame):
+            fr = get_frame()
+            if fr is not None:
+                return (time.monotonic() - float(fr)) <= self.ws_global_stale_sec
+
+        return True
+
+    def _check_ws_link(self) -> None:
+        """WS 링크 끊김을 감지해 디바운스 후 텔레그램 1회 경보(복구 시 1회).
+
+        끊김은 전 종목에 동시 영향 → 심볼별이 아니라 링크 단위로 1회만 알린다.
+        WARNING 레벨이라 텔레그램 필터(SIG or WARNING+)를 통과한다.
+        """
+        now = time.monotonic()
+        if self._ws_link_alive():
+            if self._ws_link_alerted and self.system_logger:
+                self.system_logger.warning("✅ WS 시세 피드 복구 → 신호 처리 재개")
+            self._ws_link_down_since = None
+            self._ws_link_alerted = False
+            return
+
+        # 링크 stale
+        if self._ws_link_down_since is None:
+            self._ws_link_down_since = now
+        down_for = now - self._ws_link_down_since
+        if (not self._ws_link_alerted) and down_for >= self.ws_link_alert_after_sec:
+            self._ws_link_alerted = True
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"⚠️ WS 시세 피드 끊김 {int(down_for)}s 지속 (전 종목 신호 보류) — 연결 점검 필요"
+                )
+
     async def run_once(self):
         loop = asyncio.get_running_loop()
+        # WS 링크 끊김 감지(전역, 1회/사이클). per-symbol 게이트와 별개로 동작.
+        self._check_ws_link()
         for symbol in self.symbols:
             try:
                 now = time.time()
@@ -351,6 +407,9 @@ class TradeBot:
                             "price": act.price,
                             "signal_id": act.signal_id,
                             "close_open_signal_id": getattr(act, "close_open_signal_id", None),
+                            # ✅ executor 실행 게이트용: 전략명 + signal_only(미검증 전략은 신호만, 실주문 X)
+                            "strategy": (getattr(self.config, "strategy", "basic") or "basic"),
+                            "signal_only": bool(getattr(self.config, "signal_only", False)),
                         })
 
             except Exception as e:
