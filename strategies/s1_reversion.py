@@ -163,6 +163,25 @@ def sigma_exit_on_tick(pos: S1Position, price: float, *, position_long: bool) ->
     return None
 
 
+def avgdown_levels(ma, sd, avg_price: float, p: S1Params, *, position_long: bool
+                   ) -> Optional[Tuple[float, float]]:
+    """추매(평단 낮추기) 후 재앵커 레벨 (S2 역추세 전용).
+    TP=추매시점 밴드(롱 MA−Bσ / 숏 MA+Bσ), SL=새 평단 ±pct 대칭. pct>0 가드."""
+    if ma is None or sd is None or sd <= 0 or avg_price <= 0:
+        return None
+    band = (ma - p.b * sd) if position_long else (ma + p.b * sd)  # TP 밴드
+    if position_long:
+        pct = band / avg_price - 1.0           # TP가 평단 위
+        if pct <= 0:
+            return None
+        return band, avg_price * (1.0 - pct)   # TP=밴드, SL=평단 아래
+    else:
+        pct = 1.0 - band / avg_price           # TP가 평단 아래
+        if pct <= 0:
+            return None
+        return band, avg_price * (1.0 + pct)   # TP=밴드, SL=평단 위
+
+
 def s1_exit_on_candle(pos: S1Position, high: float, low: float) -> Optional[str]:
     """봉(고가/저가) 기준 청산 — 백테스트와 동일(손절 우선)."""
     if low <= pos.sl_price:

@@ -212,6 +212,7 @@ class TradeBot:
                 for sym, dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
             },
             s1_max_hold_sec=int(getattr(self.config, "s1_max_hold_sec", 14 * 24 * 3600)),
+            avg_down=bool(getattr(self.config, "avg_down", False)),
         )
 
         # reporter

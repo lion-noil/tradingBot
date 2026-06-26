@@ -109,6 +109,8 @@ class TradeConfig:
     s1_params_by_symbol: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # ✅ S1 v2: 최대보유(초). 초과 시 시장가 강제청산. 기본 14일.
     s1_max_hold_sec: int = 14 * 24 * 3600
+    # ✅ 추매(평단↓): True면 신호 재발생 시 새 포지션 대신 기존에 1회 추매(재앵커). S2 역추세 전용.
+    avg_down: bool = False
 
     def to_redis(self, redis_client, publish: bool = True) -> None:
         """
@@ -255,7 +257,8 @@ def make_s1_config(
     symbols: list[str] | tuple[str, ...] | None = None,
     name: str = "bybit",        # ✅ 네임스페이스/엔진 ("bybit" | "mt5")
     params_by_symbol: dict | None = None,  # ✅ 심볼별 v2 파라미터(없으면 name으로 기본맵 선택)
-    strategy: str = "s1",       # ✅ "s1"(역추세 롱) | "s2"(추세 숏) — 동일 엔진, 방향만 다름
+    strategy: str = "s1",       # ✅ "s1"(추세) | "s2"(역추세) — 동일 엔진, 방향만 다름
+    avg_down: bool = False,     # ✅ 추매(S2 역추세 전용)
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) / S2(추세 숏) 신호 설정. namespace=name, strategy 분기.
     - 심볼: .env BYBIT_S1_SYMBOLS
@@ -326,6 +329,7 @@ def make_s1_config(
         s1_cooldown_sec=s1_cooldown_sec,
         s1_params_by_symbol=pbs,           # ✅ v2 심볼별 파라미터
         s1_max_hold_sec=14 * 24 * 3600,    # ✅ v2 14일 강제청산
+        avg_down=avg_down,                 # ✅ 추매(S2 전용)
     )
     return cfg.normalized()
 
@@ -349,7 +353,7 @@ def make_s2_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
                     "short": {"k1": 5.0,"b": -2.0, "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
     }
     return make_s1_config(name="bybit", params_by_symbol=REV_BYBIT, strategy="s2",
-                          signal_only=signal_only, **kw)
+                          avg_down=True, signal_only=signal_only, **kw)
 
 
 def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
@@ -372,7 +376,7 @@ def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
                    "short": {"k1": 3.4,"b": 0.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": MC}},
     }
     return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
-                          signal_only=signal_only, **kw)
+                          avg_down=True, signal_only=signal_only, **kw)
 
 
 def make_mt5_signal_config(
