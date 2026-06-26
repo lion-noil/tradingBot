@@ -235,9 +235,10 @@ class OpenSignalsIndex:
                             p = 0.0
                         prices.append(p)
 
-                        # tag from payload_json.reasons[0] (+ S1 tp/sl)
+                        # tag from payload_json.reasons[0] (+ S1 tp/sl + game_id)
                         tag = ""
                         tp = sl = None
+                        gid_raw = None  # ✅ 추매 게임 그룹핑
                         try:
                             if isinstance(rpayload, (bytes, bytearray)):
                                 rpayload = rpayload.decode("utf-8", "ignore")
@@ -249,10 +250,11 @@ class OpenSignalsIndex:
                                         tag = str(rs[0])
                                     tp = pd.get("tp_price")
                                     sl = pd.get("sl_price")
+                                    gid_raw = pd.get("game_id")
                         except Exception:
                             tag = ""
                         tags.append(tag)
-                        levels_list.append((tp, sl))
+                        levels_list.append((tp, sl, gid_raw))
 
                 d: Deque[Item] = deque()
                 for sid, ts, p, tag in zip(sids, ts_list, prices, tags):
@@ -260,11 +262,12 @@ class OpenSignalsIndex:
 
                 self._dq[(namespace, sym, side)] = d
 
-                # ✅ S1: tp/sl 레벨 맵
+                # ✅ S1: tp/sl 레벨 맵 (+ game_id: 추매 다리를 부모 게임에 묶음. 미지정=자기 sid)
                 lv_map: Dict[str, tuple] = {}
                 for sid, lv in zip(sids, levels_list):
                     if lv[0] is not None or lv[1] is not None:
-                        lv_map[sid] = lv
+                        gid = str(lv[2]) if (len(lv) > 2 and lv[2]) else sid
+                        lv_map[sid] = (lv[0], lv[1], gid)
                 self._levels[(namespace, sym, side)] = lv_map
 
     def stats(self, *, namespace: str, symbol: str, side: str) -> OpenSignalStats:
@@ -285,11 +288,13 @@ class OpenSignalsIndex:
             tag: str,  # ✅ 추가
             tp_price: Optional[float] = None,  # ✅ S1
             sl_price: Optional[float] = None,  # ✅ S1
+            game_id: Optional[str] = None,  # ✅ 추매 게임 그룹핑(미지정=자기 sid)
     ) -> None:
         key = (namespace, symbol, side)
         self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price), str(tag or "")))
         if tp_price is not None or sl_price is not None:
-            self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price)
+            gid = str(game_id) if game_id else str(signal_id)
+            self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price, gid)
 
     def list_open(
             self,
@@ -339,9 +344,10 @@ class OpenSignalsIndex:
             side: str,
             tag: Optional[str] = None,
     ) -> List[tuple]:
-        """시그마(S1/S2) 오픈 포지션 [(sid, ts_ms, entry_price, tp_price, sl_price), ...].
+        """시그마(S1/S2) 오픈 포지션 [(sid, ts_ms, entry_price, tp_price, sl_price, game_id), ...].
         tp/sl 없는 건 제외. tag 지정 시 그 전략(reasons[0]) 포지션만 — 같은 namespace에
-        S1·S2 공존(예: BTCUSD) 시 서로 남의 포지션을 관리하지 않게 분리."""
+        S1·S2 공존(예: BTCUSD) 시 서로 남의 포지션을 관리하지 않게 분리.
+        game_id = 추매 다리를 부모 게임에 묶는 키(미지정 레그는 자기 sid)."""
         d = self._dq.get((namespace, symbol, side))
         if not d:
             return []
@@ -354,8 +360,9 @@ class OpenSignalsIndex:
                 continue
             if tagu and (_tag or "").upper() != tagu:  # 전략 태그 불일치 → 제외
                 continue
-            tp, sl = levels
-            out.append((sid, int(ts), float(p), tp, sl))
+            tp, sl = levels[0], levels[1]
+            gid = levels[2] if len(levels) > 2 and levels[2] else sid
+            out.append((sid, int(ts), float(p), tp, sl, gid))
         return out
 
 
@@ -420,6 +427,7 @@ def record_and_index_signal(
             tag=tag,  # ✅ 추가
             tp_price=sig_dict.get("tp_price"),  # ✅ S1
             sl_price=sig_dict.get("sl_price"),  # ✅ S1
+            game_id=sig_dict.get("game_id"),  # ✅ 추매 게임 그룹핑
         )
     else:
         open_id = _extract_open_signal_id(sig_dict)  # record_signal_with_ts에서 이미 검증됨

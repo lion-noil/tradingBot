@@ -321,10 +321,20 @@ class SignalProcessor:
         entries: List[TradeAction] = []
         for side in ("LONG", "SHORT"):
             if self._sigma_params_for(symbol, side) is not None:
-                e = self._decide_entry_sigma(symbol, price, side)
-                if e:
-                    entries.append(e)
+                entries += self._decide_entry_sigma(symbol, price, side)
         return entries
+
+    @staticmethod
+    def _group_games(rows: List[tuple]) -> "Dict[str, List[tuple]]":
+        """오픈 레그들을 game_id(r[5])로 묶어 게임 단위로. 각 게임 레그는 ts 오름차순.
+        한 게임 = 첫 진입 + (추매 다리). game.adds = len(legs)-1."""
+        games: Dict[str, List[tuple]] = {}
+        for r in rows:
+            gid = (r[5] if len(r) > 5 and r[5] else r[0])
+            games.setdefault(str(gid), []).append(r)
+        for gid in games:
+            games[gid].sort(key=lambda r: int(r[1] or 0))
+        return games
 
     def _decide_exits_sigma(self, symbol: str, price: float, side: str) -> List[TradeAction]:
         get_pos = self.deps.get_open_s1_positions
@@ -338,36 +348,41 @@ class SignalProcessor:
             return []
 
         if self.avg_down:
-            # 추매: 모든 다리=한 포지션. 유효 tp/sl=최신 다리(재앵커 반영), 14일=첫 다리. 청산 시 전 다리 청산.
-            rows = sorted(rows, key=lambda r: int(r[1] or 0))
-            first_ts = int(rows[0][1] or 0)
-            last_tp, last_sl = float(rows[-1][3]), float(rows[-1][4])
-            pos = S1Position(0.0, last_tp, last_sl, first_ts)
-            reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
-            if not reason and self.s1_max_hold_sec and first_ts and \
-                    (now_ms - first_ts) >= self.s1_max_hold_sec * 1000:
-                reason = "TIME"
-            if not reason:
-                return []
+            # 중첩(ontop): 한 심볼·방향에 여러 게임 동시보유. 게임=game_id로 묶인 레그들.
+            # 게임마다 독립 청산: 유효 tp/sl=그 게임 최신 다리(재앵커 반영), 14일=그 게임 첫 다리.
+            # 트리거 시 그 게임의 전 다리만 동시청산(다른 게임은 유지).
+            games = self._group_games(rows)
             actions: List[TradeAction] = []
-            for (sid, ts_ms, ep, tp, sl) in rows:   # 전 다리 청산
-                pnl_pct = ((price / ep - 1.0) if is_long else (1.0 - price / ep)) * 100.0 if ep else None
-                payload = {
-                    "kind": "EXIT", "side": side, "mode": f"{tag}_{reason}", "strategy": tag,
-                    "reasons": [f"{tag}_{reason}"], "open_signal_id": sid,
-                    "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
-                    "tp_price": last_tp, "sl_price": last_sl,
-                }
-                signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
-                actions.append(TradeAction(action="EXIT", symbol=symbol, side=side, price=price,
-                                           sig=payload, signal_id=signal_id, close_open_signal_id=sid))
-                if self.deps.set_last_exit_ts_ms:
-                    self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
+            for gid, legs in games.items():
+                first_ts = int(legs[0][1] or 0)
+                last_tp, last_sl = float(legs[-1][3]), float(legs[-1][4])
+                pos = S1Position(0.0, last_tp, last_sl, first_ts)
+                reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
+                if not reason and self.s1_max_hold_sec and first_ts and \
+                        (now_ms - first_ts) >= self.s1_max_hold_sec * 1000:
+                    reason = "TIME"
+                if not reason:
+                    continue
+                for r in legs:   # 그 게임의 전 다리 청산
+                    sid, ep = r[0], float(r[2] or 0.0)
+                    pnl_pct = ((price / ep - 1.0) if is_long else (1.0 - price / ep)) * 100.0 if ep else None
+                    payload = {
+                        "kind": "EXIT", "side": side, "mode": f"{tag}_{reason}", "strategy": tag,
+                        "reasons": [f"{tag}_{reason}"], "open_signal_id": sid,
+                        "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
+                        "tp_price": last_tp, "sl_price": last_sl, "game_id": gid,
+                    }
+                    signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
+                    actions.append(TradeAction(action="EXIT", symbol=symbol, side=side, price=price,
+                                               sig=payload, signal_id=signal_id, close_open_signal_id=sid))
+                    if self.deps.set_last_exit_ts_ms:
+                        self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
             return actions
 
         # 비-추매(S1 추세 등): 다리별 독립 청산
         actions = []
-        for (sid, ts_ms, ep, tp, sl) in rows:
+        for r in rows:
+            sid, ts_ms, ep, tp, sl = r[0], r[1], r[2], r[3], r[4]
             pos = S1Position(float(ep), float(tp), float(sl), int(ts_ms or 0))
             reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
             if not reason and self.s1_max_hold_sec and ts_ms and \
@@ -389,59 +404,76 @@ class SignalProcessor:
                 self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
         return actions
 
-    def _decide_entry_sigma(self, symbol: str, price: float, side: str) -> Optional[TradeAction]:
+    def _decide_entry_sigma(self, symbol: str, price: float, side: str) -> List[TradeAction]:
+        """정본(중첩/ontop): 유효 신호+쿨다운 통과 시 — (a) 열린 각 게임에 추매 1회(역추세 전용),
+        (b) 새 게임 오픈(중첩 유지). 비-추매(S1 추세)는 (b)만 = maxc 스택."""
         p = self._sigma_params_for(symbol, side)
         if p is None:
-            return None
+            return []
         entry_high, is_long = self._sigma_mode(side)
         tag = self.strategy.upper()
         get_pos = self.deps.get_open_s1_positions
         rows = sorted((get_pos(symbol, side) or []), key=lambda r: int(r[1] or 0))
         n = len(rows)
-        # 포지션/추매 캡: 추매면 1포지션+1추매(2다리), 아니면 maxc 스택
-        if self.avg_down:
-            if n >= 2:
-                return None
-        elif n >= self._sigma_maxc_for(symbol, side):
-            return None
-        # 진입 기준 쿨다운 (신규·추매 공통: 직전 진입 + cd 경과)
+        now_ms = int(time.time() * 1000)
+        # 글로벌 쿨다운(새 게임 간격). 핸드오프 §4: 통과 못하면 추매·신규 둘 다 스킵.
         if self.deps.get_last_entry_ts_ms is not None:
-            if not s1_cooldown_ok(self.deps.get_last_entry_ts_ms(symbol, side), int(time.time() * 1000), p):
-                return None
+            if not s1_cooldown_ok(self.deps.get_last_entry_ts_ms(symbol, side), now_ms, p):
+                return []
         if self.deps.get_recent_closes is None:
-            return None
+            return []
         closes = self.deps.get_recent_closes(symbol)
         if not closes:
-            return None
+            return []
         ma, sd, z = s1_indicators(closes, p.win, price)
         if z is None or ma is None or sd is None:
-            return None
+            return []
         # 진입신호(z) 충족 여부 = sigma_entry_levels None 아님
         base_lv = sigma_entry_levels(z, ma, sd, float(price), p,
                                      entry_high=entry_high, position_long=is_long)
         if not base_lv:
-            return None
-        reasons = [tag]
-        if self.avg_down and n == 1:
-            # 추매(leg2): 평단(1:1 단순평균) + 재앵커 TP/SL
-            e1 = float(rows[0][2] or 0.0)
-            if e1 <= 0:
-                return None
-            avg = (e1 + float(price)) / 2.0
-            lv = avgdown_levels(ma, sd, avg, p, position_long=is_long)
-            if not lv:
-                return None
-            tp, sl = lv
-            reasons = [tag, "ADD"]
-        else:
+            return []
+
+        actions: List[TradeAction] = []
+        cd_ms = int(p.cooldown_sec) * 1000
+
+        # ── (a) 추매: 열린 각 게임에 1회(레그<2 & 그 게임 쿨다운 경과). 역추세 전용. ──
+        if self.avg_down:
+            for gid, legs in self._group_games(rows).items():
+                if len(legs) >= 2:                       # 이미 추매됨(max_adds=1)
+                    continue
+                first_ts = int(legs[0][1] or 0)
+                if first_ts and (now_ms - first_ts) < cd_ms:   # 그 게임 쿨다운 미경과
+                    continue
+                epx = [float(l[2] or 0.0) for l in legs if (l[2] or 0) > 0]
+                if not epx:
+                    continue
+                avg = (sum(epx) + float(price)) / (len(epx) + 1)   # 1:1 균등 → 단순평균
+                lv = avgdown_levels(ma, sd, avg, p, position_long=is_long)
+                if not lv:                               # 재앵커 무효면 이 게임은 추매 안 함
+                    continue
+                a_tp, a_sl = lv
+                payload = {
+                    "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag, "ADD"],
+                    "price": price, "z": z, "ma": ma, "sd": sd,
+                    "tp_price": a_tp, "sl_price": a_sl, "k1": p.k1, "b": p.b,
+                    "game_id": gid,
+                }
+                sigid, _ = self._record(symbol, side, "ENTRY", price, payload)
+                actions.append(TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                                           sig=payload, signal_id=sigid))
+
+        # ── (b) 새 게임(중첩 유지) — maxc 캡만 적용(계정 200랏은 executor 증거금에서 별도 제한) ──
+        if n < self._sigma_maxc_for(symbol, side):
             tp, sl = base_lv
-        payload = {
-            "kind": "ENTRY", "side": side, "strategy": tag, "reasons": reasons,
-            "price": price, "z": z, "ma": ma, "sd": sd,
-            "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
-        }
-        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
-        if self.deps.set_last_entry_ts_ms:
-            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
-        return TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
-                           sig=payload, signal_id=signal_id)
+            payload = {
+                "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag],
+                "price": price, "z": z, "ma": ma, "sd": sd,
+                "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
+            }
+            signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
+            if self.deps.set_last_entry_ts_ms:   # 글로벌 쿨다운 = 새 게임 기준(엔진 last)
+                self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
+            actions.append(TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                                       sig=payload, signal_id=signal_id))
+        return actions
