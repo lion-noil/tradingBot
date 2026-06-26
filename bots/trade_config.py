@@ -182,10 +182,11 @@ def make_bybit_config(
     ws_stale_sec: float = 30.0,
     ws_global_stale_sec: float = 60.0,
 
-    # 레버리지/진입 관련 (기존 Bybit 기본값)
+    # 레버리지/진입 관련. entry_notional = bal × (entry_percent/100) × leverage.
+    #   0.1/100 × 50 = 0.05 = 1진입 5% notional. max_eff_lev 10 = 총 10배(=200랏 @5%).
     leverage: int = 50,
-    entry_percent: float = 0.5,
-    max_effective_leverage: float = 5.0,
+    entry_percent: float = 0.1,
+    max_effective_leverage: float = 10.0,
 
     # Bybit는 기본적으로 주문까지 수행하므로 기본 False
     signal_only: bool = False,
@@ -263,25 +264,32 @@ def make_s1_config(
     """
     _load_dotenv_once()
 
-    # ✅ S1 = 추세(trend) — 심볼별·방향별(long/short) 검증 파라미터. ⚪약함 포함, ❌손실 제외.
-    #   추세: 롱=z≥+K1(과열 지속), 숏=z≤-K1(급락 지속).
+    # ✅ S1 = 추세(trend) — portfolio_sim picks 전체. 롱=z≥+K1(과열지속), 숏=z≤-K1(급락지속).
+    #   maxc=MC(=200, 비구속)로 두고 포트폴리오 캡(max_effective_leverage=10 → 200랏)이 실제 제한.
     _H = 3600
+    MC = 200
     TREND_BYBIT: dict[str, dict] = {
-        "SOLUSDT":  {"long": {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 9},
-                     "short": {"k1": 3.4, "b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": 14}},
-        "ETHUSDT":  {"long": {"k1": 2.35, "b": 1.2,  "cooldown_sec": int(2.5 * _H),  "max_concurrent": 12},
-                     "short": {"k1": 3.45,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 8}},
-        "XAUTUSDT": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.0 * _H),  "max_concurrent": 14},
-                     "short": {"k1": 3.5, "b": 0.8,  "cooldown_sec": int(0.75 * _H), "max_concurrent": 14}},
+        "BTCUSDT": {"long": {"k1": 3.2,  "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "ETHUSDT": {"long": {"k1": 2.35, "b": 1.2,  "cooldown_sec": int(2.5 * _H),  "max_concurrent": MC},
+                    "short": {"k1": 3.45,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "SOLUSDT": {"long": {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
+                    "short": {"k1": 3.4, "b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": MC}},
+        "XRPUSDT": {"long": {"k1": 2.55, "b": -0.4, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
     }
     TREND_MT5: dict[str, dict] = {
-        "XAUUSD": {"long": {"k1": 3.45, "b": -1.8, "cooldown_sec": int(1.25 * _H), "max_concurrent": 13},
-                   "short": {"k1": 3.2, "b": 0.2,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": 13}},
-        "XAGUSD": {"long": {"k1": 2.75, "b": -1.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 13},
-                   "short": {"k1": 2.65,"b": 1.2,  "cooldown_sec": int(2.0 * _H),  "max_concurrent": 11}},
-        "ETHUSD": {"long": {"k1": 3.5,  "b": 1.6,  "cooldown_sec": int(1.75 * _H), "max_concurrent": 8},
-                   "short": {"k1": 2.4, "b": -0.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 14}},
-        "BTCUSD": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.75 * _H), "max_concurrent": 9}},
+        "US100":  {"long": {"k1": 2.8,  "b": -1.8, "cooldown_sec": int(2.75 * _H), "max_concurrent": MC}},
+        "JP225":  {"long": {"k1": 3.35, "b": -2.0, "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.25,"b": 0.8,  "cooldown_sec": int(1.25 * _H), "max_concurrent": MC}},
+        "HK50":   {"long": {"k1": 2.05, "b": 0.6,  "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "GER40":  {"long": {"k1": 2.75, "b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "UK100":  {"long": {"k1": 3.25, "b": -1.2, "cooldown_sec": int(1.75 * _H), "max_concurrent": MC},
+                   "short": {"k1": 3.5, "b": 0.8,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "XAUUSD": {"long": {"k1": 3.45, "b": -1.8, "cooldown_sec": int(1.25 * _H), "max_concurrent": MC},
+                   "short": {"k1": 3.2, "b": 0.2,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "XAGUSD": {"long": {"k1": 2.75, "b": -1.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 2.65,"b": 1.2,  "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC}},
+        "WTI":    {"long": {"k1": 2.9,  "b": -1.4, "cooldown_sec": int(2.5 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.2, "b": 1.8,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
     }
     pbs = params_by_symbol if params_by_symbol is not None \
         else (TREND_MT5 if name == "mt5" else TREND_BYBIT)
@@ -328,34 +336,40 @@ def make_s1_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 
 
 def make_s2_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
-    """S2 = 역추세(reversion) Bybit — XRP/BTCUSDT. 롱=z≤-K1(과매도)/숏=z≥+K1(과열)."""
+    """S2 = 역추세(reversion) Bybit (portfolio_sim picks). 롱=z≤-K1/숏=z≥+K1."""
     _H = 3600
+    MC = 200
     REV_BYBIT = {
-        "XRPUSDT": {"long": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * _H), "max_concurrent": 7},
-                    "short": {"k1": 5.0,"b": -2.0, "cooldown_sec": int(0.5 * _H),  "max_concurrent": 13}},
-        "BTCUSDT": {"long": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 8},
-                    "short": {"k1": 4.6,"b": -0.4, "cooldown_sec": int(0.5 * _H),  "max_concurrent": 14}},
+        "BTCUSDT": {"long": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
+                    "short": {"k1": 4.6,"b": -0.4, "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
+        "ETHUSDT": {"long": {"k1": 3.15,"b": -1.2, "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC},
+                    "short": {"k1": 3.3,"b": -1.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "SOLUSDT": {"long": {"k1": 3.3, "b": 1.8,  "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "XRPUSDT": {"long": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * _H), "max_concurrent": MC},
+                    "short": {"k1": 5.0,"b": -2.0, "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
     }
     return make_s1_config(name="bybit", params_by_symbol=REV_BYBIT, strategy="s2",
                           signal_only=signal_only, **kw)
 
 
 def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
-    """S2 = 역추세(reversion) MT5 — WTI/US100/HK50/BTCUSD/GER40/JP225/UK100."""
+    """S2 = 역추세(reversion) MT5 (portfolio_sim picks)."""
     _H = 3600
+    MC = 200
     REV_MT5 = {
-        "WTI":    {"long": {"k1": 2.9, "b": -2.0, "cooldown_sec": int(3.0 * _H), "max_concurrent": 8},
-                   "short": {"k1": 3.4,"b": 0.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": 14}},
-        "US100":  {"long": {"k1": 3.25,"b": -0.8, "cooldown_sec": int(1.5 * _H), "max_concurrent": 12}},
-        "HK50":   {"long": {"k1": 2.6, "b": -2.0, "cooldown_sec": int(2.0 * _H), "max_concurrent": 14},
-                   "short": {"k1": 3.0,"b": 1.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": 14}},
-        "BTCUSD": {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(2.25 * _H), "max_concurrent": 9},
-                   "short": {"k1": 4.2,"b": -0.4, "cooldown_sec": int(1.0 * _H),  "max_concurrent": 11}},
-        "GER40":  {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(1.25 * _H), "max_concurrent": 12}},
-        "JP225":  {"long": {"k1": 2.7, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 12},
-                   "short": {"k1": 3.8,"b": 1.0,  "cooldown_sec": int(0.75 * _H), "max_concurrent": 14}},
-        "UK100":  {"long": {"k1": 3.35,"b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": 14},
-                   "short": {"k1": 3.8,"b": 1.8,  "cooldown_sec": int(0.5 * _H),  "max_concurrent": 14}},
+        "US100":  {"long": {"k1": 3.25,"b": -0.8, "cooldown_sec": int(1.5 * _H), "max_concurrent": MC}},
+        "JP225":  {"long": {"k1": 2.7, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.8,"b": 1.0,  "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
+        "HK50":   {"long": {"k1": 2.6, "b": -2.0, "cooldown_sec": int(2.0 * _H), "max_concurrent": MC},
+                   "short": {"k1": 3.0,"b": 1.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": MC}},
+        "GER40":  {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(1.25 * _H), "max_concurrent": MC}},
+        "UK100":  {"long": {"k1": 3.35,"b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.8,"b": 1.8,  "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
+        "XAUUSD": {"long": {"k1": 2.35,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        "XAGUSD": {"long": {"k1": 2.85,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.8,"b": -2.0, "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "WTI":    {"long": {"k1": 2.9, "b": -2.0, "cooldown_sec": int(3.0 * _H), "max_concurrent": MC},
+                   "short": {"k1": 3.4,"b": 0.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": MC}},
     }
     return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
                           signal_only=signal_only, **kw)
@@ -381,7 +395,7 @@ def make_mt5_signal_config(
     _load_dotenv_once()
 
     symbols = _parse_symbols(os.getenv("MT5_SYMBOLS"))
-    entry_percent = 0.5
+    entry_percent = 0.1   # 0.1/100 × leverage(50) = 5% notional/진입
     """if entry_percent_by_symbol is None:
         entry_percent_by_symbol = {
             "XAUUSD":0.5,

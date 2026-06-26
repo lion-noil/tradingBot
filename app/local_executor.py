@@ -800,8 +800,16 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
             fail_syms.append((sym, str(e)))
 
     if fail_syms:
-        system_logger.error(f"[warmup] FAIL symbols(sample)={fail_syms[:10]}")
-        raise RuntimeError(f"warmup failed: {len(fail_syms)} symbols not tradable (min-notional)")
+        # 🔔 1진입(5%)이 최소주문 미만인 심볼 → 텔레그램 경보(WARNING). 중단하지 않음:
+        #    해당 심볼만 진입 시 floor→skip되고, 나머지 심볼은 정상 거래.
+        names = ", ".join(s for s, _ in fail_syms)
+        detail = "\n".join(f"  • {s}: {e}" for s, e in fail_syms[:15])
+        system_logger.warning(
+            f"⚠️ [{ctx.engine}] 1진입(5%)이 최소주문보다 작은 심볼 {len(fail_syms)}개 "
+            f"— 이 심볼들은 5%로 진입 불가(나머지는 정상):\n  [{names}]\n{detail}"
+        )
+    else:
+        system_logger.debug(f"[warmup] 전 심볼 1진입 ≥ 최소주문 OK ({len(ok_syms)}개)")
 
 
 async def main():
@@ -817,7 +825,7 @@ async def main():
     # ✅ 여기서 초기 snapshot
     try:
         ctx = get_ctx(DEFAULT_ENGINE)
-        # ✅ 부팅 시 rules warmup 강제 + 확인 로그
+        # ✅ 부팅 시 rules warmup 강제 + 5%<최소주문 심볼 텔레 경보(warmup 내부)
         _warmup_all_symbols(ctx)
 
         system_logger.debug(
