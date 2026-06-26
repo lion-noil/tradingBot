@@ -184,6 +184,7 @@ class TradeBot:
             ),
             strategy=getattr(self.config, "strategy", "basic"),
             basic_long_enabled=bool(getattr(self.config, "basic_long_enabled", True)),
+            basic_short_enabled=bool(getattr(self.config, "basic_short_enabled", True)),
             s1_params=S1Params(
                 win=int(getattr(self.config, "s1_win", 10080)),
                 k1=float(getattr(self.config, "s1_k1", 2.5)),

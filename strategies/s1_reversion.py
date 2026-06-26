@@ -93,6 +93,35 @@ def s1_exit_on_tick(pos: S1Position, price: float) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# S2 (추세추종 숏) — 진입 신호는 S1과 동일(z ≤ -K1)이나 방향만 숏. TP/SL 미러.
+#   pct = (MA - B·σ)/진입가 - 1 (pct>0 필수). TP=진입가×(1-pct)[아래], SL=진입가×(1+pct)[위].
+# ─────────────────────────────────────────────────────────────────────────────
+def s2_entry_levels(z: Optional[float], ma: Optional[float], sd: Optional[float],
+                    price: float, p: S1Params) -> Optional[Tuple[float, float]]:
+    """S2 추세숏 진입 레벨. 충족 시 (tp_price, sl_price) 반환(tp<진입가<sl), 아니면 None."""
+    if z is None or ma is None or sd is None or sd <= 0:
+        return None
+    if z > -p.k1:
+        return None
+    ref = ma - p.b * sd
+    pct = ref / price - 1.0
+    if pct <= 0:                 # 가드: 거리 pct>0 (S1과 동일 산식)
+        return None
+    tp_price = price * (1.0 - pct)   # 아래(숏 익절)
+    sl_price = price * (1.0 + pct)   # 위(숏 손절)
+    return tp_price, sl_price
+
+
+def s2_exit_on_tick(pos: S1Position, price: float) -> Optional[str]:
+    """S2 숏 청산: 위(sl) 닿으면 손절(우선), 아래(tp) 닿으면 익절."""
+    if price >= pos.sl_price:
+        return "SL"
+    if price <= pos.tp_price:
+        return "TP"
+    return None
+
+
 def s1_exit_on_candle(pos: S1Position, high: float, low: float) -> Optional[str]:
     """봉(고가/저가) 기준 청산 — 백테스트와 동일(손절 우선)."""
     if low <= pos.sl_price:

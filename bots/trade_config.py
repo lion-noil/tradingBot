@@ -97,8 +97,9 @@ class TradeConfig:
 
     # ✅ 전략 선택: "basic"(기존 MA100 리버전) | "s1"(σ-복귀 롱)
     strategy: str = "basic"
-    # basic 전략의 롱 진입 on/off. False면 숏만 (롱은 S1이 담당하도록 분리). True=종전대로.
+    # basic 전략의 롱/숏 진입 on/off. 롱=S1, 숏=S2로 분리하면 둘 다 False(basic 은퇴). True=종전대로.
     basic_long_enabled: bool = True
+    basic_short_enabled: bool = True
     # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
     s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
@@ -235,7 +236,8 @@ def make_bybit_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
-        basic_long_enabled=False,  # 🔴 Bybit는 롱을 S1으로 분리 → basic은 숏만
+        basic_long_enabled=False,   # 🔴 롱=S1, 숏=S2로 분리 → basic 은퇴
+        basic_short_enabled=False,
     )
     return cfg.normalized()
 
@@ -252,8 +254,9 @@ def make_s1_config(
     symbols: list[str] | tuple[str, ...] | None = None,
     name: str = "bybit",        # ✅ 네임스페이스/엔진 ("bybit" | "mt5")
     params_by_symbol: dict | None = None,  # ✅ 심볼별 v2 파라미터(없으면 name으로 기본맵 선택)
+    strategy: str = "s1",       # ✅ "s1"(역추세 롱) | "s2"(추세 숏) — 동일 엔진, 방향만 다름
 ) -> "TradeConfig":
-    """S1(σ-복귀 롱) 신호 설정. namespace='s1', strategy='s1'.
+    """S1(σ-복귀 롱) / S2(추세 숏) 신호 설정. namespace=name, strategy 분기.
     - 심볼: .env BYBIT_S1_SYMBOLS
     - S1 파라미터: .env S1_K1 / S1_B / S1_COOLDOWN_H (없으면 백테스트 검증 기본값)
     큰틀(TradeBot/실행기)은 그대로, strategy 분기만 타는 표준 전략 인스턴스.
@@ -288,8 +291,8 @@ def make_s1_config(
     s1_cooldown_sec = int(_f("S1_COOLDOWN_H", 12.0) * 3600)
 
     cfg = TradeConfig(
-        name=name,                # 🔹 basic과 통일된 네임스페이스(bybit/mt5). 전략은 tag="S1"으로 구분
-        strategy="s1",
+        name=name,                # 🔹 basic과 통일된 네임스페이스(bybit/mt5). 전략 tag로 구분
+        strategy=strategy,
         symbols=list(symbols or []),
 
         ws_stale_sec=ws_stale_sec,
@@ -315,6 +318,28 @@ def make_s1_config(
 def make_s1_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S1 v2 MT5용 — make_s1_config(name='mt5', S1_V2_MT5 맵). MT5 심볼/별칭은 컨트롤러가 매핑."""
     return make_s1_config(name="mt5", signal_only=signal_only, **kw)
+
+
+def make_s2_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S2(추세 숏) Bybit — SOL/ETH/XAUT. 동일 엔진, strategy='s2'(숏)."""
+    S2_BYBIT = {
+        "SOLUSDT":  {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 14},
+        "ETHUSDT":  {"k1": 3.45, "b": -1.8, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 8},
+        "XAUTUSDT": {"k1": 3.5,  "b": 0.8,  "cooldown_sec": int(0.75 * 3600), "max_concurrent": 14},
+    }
+    return make_s1_config(name="bybit", params_by_symbol=S2_BYBIT, strategy="s2",
+                          signal_only=signal_only, **kw)
+
+
+def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S2(추세 숏) MT5 — XAG/ETH/XAU."""
+    S2_MT5 = {
+        "XAGUSD": {"k1": 2.65, "b": 1.2,  "cooldown_sec": int(2.0 * 3600), "max_concurrent": 11},
+        "ETHUSD": {"k1": 2.4,  "b": -0.2, "cooldown_sec": int(3.0 * 3600), "max_concurrent": 14},
+        "XAUUSD": {"k1": 3.2,  "b": 0.2,  "cooldown_sec": int(1.0 * 3600), "max_concurrent": 13},
+    }
+    return make_s1_config(name="mt5", params_by_symbol=S2_MT5, strategy="s2",
+                          signal_only=signal_only, **kw)
 
 
 def make_mt5_signal_config(
@@ -371,6 +396,7 @@ def make_mt5_signal_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=False,
-        basic_long_enabled=False,  # 🔴 MT5도 롱은 S1으로 분리 → basic은 숏만
+        basic_long_enabled=False,   # 🔴 롱=S1, 숏=S2로 분리 → basic 은퇴
+        basic_short_enabled=False,
     )
     return cfg.normalized()

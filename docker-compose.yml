@@ -57,6 +57,34 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # S2(추세 숏) — Bybit. strategy=s2, namespace "bybit" 공유, executor-a1.
+  signal-s2:
+    build: .
+    restart: always
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s2
+      - S2_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  # S2(추세 숏) — MT5. strategy=s2, namespace "mt5" 공유, executor-a2(9010).
+  signal-s2-mt5:
+    build: .
+    restart: always
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s2mt5
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
   # ─── Executors ──────────────────────────────────────────────────────────────
 
   executor-a1:

@@ -8,6 +8,7 @@ from strategies.basic_entry import get_short_entry_signal, get_long_entry_signal
 from strategies.basic_exit import get_exit_signal
 from strategies.s1_reversion import (
     S1Params, S1Position, s1_indicators, s1_entry_levels, s1_cooldown_ok, s1_exit_on_tick,
+    s2_entry_levels, s2_exit_on_tick,
 )
 
 # ✅ tag 포함 (signal_id, ts_ms, entry_price, entry_tag)
@@ -67,6 +68,7 @@ class SignalProcessor:
     def __init__(self, *, deps: SignalProcessorDeps, system_logger=None,
                  strategy: str = "basic", s1_params: Optional[S1Params] = None,
                  basic_long_enabled: bool = True,
+                 basic_short_enabled: bool = True,
                  s1_params_by_symbol: Optional[Dict[str, S1Params]] = None,
                  s1_maxc_by_symbol: Optional[Dict[str, int]] = None,
                  s1_max_hold_sec: int = 14 * 24 * 3600):
@@ -74,7 +76,8 @@ class SignalProcessor:
         self.system_logger = system_logger
         self.strategy = (strategy or "basic").lower()
         self.s1_params = s1_params or S1Params()
-        self.basic_long_enabled = bool(basic_long_enabled)  # False면 basic 롱 진입 안 함(숏만)
+        self.basic_long_enabled = bool(basic_long_enabled)   # False면 basic 롱 진입 안 함
+        self.basic_short_enabled = bool(basic_short_enabled)  # False면 basic 숏 진입 안 함
         # ✅ S1 v2: 심볼별 파라미터/동시보유캡/최대보유
         self.s1_params_by_symbol = {str(k).upper(): v for k, v in (s1_params_by_symbol or {}).items()}
         self.s1_maxc_by_symbol = {str(k).upper(): int(v) for k, v in (s1_maxc_by_symbol or {}).items()}
@@ -120,6 +123,8 @@ class SignalProcessor:
 
         if self.strategy == "s1":
             return self._process_symbol_s1(symbol, price)
+        if self.strategy == "s2":
+            return self._process_symbol_s2(symbol, price)
 
         now_ma100 = self.deps.get_now_ma100(symbol)
         if now_ma100 is None:
@@ -236,7 +241,7 @@ class SignalProcessor:
         # 예: INIT이 없으면 추가진입 금지 (원하면 조건 바꾸면 됨)
         allow_short_add = (not open_short) or _has_init(open_short)
 
-        if allow_short_add:
+        if allow_short_add and self.basic_short_enabled:  # 🔴 basic 숏 비활성 시 진입 안 함
 
             sig_s = get_short_entry_signal(
                 price=price,
@@ -371,6 +376,84 @@ class SignalProcessor:
         }
         signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
         # ✅ v2: 진입 ts 기록(진입기준 쿨다운용)
+        if self.deps.set_last_entry_ts_ms:
+            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
+        return TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                           sig=payload, signal_id=signal_id)
+
+    # ── S2 (추세추종 숏) — S1 거울. 진입신호 동일(z≤-K1), 방향 숏, TP아래/SL위 ──────────
+    def _process_symbol_s2(self, symbol: str, price: float) -> List[TradeAction]:
+        exits = self._decide_exits_s2(symbol, price)
+        if exits:
+            return exits
+        entry = self._decide_entry_s2(symbol, price)
+        return [entry] if entry else []
+
+    def _decide_exits_s2(self, symbol: str, price: float) -> List[TradeAction]:
+        get_pos = self.deps.get_open_s1_positions
+        if get_pos is None:
+            return []
+        side = "SHORT"  # S2 숏온리
+        now_ms = int(time.time() * 1000)
+        actions: List[TradeAction] = []
+        for row in (get_pos(symbol, side) or []):
+            sid, ts_ms, ep, tp, sl = row
+            if tp is None or sl is None or not ep:
+                continue
+            pos = S1Position(entry_price=float(ep), tp_price=float(tp),
+                             sl_price=float(sl), entry_ts_ms=int(ts_ms or 0))
+            reason = s2_exit_on_tick(pos, float(price))  # "SL"(위)/"TP"(아래)/None
+            if not reason and self.s1_max_hold_sec and ts_ms and \
+                    (now_ms - int(ts_ms)) >= self.s1_max_hold_sec * 1000:
+                reason = "TIME"
+            if not reason:
+                continue
+            pnl_pct = (1.0 - price / ep) * 100.0 if ep else None  # 숏: 내리면 +
+            payload = {
+                "kind": "EXIT", "side": side, "mode": f"S2_{reason}", "strategy": "S2",
+                "reasons": [f"S2_{reason}"], "open_signal_id": sid,
+                "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
+                "tp_price": float(tp), "sl_price": float(sl),
+            }
+            signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
+            actions.append(TradeAction(
+                action="EXIT", symbol=symbol, side=side, price=price,
+                sig=payload, signal_id=signal_id, close_open_signal_id=sid,
+            ))
+            if self.deps.set_last_exit_ts_ms:
+                self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
+        return actions
+
+    def _decide_entry_s2(self, symbol: str, price: float) -> Optional[TradeAction]:
+        side = "SHORT"
+        p = self._s1_params_for(symbol)
+        maxc = self._s1_maxc_for(symbol)
+        get_pos = self.deps.get_open_s1_positions
+        open_n = len(get_pos(symbol, side) or []) if get_pos is not None else 0
+        if open_n >= maxc:
+            return None
+        if self.deps.get_last_entry_ts_ms is not None:
+            last_entry = self.deps.get_last_entry_ts_ms(symbol, side)
+            if not s1_cooldown_ok(last_entry, int(time.time() * 1000), p):
+                return None
+        if self.deps.get_recent_closes is None:
+            return None
+        closes = self.deps.get_recent_closes(symbol)
+        if not closes:
+            return None
+        ma, sd, z = s1_indicators(closes, p.win, price)
+        if z is None or ma is None or sd is None:
+            return None
+        lv = s2_entry_levels(z, ma, sd, float(price), p)
+        if not lv:
+            return None
+        tp, sl = lv
+        payload = {
+            "kind": "ENTRY", "side": side, "strategy": "S2", "reasons": ["S2"],
+            "price": price, "z": z, "ma": ma, "sd": sd,
+            "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
+        }
+        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
         if self.deps.set_last_entry_ts_ms:
             self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
         return TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,

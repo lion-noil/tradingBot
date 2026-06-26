@@ -14,7 +14,8 @@ from fastapi import FastAPI
 from asyncio import Queue
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_bybit_config, make_s1_config, make_mt5_signal_config, make_s1_mt5_config
+from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signal_config,
+                               make_s1_mt5_config, make_s2_config, make_s2_mt5_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -120,6 +121,36 @@ ENGINES = {
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
         "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
         "port": 18014,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "s2": {
+        "name": "S2",
+        "make_config": lambda: make_s2_config(signal_only=False),  # 🔴 LIVE (Bybit 추세숏)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S2_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s2.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'bybit' 네임스페이스 공유
+        "port": 18005,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s2mt5": {
+        "name": "S2-MT5",
+        "make_config": lambda: make_s2_mt5_config(signal_only=False),  # 🔴 LIVE (MT5 추세숏)
+        "make_controllers": _build_mt5_controllers,
+        "targets_env": "S2MT5_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s2_mt5.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,
+        "port": 18015,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },
