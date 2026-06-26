@@ -122,6 +122,47 @@ def s2_exit_on_tick(pos: S1Position, price: float) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 일반화 (추세/역추세 × 롱/숏 = 4모드). entry_high·position_long 두 축으로 결정.
+#   진입: entry_high → z≥+K1(과열), else z≤-K1(급락/과매도)
+#   pct:  entry_high → 1-(MA+Bσ)/price,  else (MA-Bσ)/price-1   (둘 다 >0 가드)
+#   TP/SL: position_long → TP=price×(1+pct) 위 / SL=price×(1-pct) 아래, 숏은 미러
+#   매핑: 추세=(entry_high == long), 역추세=(entry_high != long)
+# ─────────────────────────────────────────────────────────────────────────────
+def sigma_entry_levels(z, ma, sd, price: float, p: S1Params, *,
+                       entry_high: bool, position_long: bool) -> Optional[Tuple[float, float]]:
+    if z is None or ma is None or sd is None or sd <= 0:
+        return None
+    if entry_high:
+        if z < p.k1:               # z ≥ +K1
+            return None
+        pct = 1.0 - (ma + p.b * sd) / price
+    else:
+        if z > -p.k1:              # z ≤ -K1
+            return None
+        pct = (ma - p.b * sd) / price - 1.0
+    if pct <= 0:                   # 거리 가드
+        return None
+    if position_long:
+        return price * (1.0 + pct), price * (1.0 - pct)   # tp 위, sl 아래
+    return price * (1.0 - pct), price * (1.0 + pct)        # tp 아래, sl 위 (숏)
+
+
+def sigma_exit_on_tick(pos: S1Position, price: float, *, position_long: bool) -> Optional[str]:
+    """틱 청산. 손절 우선. 롱: 아래 sl/위 tp, 숏: 위 sl/아래 tp."""
+    if position_long:
+        if price <= pos.sl_price:
+            return "SL"
+        if price >= pos.tp_price:
+            return "TP"
+    else:
+        if price >= pos.sl_price:
+            return "SL"
+        if price <= pos.tp_price:
+            return "TP"
+    return None
+
+
 def s1_exit_on_candle(pos: S1Position, high: float, low: float) -> Optional[str]:
     """봉(고가/저가) 기준 청산 — 백테스트와 동일(손절 우선)."""
     if low <= pos.sl_price:

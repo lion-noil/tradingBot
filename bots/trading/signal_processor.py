@@ -7,8 +7,8 @@ import time
 from strategies.basic_entry import get_short_entry_signal, get_long_entry_signal
 from strategies.basic_exit import get_exit_signal
 from strategies.s1_reversion import (
-    S1Params, S1Position, s1_indicators, s1_entry_levels, s1_cooldown_ok, s1_exit_on_tick,
-    s2_entry_levels, s2_exit_on_tick,
+    S1Params, S1Position, s1_indicators, s1_cooldown_ok,
+    sigma_entry_levels, sigma_exit_on_tick,
 )
 
 # ✅ tag 포함 (signal_id, ts_ms, entry_price, entry_tag)
@@ -78,18 +78,28 @@ class SignalProcessor:
         self.s1_params = s1_params or S1Params()
         self.basic_long_enabled = bool(basic_long_enabled)   # False면 basic 롱 진입 안 함
         self.basic_short_enabled = bool(basic_short_enabled)  # False면 basic 숏 진입 안 함
-        # ✅ S1 v2: 심볼별 파라미터/동시보유캡/최대보유
+        # ✅ 시그마 엔진(s1=추세/s2=역추세): 심볼별·방향별 파라미터/캡. 중첩 맵.
+        #   s1_params_by_symbol = {SYM: {"LONG": S1Params, "SHORT": S1Params}}  (없는 방향은 키 부재)
+        #   s1_maxc_by_symbol   = {SYM: {"LONG": int, "SHORT": int}}
         self.s1_params_by_symbol = {str(k).upper(): v for k, v in (s1_params_by_symbol or {}).items()}
-        self.s1_maxc_by_symbol = {str(k).upper(): int(v) for k, v in (s1_maxc_by_symbol or {}).items()}
+        self.s1_maxc_by_symbol = {str(k).upper(): v for k, v in (s1_maxc_by_symbol or {}).items()}
         self.s1_max_hold_sec = int(s1_max_hold_sec or 0)
         # (symbol, side, anchor_signal_id) -> BOOST 누적 진입 횟수
         self._boost_attempts_by_anchor: Dict[tuple[str, str, str], int] = {}
 
-    def _s1_params_for(self, symbol: str) -> S1Params:
-        return self.s1_params_by_symbol.get((symbol or "").upper(), self.s1_params)
+    def _sigma_params_for(self, symbol: str, side: str) -> Optional[S1Params]:
+        d = self.s1_params_by_symbol.get((symbol or "").upper())
+        return d.get((side or "").upper()) if d else None
 
-    def _s1_maxc_for(self, symbol: str) -> int:
-        return self.s1_maxc_by_symbol.get((symbol or "").upper(), 1)  # 맵에 없으면 단일보유
+    def _sigma_maxc_for(self, symbol: str, side: str) -> int:
+        d = self.s1_maxc_by_symbol.get((symbol or "").upper()) or {}
+        return int(d.get((side or "").upper(), 1))
+
+    def _sigma_mode(self, side: str):
+        """(entry_high, position_long). 추세(s1): entry_high==long, 역추세(s2): entry_high!=long."""
+        is_long = (side == "LONG")
+        entry_high = is_long if self.strategy == "s1" else (not is_long)
+        return entry_high, is_long
 
     def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
         str, int]:
@@ -121,10 +131,8 @@ class SignalProcessor:
         if price is None:
             return []
 
-        if self.strategy == "s1":
-            return self._process_symbol_s1(symbol, price)
-        if self.strategy == "s2":
-            return self._process_symbol_s2(symbol, price)
+        if self.strategy in ("s1", "s2"):
+            return self._process_sigma(symbol, price)
 
         now_ma100 = self.deps.get_now_ma100(symbol)
         if now_ma100 is None:
@@ -295,22 +303,31 @@ class SignalProcessor:
         return actions
 
     # ──────────────────────────────────────────────────────────────
-    # S1 (σ-복귀 롱) 경로. 청산은 지표(z/MA) 가용성과 무관하게 최우선 평가.
+    # 시그마 엔진 (s1=추세 / s2=역추세). 각 심볼 롱+숏(설정된 방향만). 청산 최우선.
+    #   진입/청산 방향·z부호는 _sigma_mode(side)로 결정.
+    #   같은 namespace에 두 전략 공존 가능 → 포지션은 strategy 태그로 분리(list_open_s1 tag).
     # ──────────────────────────────────────────────────────────────
-    def _process_symbol_s1(self, symbol: str, price: float) -> List[TradeAction]:
-        # 1) EXIT 먼저 — 현재가 + 진입 시 고정된 tp/sl만 사용(지표 워밍업과 무관)
-        exits = self._decide_exits_s1(symbol, price)
+    def _process_sigma(self, symbol: str, price: float) -> List[TradeAction]:
+        exits: List[TradeAction] = []
+        for side in ("LONG", "SHORT"):
+            if self._sigma_params_for(symbol, side) is not None:
+                exits += self._decide_exits_sigma(symbol, price, side)
         if exits:
             return exits
-        # 2) ENTRY — z(win창) 계산 가능 + 쿨다운 통과 + 무포지션일 때만
-        entry = self._decide_entry_s1(symbol, price)
-        return [entry] if entry else []
+        entries: List[TradeAction] = []
+        for side in ("LONG", "SHORT"):
+            if self._sigma_params_for(symbol, side) is not None:
+                e = self._decide_entry_sigma(symbol, price, side)
+                if e:
+                    entries.append(e)
+        return entries
 
-    def _decide_exits_s1(self, symbol: str, price: float) -> List[TradeAction]:
+    def _decide_exits_sigma(self, symbol: str, price: float, side: str) -> List[TradeAction]:
         get_pos = self.deps.get_open_s1_positions
         if get_pos is None:
             return []
-        side = "LONG"  # S1 롱온리
+        _, is_long = self._sigma_mode(side)
+        tag = self.strategy.upper()  # "S1"(추세) / "S2"(역추세)
         now_ms = int(time.time() * 1000)
         actions: List[TradeAction] = []
         for row in (get_pos(symbol, side) or []):
@@ -319,17 +336,16 @@ class SignalProcessor:
                 continue
             pos = S1Position(entry_price=float(ep), tp_price=float(tp),
                              sl_price=float(sl), entry_ts_ms=int(ts_ms or 0))
-            reason = s1_exit_on_tick(pos, float(price))  # "SL"/"TP"/None (손절 우선)
-            # ✅ v2: 14일 최대보유 초과 → 시장가 강제청산(TIME)
+            reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
             if not reason and self.s1_max_hold_sec and ts_ms and \
                     (now_ms - int(ts_ms)) >= self.s1_max_hold_sec * 1000:
                 reason = "TIME"
             if not reason:
                 continue
-            pnl_pct = (price / ep - 1.0) * 100.0 if ep else None
+            pnl_pct = ((price / ep - 1.0) if is_long else (1.0 - price / ep)) * 100.0 if ep else None
             payload = {
-                "kind": "EXIT", "side": side, "mode": f"S1_{reason}", "strategy": "S1",
-                "reasons": [f"S1_{reason}"], "open_signal_id": sid,
+                "kind": "EXIT", "side": side, "mode": f"{tag}_{reason}", "strategy": tag,
+                "reasons": [f"{tag}_{reason}"], "open_signal_id": sid,
                 "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
                 "tp_price": float(tp), "sl_price": float(sl),
             }
@@ -342,92 +358,13 @@ class SignalProcessor:
                 self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
         return actions
 
-    def _decide_entry_s1(self, symbol: str, price: float) -> Optional[TradeAction]:
-        side = "LONG"
-        p = self._s1_params_for(symbol)       # ✅ v2: 심볼별 파라미터
-        maxc = self._s1_maxc_for(symbol)      # ✅ v2: 동시보유 캡
-        get_pos = self.deps.get_open_s1_positions
-        # ✅ v2: 동시보유 허용 — open 수가 maxc 미만일 때만 신규 진입(쌓기)
-        open_n = len(get_pos(symbol, side) or []) if get_pos is not None else 0
-        if open_n >= maxc:
+    def _decide_entry_sigma(self, symbol: str, price: float, side: str) -> Optional[TradeAction]:
+        p = self._sigma_params_for(symbol, side)
+        if p is None:
             return None
-        # ✅ v2: 진입 기준 쿨다운 (직전 '진입' 시각 + cooldown)
-        if self.deps.get_last_entry_ts_ms is not None:
-            last_entry = self.deps.get_last_entry_ts_ms(symbol, side)
-            if not s1_cooldown_ok(last_entry, int(time.time() * 1000), p):
-                return None
-        # 지표 (win창 종가 필요)
-        if self.deps.get_recent_closes is None:
-            return None
-        closes = self.deps.get_recent_closes(symbol)
-        if not closes:
-            return None
-        ma, sd, z = s1_indicators(closes, p.win, price)
-        if z is None or ma is None or sd is None:
-            return None
-        lv = s1_entry_levels(z, ma, sd, float(price), p)
-        if not lv:
-            return None
-        tp, sl = lv
-        payload = {
-            "kind": "ENTRY", "side": side, "strategy": "S1", "reasons": ["S1"],
-            "price": price, "z": z, "ma": ma, "sd": sd,
-            "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
-        }
-        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
-        # ✅ v2: 진입 ts 기록(진입기준 쿨다운용)
-        if self.deps.set_last_entry_ts_ms:
-            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
-        return TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
-                           sig=payload, signal_id=signal_id)
-
-    # ── S2 (추세추종 숏) — S1 거울. 진입신호 동일(z≤-K1), 방향 숏, TP아래/SL위 ──────────
-    def _process_symbol_s2(self, symbol: str, price: float) -> List[TradeAction]:
-        exits = self._decide_exits_s2(symbol, price)
-        if exits:
-            return exits
-        entry = self._decide_entry_s2(symbol, price)
-        return [entry] if entry else []
-
-    def _decide_exits_s2(self, symbol: str, price: float) -> List[TradeAction]:
-        get_pos = self.deps.get_open_s1_positions
-        if get_pos is None:
-            return []
-        side = "SHORT"  # S2 숏온리
-        now_ms = int(time.time() * 1000)
-        actions: List[TradeAction] = []
-        for row in (get_pos(symbol, side) or []):
-            sid, ts_ms, ep, tp, sl = row
-            if tp is None or sl is None or not ep:
-                continue
-            pos = S1Position(entry_price=float(ep), tp_price=float(tp),
-                             sl_price=float(sl), entry_ts_ms=int(ts_ms or 0))
-            reason = s2_exit_on_tick(pos, float(price))  # "SL"(위)/"TP"(아래)/None
-            if not reason and self.s1_max_hold_sec and ts_ms and \
-                    (now_ms - int(ts_ms)) >= self.s1_max_hold_sec * 1000:
-                reason = "TIME"
-            if not reason:
-                continue
-            pnl_pct = (1.0 - price / ep) * 100.0 if ep else None  # 숏: 내리면 +
-            payload = {
-                "kind": "EXIT", "side": side, "mode": f"S2_{reason}", "strategy": "S2",
-                "reasons": [f"S2_{reason}"], "open_signal_id": sid,
-                "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
-                "tp_price": float(tp), "sl_price": float(sl),
-            }
-            signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
-            actions.append(TradeAction(
-                action="EXIT", symbol=symbol, side=side, price=price,
-                sig=payload, signal_id=signal_id, close_open_signal_id=sid,
-            ))
-            if self.deps.set_last_exit_ts_ms:
-                self.deps.set_last_exit_ts_ms(symbol, side, int(ts_out))
-        return actions
-
-    def _decide_entry_s2(self, symbol: str, price: float) -> Optional[TradeAction]:
-        side = "SHORT"
-        p = self._s1_params_for(symbol)
-        maxc = self._s1_maxc_for(symbol)
+        maxc = self._sigma_maxc_for(symbol, side)
+        entry_high, is_long = self._sigma_mode(side)
+        tag = self.strategy.upper()
         get_pos = self.deps.get_open_s1_positions
         open_n = len(get_pos(symbol, side) or []) if get_pos is not None else 0
         if open_n >= maxc:
@@ -444,12 +381,13 @@ class SignalProcessor:
         ma, sd, z = s1_indicators(closes, p.win, price)
         if z is None or ma is None or sd is None:
             return None
-        lv = s2_entry_levels(z, ma, sd, float(price), p)
+        lv = sigma_entry_levels(z, ma, sd, float(price), p,
+                                entry_high=entry_high, position_long=is_long)
         if not lv:
             return None
         tp, sl = lv
         payload = {
-            "kind": "ENTRY", "side": side, "strategy": "S2", "reasons": ["S2"],
+            "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag],
             "price": price, "z": z, "ma": ma, "sd": sd,
             "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
         }

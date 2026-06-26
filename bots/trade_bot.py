@@ -171,7 +171,8 @@ class TradeBot:
                     c["close"] for c in self.candle.get_candles(s) if c.get("close") is not None
                 ],
                 get_open_s1_positions=lambda sym, side: self.open_signals_index.list_open_s1(
-                    namespace=self.namespace, symbol=sym, side=(side or "").upper()
+                    namespace=self.namespace, symbol=sym, side=(side or "").upper(),
+                    tag=(getattr(self.config, "strategy", "") or "").upper()  # S1/S2 분리
                 ),
                 get_last_exit_ts_ms=lambda sym, side: self._last_exit_ts_ms.get(
                     ((sym or "").upper(), (side or "").upper())),
@@ -191,18 +192,24 @@ class TradeBot:
                 b=float(getattr(self.config, "s1_b", 2.0)),
                 cooldown_sec=int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)),
             ),
-            # ✅ S1 v2: 심볼별 파라미터/동시보유캡/최대보유
+            # ✅ 시그마 v3: 심볼별·방향별 파라미터/캡 (중첩맵 {SYM:{LONG/SHORT:{...}}})
             s1_params_by_symbol={
-                str(sym).upper(): S1Params(
-                    win=int(getattr(self.config, "s1_win", 10080)),
-                    k1=float(d.get("k1", 2.5)), b=float(d.get("b", 2.0)),
-                    cooldown_sec=int(d.get("cooldown_sec", 12 * 3600)),
-                )
-                for sym, d in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+                str(sym).upper(): {
+                    str(dr).upper(): S1Params(
+                        win=int(getattr(self.config, "s1_win", 10080)),
+                        k1=float(dd.get("k1", 2.5)), b=float(dd.get("b", 2.0)),
+                        cooldown_sec=int(dd.get("cooldown_sec", 12 * 3600)),
+                    )
+                    for dr, dd in (dirs or {}).items()
+                }
+                for sym, dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
             },
             s1_maxc_by_symbol={
-                str(sym).upper(): int(d.get("max_concurrent", 1))
-                for sym, d in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+                str(sym).upper(): {
+                    str(dr).upper(): int(dd.get("max_concurrent", 1))
+                    for dr, dd in (dirs or {}).items()
+                }
+                for sym, dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
             },
             s1_max_hold_sec=int(getattr(self.config, "s1_max_hold_sec", 14 * 24 * 3600)),
         )

@@ -337,17 +337,22 @@ class OpenSignalsIndex:
             namespace: str,
             symbol: str,
             side: str,
+            tag: Optional[str] = None,
     ) -> List[tuple]:
-        """S1용: [(sid, ts_ms, entry_price, tp_price, sl_price), ...] (오래된→최신).
-        tp/sl이 기록 안 된 포지션은 (None, None)."""
+        """시그마(S1/S2) 오픈 포지션 [(sid, ts_ms, entry_price, tp_price, sl_price), ...].
+        tp/sl 없는 건 제외. tag 지정 시 그 전략(reasons[0]) 포지션만 — 같은 namespace에
+        S1·S2 공존(예: BTCUSD) 시 서로 남의 포지션을 관리하지 않게 분리."""
         d = self._dq.get((namespace, symbol, side))
         if not d:
             return []
         lv = self._levels.get((namespace, symbol, side), {})
+        tagu = (tag or "").upper()
         out: List[tuple] = []
         for (sid, ts, p, _tag) in d:
             levels = lv.get(sid)
-            if not levels:          # tp/sl 없으면 S1 포지션 아님(타전략) → 제외
+            if not levels:          # tp/sl 없으면 시그마 포지션 아님 → 제외
+                continue
+            if tagu and (_tag or "").upper() != tagu:  # 전략 태그 불일치 → 제외
                 continue
             tp, sl = levels
             out.append((sid, int(ts), float(p), tp, sl))

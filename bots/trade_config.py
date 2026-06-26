@@ -263,21 +263,28 @@ def make_s1_config(
     """
     _load_dotenv_once()
 
-    # ✅ S1 v2 — 심볼별 검증 파라미터(핸드오프). 로스터 = 맵의 키. (제외 심볼은 맵에서 빠짐)
-    S1_V2_BYBIT: dict[str, dict] = {
-        "XRPUSDT": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * 3600), "max_concurrent": 7},
-        "BTCUSDT": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * 3600), "max_concurrent": 8},
+    # ✅ S1 = 추세(trend) — 심볼별·방향별(long/short) 검증 파라미터. ⚪약함 포함, ❌손실 제외.
+    #   추세: 롱=z≥+K1(과열 지속), 숏=z≤-K1(급락 지속).
+    _H = 3600
+    TREND_BYBIT: dict[str, dict] = {
+        "SOLUSDT":  {"long": {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 9},
+                     "short": {"k1": 3.4, "b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": 14}},
+        "ETHUSDT":  {"long": {"k1": 2.35, "b": 1.2,  "cooldown_sec": int(2.5 * _H),  "max_concurrent": 12},
+                     "short": {"k1": 3.45,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 8}},
+        "XAUTUSDT": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.0 * _H),  "max_concurrent": 14},
+                     "short": {"k1": 3.5, "b": 0.8,  "cooldown_sec": int(0.75 * _H), "max_concurrent": 14}},
     }
-    S1_V2_MT5: dict[str, dict] = {
-        "WTI":    {"k1": 2.9,  "b": -2.0, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 8},
-        "US100":  {"k1": 3.25, "b":  0.4, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 9},
-        "BTCUSD": {"k1": 3.5,  "b": -2.0, "cooldown_sec": int(2.25 * 3600), "max_concurrent": 9},
-        "GER40":  {"k1": 3.5,  "b": -2.0, "cooldown_sec": int(1.25 * 3600), "max_concurrent": 12},
-        "JP225":  {"k1": 2.7,  "b": -2.0, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 12},
-        "UK100":  {"k1": 3.35, "b": -2.0, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 14},
+    TREND_MT5: dict[str, dict] = {
+        "XAUUSD": {"long": {"k1": 3.45, "b": -1.8, "cooldown_sec": int(1.25 * _H), "max_concurrent": 13},
+                   "short": {"k1": 3.2, "b": 0.2,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": 13}},
+        "XAGUSD": {"long": {"k1": 2.75, "b": -1.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 13},
+                   "short": {"k1": 2.65,"b": 1.2,  "cooldown_sec": int(2.0 * _H),  "max_concurrent": 11}},
+        "ETHUSD": {"long": {"k1": 3.5,  "b": 1.6,  "cooldown_sec": int(1.75 * _H), "max_concurrent": 8},
+                   "short": {"k1": 2.4, "b": -0.2, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 14}},
+        "BTCUSD": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.75 * _H), "max_concurrent": 9}},
     }
     pbs = params_by_symbol if params_by_symbol is not None \
-        else (S1_V2_MT5 if name == "mt5" else S1_V2_BYBIT)
+        else (TREND_MT5 if name == "mt5" else TREND_BYBIT)
     symbols = list(pbs.keys())
 
     def _f(key: str, d: float) -> float:
@@ -321,24 +328,36 @@ def make_s1_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 
 
 def make_s2_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
-    """S2(추세 숏) Bybit — SOL/ETH/XAUT. 동일 엔진, strategy='s2'(숏)."""
-    S2_BYBIT = {
-        "SOLUSDT":  {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 14},
-        "ETHUSDT":  {"k1": 3.45, "b": -1.8, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 8},
-        "XAUTUSDT": {"k1": 3.5,  "b": 0.8,  "cooldown_sec": int(0.75 * 3600), "max_concurrent": 14},
+    """S2 = 역추세(reversion) Bybit — XRP/BTCUSDT. 롱=z≤-K1(과매도)/숏=z≥+K1(과열)."""
+    _H = 3600
+    REV_BYBIT = {
+        "XRPUSDT": {"long": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * _H), "max_concurrent": 7},
+                    "short": {"k1": 5.0,"b": -2.0, "cooldown_sec": int(0.5 * _H),  "max_concurrent": 13}},
+        "BTCUSDT": {"long": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 8},
+                    "short": {"k1": 4.6,"b": -0.4, "cooldown_sec": int(0.5 * _H),  "max_concurrent": 14}},
     }
-    return make_s1_config(name="bybit", params_by_symbol=S2_BYBIT, strategy="s2",
+    return make_s1_config(name="bybit", params_by_symbol=REV_BYBIT, strategy="s2",
                           signal_only=signal_only, **kw)
 
 
 def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
-    """S2(추세 숏) MT5 — XAG/ETH/XAU."""
-    S2_MT5 = {
-        "XAGUSD": {"k1": 2.65, "b": 1.2,  "cooldown_sec": int(2.0 * 3600), "max_concurrent": 11},
-        "ETHUSD": {"k1": 2.4,  "b": -0.2, "cooldown_sec": int(3.0 * 3600), "max_concurrent": 14},
-        "XAUUSD": {"k1": 3.2,  "b": 0.2,  "cooldown_sec": int(1.0 * 3600), "max_concurrent": 13},
+    """S2 = 역추세(reversion) MT5 — WTI/US100/HK50/BTCUSD/GER40/JP225/UK100."""
+    _H = 3600
+    REV_MT5 = {
+        "WTI":    {"long": {"k1": 2.9, "b": -2.0, "cooldown_sec": int(3.0 * _H), "max_concurrent": 8},
+                   "short": {"k1": 3.4,"b": 0.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": 14}},
+        "US100":  {"long": {"k1": 3.25,"b": -0.8, "cooldown_sec": int(1.5 * _H), "max_concurrent": 12}},
+        "HK50":   {"long": {"k1": 2.6, "b": -2.0, "cooldown_sec": int(2.0 * _H), "max_concurrent": 14},
+                   "short": {"k1": 3.0,"b": 1.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": 14}},
+        "BTCUSD": {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(2.25 * _H), "max_concurrent": 9},
+                   "short": {"k1": 4.2,"b": -0.4, "cooldown_sec": int(1.0 * _H),  "max_concurrent": 11}},
+        "GER40":  {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(1.25 * _H), "max_concurrent": 12}},
+        "JP225":  {"long": {"k1": 2.7, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": 12},
+                   "short": {"k1": 3.8,"b": 1.0,  "cooldown_sec": int(0.75 * _H), "max_concurrent": 14}},
+        "UK100":  {"long": {"k1": 3.35,"b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": 14},
+                   "short": {"k1": 3.8,"b": 1.8,  "cooldown_sec": int(0.5 * _H),  "max_concurrent": 14}},
     }
-    return make_s1_config(name="mt5", params_by_symbol=S2_MT5, strategy="s2",
+    return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
                           signal_only=signal_only, **kw)
 
 
