@@ -104,6 +104,10 @@ class TradeConfig:
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
     s1_b: float = 2.0            # TP 복귀밴드 (b < k1 필수)
     s1_cooldown_sec: int = 12 * 3600
+    # ✅ S1 v2: 심볼별 파라미터 맵 {SYM: {k1,b,cooldown_sec,max_concurrent}}. 비면 위 전역값 사용.
+    s1_params_by_symbol: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # ✅ S1 v2: 최대보유(초). 초과 시 시장가 강제청산. 기본 14일.
+    s1_max_hold_sec: int = 14 * 24 * 3600
 
     def to_redis(self, redis_client, publish: bool = True) -> None:
         """
@@ -253,7 +257,14 @@ def make_s1_config(
     큰틀(TradeBot/실행기)은 그대로, strategy 분기만 타는 표준 전략 인스턴스.
     """
     _load_dotenv_once()
-    symbols = _parse_symbols(os.getenv("BYBIT_S1_SYMBOLS"))
+
+    # ✅ S1 v2 — Bybit 심볼별 검증 파라미터(핸드오프 A급). 로스터 = 이 맵의 키.
+    #   ETH/SOL/XAUT는 제외(엣지 약함). MT5 심볼은 이번 범위 밖.
+    S1_V2_BYBIT: dict[str, dict] = {
+        "XRPUSDT": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * 3600), "max_concurrent": 7},
+        "BTCUSDT": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * 3600), "max_concurrent": 8},
+    }
+    symbols = list(S1_V2_BYBIT.keys())
 
     def _f(key: str, d: float) -> float:
         try:
@@ -284,6 +295,8 @@ def make_s1_config(
         s1_k1=s1_k1,
         s1_b=s1_b,
         s1_cooldown_sec=s1_cooldown_sec,
+        s1_params_by_symbol=S1_V2_BYBIT,   # ✅ v2 심볼별 파라미터
+        s1_max_hold_sec=14 * 24 * 3600,    # ✅ v2 14일 강제청산
     )
     return cfg.normalized()
 

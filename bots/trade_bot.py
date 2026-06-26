@@ -107,7 +107,8 @@ class TradeBot:
         # bootstrap
         self.market.bootstrap(symbols=self.symbols)
         self._last_scaleout_ts_ms: dict[tuple[str, str], int] = {}
-        self._last_exit_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 쿨다운용
+        self._last_exit_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 쿨다운용(구; exit 기준)
+        self._last_entry_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 v2 진입기준 쿨다운용
         # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
         self._feed_stale: dict[str, bool] = {}
         # WS 링크(전역 heartbeat) 끊김 알림용. 끊김은 전 종목 동시 발생이라 심볼별이 아니라
@@ -176,6 +177,10 @@ class TradeBot:
                     ((sym or "").upper(), (side or "").upper())),
                 set_last_exit_ts_ms=lambda sym, side, ts_ms: self._last_exit_ts_ms.__setitem__(
                     ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
+                get_last_entry_ts_ms=lambda sym, side: self._last_entry_ts_ms.get(
+                    ((sym or "").upper(), (side or "").upper())),
+                set_last_entry_ts_ms=lambda sym, side, ts_ms: self._last_entry_ts_ms.__setitem__(
+                    ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
             ),
             strategy=getattr(self.config, "strategy", "basic"),
             basic_long_enabled=bool(getattr(self.config, "basic_long_enabled", True)),
@@ -185,6 +190,20 @@ class TradeBot:
                 b=float(getattr(self.config, "s1_b", 2.0)),
                 cooldown_sec=int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)),
             ),
+            # ✅ S1 v2: 심볼별 파라미터/동시보유캡/최대보유
+            s1_params_by_symbol={
+                str(sym).upper(): S1Params(
+                    win=int(getattr(self.config, "s1_win", 10080)),
+                    k1=float(d.get("k1", 2.5)), b=float(d.get("b", 2.0)),
+                    cooldown_sec=int(d.get("cooldown_sec", 12 * 3600)),
+                )
+                for sym, d in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+            },
+            s1_maxc_by_symbol={
+                str(sym).upper(): int(d.get("max_concurrent", 1))
+                for sym, d in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+            },
+            s1_max_hold_sec=int(getattr(self.config, "s1_max_hold_sec", 14 * 24 * 3600)),
         )
 
         # reporter

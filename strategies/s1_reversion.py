@@ -32,8 +32,9 @@ class S1Params:
     fee_roundtrip: float = 0.0011  # 리포팅용(체결가엔 미반영)
 
     def validate(self) -> None:
-        if not (0.0 < self.b < self.k1):
-            raise ValueError(f"S1: b({self.b}) < k1({self.k1}) 위반 — TP가 평균쪽이 아님")
+        # B<0 허용(v2): b<0이면 TP가 평균 위(오버슈팅까지). b<k1만 필수(TP가 진입가보다 위 보장은 levels에서 가드).
+        if not (self.b < self.k1):
+            raise ValueError(f"S1: b({self.b}) < k1({self.k1}) 위반")
 
 
 @dataclass
