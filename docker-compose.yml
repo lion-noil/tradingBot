@@ -43,6 +43,20 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # S1(σ-복귀) v2 — MT5. strategy=s1, namespace "mt5"(signal-mt5와 장부 공유, tag=S1 구분), executor-a2(9010) 공유.
+  signal-s1-mt5:
+    build: .
+    restart: always
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s1mt5
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
   # ─── Executors ──────────────────────────────────────────────────────────────
 
   executor-a1:

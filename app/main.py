@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from asyncio import Queue
 
 from bots.trade_bot import TradeBot
-from bots.trade_config import make_bybit_config, make_s1_config, make_mt5_signal_config
+from bots.trade_config import make_bybit_config, make_s1_config, make_mt5_signal_config, make_s1_mt5_config
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -106,6 +106,21 @@ ENGINES = {
         "publish_config": True,
         "port": 18013,
         "warmup_timeout": 120.0,  # 2분 내 틱 없는 심볼은 폐장으로 보고 스킵
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "s1mt5": {
+        "name": "S1-MT5",
+        "make_config": lambda: make_s1_mt5_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_mt5_controllers,
+        "targets_env": "S1MT5_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s1_mt5.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
+        "port": 18014,
+        "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },
 }

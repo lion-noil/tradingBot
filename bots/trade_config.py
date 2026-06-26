@@ -250,6 +250,8 @@ def make_s1_config(
     max_effective_leverage: float = 5.0,
     signal_only: bool = True,   # ✅ S1 미검증 → 기본 신호만(실주문 X). 백테스트 검증 후 False로 승격.
     symbols: list[str] | tuple[str, ...] | None = None,
+    name: str = "bybit",        # ✅ 네임스페이스/엔진 ("bybit" | "mt5")
+    params_by_symbol: dict | None = None,  # ✅ 심볼별 v2 파라미터(없으면 name으로 기본맵 선택)
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) 신호 설정. namespace='s1', strategy='s1'.
     - 심볼: .env BYBIT_S1_SYMBOLS
@@ -258,13 +260,22 @@ def make_s1_config(
     """
     _load_dotenv_once()
 
-    # ✅ S1 v2 — Bybit 심볼별 검증 파라미터(핸드오프 A급). 로스터 = 이 맵의 키.
-    #   ETH/SOL/XAUT는 제외(엣지 약함). MT5 심볼은 이번 범위 밖.
+    # ✅ S1 v2 — 심볼별 검증 파라미터(핸드오프). 로스터 = 맵의 키. (제외 심볼은 맵에서 빠짐)
     S1_V2_BYBIT: dict[str, dict] = {
         "XRPUSDT": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * 3600), "max_concurrent": 7},
         "BTCUSDT": {"k1": 3.3, "b": -2.0, "cooldown_sec": int(3.0 * 3600), "max_concurrent": 8},
     }
-    symbols = list(S1_V2_BYBIT.keys())
+    S1_V2_MT5: dict[str, dict] = {
+        "WTI":    {"k1": 2.9,  "b": -2.0, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 8},
+        "US100":  {"k1": 3.25, "b":  0.4, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 9},
+        "BTCUSD": {"k1": 3.5,  "b": -2.0, "cooldown_sec": int(2.25 * 3600), "max_concurrent": 9},
+        "GER40":  {"k1": 3.5,  "b": -2.0, "cooldown_sec": int(1.25 * 3600), "max_concurrent": 12},
+        "JP225":  {"k1": 2.7,  "b": -2.0, "cooldown_sec": int(3.0 * 3600),  "max_concurrent": 12},
+        "UK100":  {"k1": 3.35, "b": -2.0, "cooldown_sec": int(1.5 * 3600),  "max_concurrent": 14},
+    }
+    pbs = params_by_symbol if params_by_symbol is not None \
+        else (S1_V2_MT5 if name == "mt5" else S1_V2_BYBIT)
+    symbols = list(pbs.keys())
 
     def _f(key: str, d: float) -> float:
         try:
@@ -277,7 +288,7 @@ def make_s1_config(
     s1_cooldown_sec = int(_f("S1_COOLDOWN_H", 12.0) * 3600)
 
     cfg = TradeConfig(
-        name="bybit",             # 🔹 basic과 통일된 네임스페이스. 전략은 tag="S1"으로 구분, 장부는 필터로 분리
+        name=name,                # 🔹 basic과 통일된 네임스페이스(bybit/mt5). 전략은 tag="S1"으로 구분
         strategy="s1",
         symbols=list(symbols or []),
 
@@ -295,10 +306,15 @@ def make_s1_config(
         s1_k1=s1_k1,
         s1_b=s1_b,
         s1_cooldown_sec=s1_cooldown_sec,
-        s1_params_by_symbol=S1_V2_BYBIT,   # ✅ v2 심볼별 파라미터
+        s1_params_by_symbol=pbs,           # ✅ v2 심볼별 파라미터
         s1_max_hold_sec=14 * 24 * 3600,    # ✅ v2 14일 강제청산
     )
     return cfg.normalized()
+
+
+def make_s1_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S1 v2 MT5용 — make_s1_config(name='mt5', S1_V2_MT5 맵). MT5 심볼/별칭은 컨트롤러가 매핑."""
+    return make_s1_config(name="mt5", signal_only=signal_only, **kw)
 
 
 def make_mt5_signal_config(
@@ -355,5 +371,6 @@ def make_mt5_signal_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=False,
+        basic_long_enabled=False,  # 🔴 MT5도 롱은 S1으로 분리 → basic은 숏만
     )
     return cfg.normalized()
