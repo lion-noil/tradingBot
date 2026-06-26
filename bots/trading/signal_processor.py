@@ -79,15 +79,14 @@ class SignalProcessor:
         self.s1_params_by_symbol = {str(k).upper(): v for k, v in (s1_params_by_symbol or {}).items()}
         self.s1_maxc_by_symbol = {str(k).upper(): int(v) for k, v in (s1_maxc_by_symbol or {}).items()}
         self.s1_max_hold_sec = int(s1_max_hold_sec or 0)
+        # (symbol, side, anchor_signal_id) -> BOOST 누적 진입 횟수
+        self._boost_attempts_by_anchor: Dict[tuple[str, str, str], int] = {}
 
     def _s1_params_for(self, symbol: str) -> S1Params:
         return self.s1_params_by_symbol.get((symbol or "").upper(), self.s1_params)
 
     def _s1_maxc_for(self, symbol: str) -> int:
         return self.s1_maxc_by_symbol.get((symbol or "").upper(), 1)  # 맵에 없으면 단일보유
-
-        # (symbol, side, anchor_signal_id) -> BOOST 누적 진입 횟수
-        self._boost_attempts_by_anchor: Dict[tuple[str, str, str], int] = {}
 
     def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
         str, int]:
