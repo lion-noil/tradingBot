@@ -93,26 +93,39 @@ class TradeExecutor:
         k0 = next(iter(wallet.keys()), "")
         return (k0 or "ACC"), float(wallet.get(k0) or 0.0) if k0 else 0.0
 
+    ENTRY_MAX_MULT = 4   # 1진입 단계 상향 상한: base(5%)×4 = 20%까지 (소액 자본 최소주문 대응)
+
     def calc_entry_qty_for_symbol(self, symbol: str, side_u: str) -> tuple[float, dict]:
         sym = symbol.upper().strip()
         ccy, bal = self._pick_wallet_balance()
-        entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        base_pct = float(self.deps.get_entry_percent(sym) or 0.0)
         lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
-
-        entry_notional = bal * (entry_percent / 100.0) * lev
 
         fn = getattr(self.rest, "calc_notional_per_qty_account", None)
         if not callable(fn):
             raise RuntimeError(f"{sym}: rest.calc_notional_per_qty_account missing")
-
         per = fn(sym, side="buy" if side_u == "LONG" else "sell") or {}
         n = float(per.get("notionalPerQtyAccount") or 0.0)
         if n <= 0:
             raise RuntimeError(f"{sym}: notionalPerQtyAccount invalid per={per}")
 
-        raw = entry_notional / n
-        qty = self._normalize_qty(sym, raw, mode="floor")
-        return qty, {"ccy": ccy, "bal": bal, "entry_notional": entry_notional, "raw_qty": raw, "per": per}
+        # 최소수량
+        rules = self._get_rules(sym) or {}
+        min_qty = float(rules.get("minOrderQty") or 0.0) or float(rules.get("qtyStep") or 0.0) or 0.0
+
+        # 5%→10→15→20%(base×1..4) 단계 상향: 최소수량 충족하는 최소 단계 채택. 20%로도 미달이면 0(skip).
+        qty, used_pct, raw = 0.0, base_pct, 0.0
+        for mult in range(1, int(self.ENTRY_MAX_MULT) + 1):
+            pct = base_pct * mult
+            raw_m = (bal * (pct / 100.0) * lev) / n
+            q = self._normalize_qty(sym, raw_m, mode="floor")
+            if q > 0 and (min_qty <= 0 or q + 1e-12 >= min_qty):
+                qty, used_pct, raw = q, pct, raw_m
+                break
+
+        entry_notional = bal * (used_pct / 100.0) * lev
+        return qty, {"ccy": ccy, "bal": bal, "entry_notional": entry_notional,
+                     "raw_qty": raw, "per": per, "entry_percent_used": used_pct}
 
     def _price_from_rules(self, symbol: str) -> float:
         r = self._get_rules(symbol) or {}
@@ -172,14 +185,16 @@ class TradeExecutor:
         if lev <= 0:
             raise RuntimeError(f"[preflight] {sym}: leverage invalid ({lev})")
 
-        entry_notional = bal * (entry_percent / 100.0) * lev
+        # 1진입은 base(5%)→최대 20%(×ENTRY_MAX_MULT)까지 상향 가능 → 최대치로도 최소 못 넘기면 진입 불가
+        max_pct = entry_percent * float(self.ENTRY_MAX_MULT)
+        entry_notional_max = bal * (max_pct / 100.0) * lev
 
-        if entry_notional + 1e-12 < min_notional:
+        if entry_notional_max + 1e-12 < min_notional:
             raise RuntimeError(
-                f"[preflight] {sym}: entry_notional too small. "
-                f"entry_notional={entry_notional:.6f}({ccy}) < "
-                f"min_notional={min_notional:.6f}({per.get('accountCcy') or 'ACC'}) "
-                f"(min_qty={min_qty} notionalPerQty={n_per_qty:.6f})"
+                f"[preflight] {sym}: 최대 {max_pct:.2f}%로도 최소주문 미달. "
+                f"max_notional={entry_notional_max:.2f}({ccy}) < "
+                f"min_notional={min_notional:.2f}({per.get('accountCcy') or 'ACC'}) "
+                f"(min_qty={min_qty} notionalPerQty={n_per_qty:.2f})"
             )
 
     def calc_entry_qty_for_warmup(self, symbol: str, *, side: str = "LONG") -> tuple[float, dict]:

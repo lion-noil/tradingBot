@@ -805,8 +805,8 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
         names = ", ".join(s for s, _ in fail_syms)
         detail = "\n".join(f"  • {s}: {e}" for s, e in fail_syms[:15])
         system_logger.warning(
-            f"⚠️ [{ctx.engine}] 1진입(5%)이 최소주문보다 작은 심볼 {len(fail_syms)}개 "
-            f"— 이 심볼들은 5%로 진입 불가(나머지는 정상):\n  [{names}]\n{detail}"
+            f"⚠️ [{ctx.engine}] 1진입을 최대 20%까지 올려도 최소주문 미달인 심볼 {len(fail_syms)}개 "
+            f"— 진입 불가(나머지는 5~20% 자동 상향으로 정상):\n  [{names}]\n{detail}"
         )
     else:
         system_logger.debug(f"[warmup] 전 심볼 1진입 ≥ 최소주문 OK ({len(ok_syms)}개)")
