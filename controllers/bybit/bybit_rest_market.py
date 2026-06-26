@@ -15,7 +15,35 @@ def _safe_int(x):
         return int(float(x))
 
 
+class _RateLimited(Exception):
+    """Bybit rate-limit(retCode=10006) 또는 HTTP 429. 일시적·자동복구 → 텔레 억제."""
+    pass
+
+
 class BybitRestMarketMixin:
+    def _kline_get(self, url, params, *, max_retries: int = 5):
+        """캔들 1페이지 요청. rate-limit(10006/429)은 지수 백오프로 조용히 재시도.
+        시작 시 여러 서비스가 동시에 대량 백필해도 텔레 스팸 없이 흡수."""
+        delay = 0.5
+        for attempt in range(max_retries + 1):
+            res = requests.get(url, params=params, timeout=10)
+            if res.status_code == 429:
+                if attempt < max_retries:
+                    time.sleep(delay); delay = min(delay * 2, 8.0); continue
+                raise _RateLimited("HTTP 429 Too Many Requests")
+            res.raise_for_status()
+            data = res.json()
+            if not isinstance(data, dict):
+                raise RuntimeError(f"unexpected JSON root: {type(data).__name__}")
+            ret_code = data.get("retCode", 0)
+            if ret_code == 10006:  # Too many visits (rate limit)
+                if attempt < max_retries:
+                    time.sleep(delay); delay = min(delay * 2, 8.0); continue
+                raise _RateLimited(f"retCode=10006 {data.get('retMsg')}")
+            if ret_code != 0:
+                raise RuntimeError(f"bybit error retCode={ret_code}, retMsg={data.get('retMsg')}")
+            return data
+        raise _RateLimited("rate-limit retries exhausted")
     # -------------------------
     # 캔들 업데이트 (가격용, 메인넷)
     # -------------------------
@@ -40,18 +68,7 @@ class BybitRestMarketMixin:
                 if latest_end is not None:
                     params["end"] = latest_end
 
-                res = requests.get(url, params=params, timeout=10)
-                res.raise_for_status()
-
-                data = res.json()
-                if not isinstance(data, dict):
-                    raise RuntimeError(f"unexpected JSON root: {type(data).__name__}")
-
-                ret_code = data.get("retCode", 0)
-                if ret_code != 0:
-                    raise RuntimeError(
-                        f"bybit error retCode={ret_code}, retMsg={data.get('retMsg')}"
-                    )
+                data = self._kline_get(url, params)  # rate-limit 백오프 재시도 내장
 
                 result = data.get("result", {})
                 raw_list = result.get("list") or []
@@ -86,6 +103,8 @@ class BybitRestMarketMixin:
                 if len(raw_list) < req_limit:
                     break
 
+                time.sleep(0.12)  # 페이지 간 예의상 간격 (rate-limit 예방)
+
             if isinstance(count, int) and count > 0:
                 all_candles = all_candles[-count:]
 
@@ -102,6 +121,10 @@ class BybitRestMarketMixin:
                 else:
                     self.system_logger.debug(f"📊 ({symbol}) 캔들 갱신: 결과 없음")
 
+        except _RateLimited as e:
+            # rate-limit은 일시적 → 다음 캔들 주기에 자동 복구. 텔레 억제(INFO).
+            if getattr(self, "system_logger", None):
+                self.system_logger.info(f"⏳ ({symbol}) 캔들 rate-limit, 다음 주기 재시도: {e}")
         except Exception as e:
             if getattr(self, "system_logger", None):
                 self.system_logger.warning(f"❌ ({symbol}) 캔들 요청 실패: {e}")
