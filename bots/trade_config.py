@@ -97,6 +97,8 @@ class TradeConfig:
 
     # ✅ 전략 선택: "basic"(기존 MA100 리버전) | "s1"(σ-복귀 롱)
     strategy: str = "basic"
+    # basic 전략의 롱 진입 on/off. False면 숏만 (롱은 S1이 담당하도록 분리). True=종전대로.
+    basic_long_enabled: bool = True
     # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
     s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
@@ -229,6 +231,7 @@ def make_bybit_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
+        basic_long_enabled=False,  # 🔴 Bybit는 롱을 S1으로 분리 → basic은 숏만
     )
     return cfg.normalized()
 

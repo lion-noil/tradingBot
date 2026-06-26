@@ -62,11 +62,13 @@ class SignalProcessor:
     """
 
     def __init__(self, *, deps: SignalProcessorDeps, system_logger=None,
-                 strategy: str = "basic", s1_params: Optional[S1Params] = None):
+                 strategy: str = "basic", s1_params: Optional[S1Params] = None,
+                 basic_long_enabled: bool = True):
         self.deps = deps
         self.system_logger = system_logger
         self.strategy = (strategy or "basic").lower()
         self.s1_params = s1_params or S1Params()
+        self.basic_long_enabled = bool(basic_long_enabled)  # False면 basic 롱 진입 안 함(숏만)
 
         # (symbol, side, anchor_signal_id) -> BOOST 누적 진입 횟수
         self._boost_attempts_by_anchor: Dict[tuple[str, str, str], int] = {}
@@ -247,7 +249,7 @@ class SignalProcessor:
 
         allow_long_add = (not open_long) or _has_init(open_long)
 
-        if allow_long_add:
+        if allow_long_add and self.basic_long_enabled:  # 🔴 basic 롱 비활성 시 진입 안 함(숏만)
             sig_l = get_long_entry_signal(
                 price=price,
                 ma100=now_ma100,
