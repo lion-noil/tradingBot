@@ -1,3 +1,18 @@
+# 신호봇 공용 healthcheck: /tmp/hb(메인루프 하트비트)가 90s 이상 stale이면 = 메인루프
+# 행(hang) → exit 1(unhealthy) 보고. 실제 재기동은 autoheal 사이드카가 docker restart로
+# 수행(컨테이너 PID1=python은 네임스페이스 내부 kill로 못 죽임 → 데몬측 restart 필요).
+# $$ = compose 변수보간 회피(런타임 쉘에 $ 전달).
+x-signal-healthcheck: &signal-hc
+  test: ["CMD-SHELL", "AGE=$$(( $$(date +%s) - $$(stat -c %Y /tmp/hb 2>/dev/null || echo 0) )); [ \"$$AGE\" -lt 90 ]"]
+  interval: 20s
+  timeout: 10s
+  retries: 3
+  start_period: 120s
+
+# autoheal이 감시할 라벨
+x-autoheal-label: &autoheal-label
+  autoheal: "true"
+
 services:
 
   # ─── Signal bots ────────────────────────────────────────────────────────────
@@ -5,6 +20,8 @@ services:
   signal-bybit:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -19,6 +36,8 @@ services:
   signal-s1:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -32,6 +51,8 @@ services:
   signal-mt5:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -47,6 +68,8 @@ services:
   signal-s1-mt5:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -61,6 +84,8 @@ services:
   signal-s2:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -75,6 +100,8 @@ services:
   signal-s2-mt5:
     build: .
     restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
     command: python -m app.main
     env_file: .env
     environment:
@@ -84,6 +111,20 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/app/logs
+
+  # ─── Watchdog ───────────────────────────────────────────────────────────────
+  # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
+  # 라벨 autoheal=true 인 컨테이너만 대상. 데몬측 restart라 행된 PID1도 확실히 종료.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=10        # 10초마다 unhealthy 점검
+      - AUTOHEAL_START_PERIOD=120   # 컨테이너 기동 후 120초는 유예
+      - DOCKER_SOCK=/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # ─── Executors ──────────────────────────────────────────────────────────────
 

@@ -25,6 +25,21 @@ def _env(key: str, default: str = "") -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 하트비트: 메인 루프가 살아 도는 동안만 갱신. 행(hang)되면 갱신 멈춤 → healthcheck가
+# stale 감지 후 컨테이너 재기동(docker-compose healthcheck + restart: always).
+# ─────────────────────────────────────────────────────────────────────────────
+_HB_PATH = _env("HEARTBEAT_FILE", "/tmp/hb")
+
+
+def _heartbeat() -> None:
+    try:
+        with open(_HB_PATH, "w") as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 컨트롤러 팩토리 (엔진별 시세/주문 컨트롤러 + URL/키 env 차이를 흡수)
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_bybit_controllers(symbols, system_logger):
@@ -285,6 +300,7 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str, warmup_timeout):
             if not missing:
                 system_logger.debug(f"✅ [{name}] 데이터 준비 완료, 메인 루프 시작")
                 return
+            _heartbeat()  # warmup 진행 중에도 살아있음 표시(warmup 행도 healthcheck가 잡게)
             system_logger.debug(f"⏳ [{name}] 데이터 준비 중... (부족: {missing})")
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -294,9 +310,11 @@ async def warmup_with_ws_prices(bot: TradeBot, ws, name: str, warmup_timeout):
 
 async def bot_loop(bot: TradeBot, ws, name: str, warmup_timeout):
     await warmup_with_ws_prices(bot, ws, name, warmup_timeout)
+    _heartbeat()  # warmup 통과 직후 1회(메인 루프 진입 표시)
     while True:
         try:
             await bot.run_once()
+            _heartbeat()  # run_once가 행되면 여기 도달 못함 → stale → 재기동
             await asyncio.sleep(0.5)
         except Exception as e:
             system_logger.error(f"❌ [{name}] bot_loop 오류: {e}")
@@ -307,6 +325,7 @@ async def bot_loop(bot: TradeBot, ws, name: str, warmup_timeout):
 async def startup_event():
     global bot, ws_controller, rest_controller
 
+    _heartbeat()  # 부팅 즉시 1회 → healthcheck가 워밍업 시작 전에 오인 kill 안 하도록
     system_logger.debug(f"🚀 신호 봇 시작 (engine={ENGINE}, name={NAME})")
 
     cfg = SPEC["make_config"]()
