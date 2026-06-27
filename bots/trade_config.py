@@ -293,6 +293,13 @@ def make_s1_config(
                    "short": {"k1": 2.65,"b": 1.2,  "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC}},
         "WTI":    {"long": {"k1": 2.9,  "b": -1.4, "cooldown_sec": int(2.5 * _H),  "max_concurrent": MC},
                    "short": {"k1": 3.2, "b": 1.8,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        # ── FX 메이저 (HFM, HANDOFF_FX_majors 2026-06-27 추가; 에러 시 이 블록만 제거) ──
+        #   S1추세롱=trendlong(z≥+K1) / S1추세숏=trend(z≤−K1). 기대값 작음(지수/크립토의 1/3~1/5).
+        "EURUSD": {"long": {"k1": 3.8,  "b": -1.0, "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "AUDUSD": {"long": {"k1": 3.7,  "b": 2.0,  "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
+        "GBPUSD": {"long": {"k1": 3.4,  "b": 0.4,  "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "USDCHF": {"short": {"k1": 4.1, "b": -2.0, "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
+        "USDJPY": {"short": {"k1": 3.0, "b": -1.4, "cooldown_sec": int(1.5 * _H),  "max_concurrent": MC}},
     }
     pbs = params_by_symbol if params_by_symbol is not None \
         else (TREND_MT5 if name == "mt5" else TREND_BYBIT)
@@ -374,6 +381,17 @@ def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
                    "short": {"k1": 3.8,"b": -2.0, "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
         "WTI":    {"long": {"k1": 2.9, "b": -2.0, "cooldown_sec": int(3.0 * _H), "max_concurrent": MC},
                    "short": {"k1": 3.4,"b": 0.6,  "cooldown_sec": int(1.0 * _H), "max_concurrent": MC}},
+        # ── FX 메이저 (HFM, HANDOFF_FX_majors 2026-06-27 추가; 에러 시 이 블록만 제거) ──
+        #   S2역추세롱=long(z≤−K1) / S2역추세숏=short(z≥+K1). AUD·NZD가 평균회귀형 주력.
+        "AUDUSD": {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(1.25 * _H), "max_concurrent": MC},
+                   "short": {"k1": 2.8,"b": -2.0, "cooldown_sec": int(2.25 * _H), "max_concurrent": MC}},
+        "NZDUSD": {"long": {"k1": 3.6, "b": -2.0, "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC},
+                   "short": {"k1": 3.1,"b": -1.0, "cooldown_sec": int(2.25 * _H), "max_concurrent": MC}},
+        "GBPUSD": {"long": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(1.0 * _H),  "max_concurrent": MC}},
+        "EURUSD": {"long": {"k1": 3.7, "b": -0.6, "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
+        "USDJPY": {"short": {"k1": 3.3,"b": -0.6, "cooldown_sec": int(1.75 * _H), "max_concurrent": MC}},
+        "USDCHF": {"short": {"k1": 3.7,"b": -1.6, "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
+        "USDCAD": {"short": {"k1": 3.6,"b": -2.0, "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
     }
     return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
                           avg_down=True, signal_only=signal_only, **kw)
