@@ -7,9 +7,10 @@ from websocket import WebSocketApp
 
 
 class Mt5WebSocketController:
-    def __init__(self, symbols=("EURUSD",), system_logger=None, price_ws_url=None, api_key=None, symbol_map=None):
+    def __init__(self, symbols=("EURUSD",), system_logger=None, price_ws_url=None, api_key=None, symbol_map=None,
+                 kline_interval: str = "1"):
         self._symbol_map = symbol_map  # SymbolAliasMap | None
-        self.kline_interval = "1"
+        self.kline_interval = kline_interval  # "1"(분) | "D"(일봉). 일봉채널만 "D".
         self._last_kline: dict[tuple[str, str], dict] = {}
         self._last_kline_confirmed: dict[tuple[str, str], dict] = {}
 

@@ -97,6 +97,7 @@ class TradeBot:
                 ws_stale_sec=self.ws_stale_sec,
                 ws_global_stale_sec=self.ws_global_stale_sec,
                 candles_num=self.config.candles_num,
+                candle_interval=getattr(self.config, "candle_interval", "1"),  # 일봉채널="D"
             ),
             system_logger=self.system_logger,
             on_price=lambda sym, px, ex_ts: self.jump.record_price(sym, px, ex_ts),

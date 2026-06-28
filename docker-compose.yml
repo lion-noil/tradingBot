@@ -112,6 +112,37 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # ── 일봉(D1) FX 채널 (HANDOFF_DAILY_FX) — namespace fxd, executor-a2(9010) 공유 ──
+  signal-fxd1:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=fxd1
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
+  signal-fxd2:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=fxd2
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
   # 라벨 autoheal=true 인 컨테이너만 대상. 데몬측 restart라 행된 PID1도 확실히 종료.

@@ -111,6 +111,8 @@ class TradeConfig:
     s1_max_hold_sec: int = 14 * 24 * 3600
     # ✅ 추매(평단↓): True면 신호 재발생 시 새 포지션 대신 기존에 1회 추매(재앵커). S2 역추세 전용.
     avg_down: bool = False
+    # ✅ 캔들 타임프레임: "1"(분, 기존) | "D"(일봉채널). MarketSync가 이 값으로 분기.
+    candle_interval: str = "1"
 
     def to_redis(self, redis_client, publish: bool = True) -> None:
         """
@@ -259,6 +261,9 @@ def make_s1_config(
     params_by_symbol: dict | None = None,  # ✅ 심볼별 v2 파라미터(없으면 name으로 기본맵 선택)
     strategy: str = "s1",       # ✅ "s1"(추세) | "s2"(역추세) — 동일 엔진, 방향만 다름
     avg_down: bool = False,     # ✅ 추매(S2 역추세 전용)
+    s1_win: int = 10080,        # ✅ MA/σ 창. 1분봉=10080(7일). 일봉채널=90(90일).
+    candle_interval: str = "1",  # ✅ "1"(분) | "D"(일봉채널)
+    s1_max_hold_sec: int = 14 * 24 * 3600,  # ✅ 최대보유. 1분=14일, 일봉=30일.
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) / S2(추세 숏) 신호 설정. namespace=name, strategy 분기.
     - 심볼: .env BYBIT_S1_SYMBOLS
@@ -330,13 +335,14 @@ def make_s1_config(
         candles_num=candles_num,
         signal_only=signal_only,
 
-        s1_win=10080,
+        s1_win=s1_win,
         s1_k1=s1_k1,
         s1_b=s1_b,
         s1_cooldown_sec=s1_cooldown_sec,
         s1_params_by_symbol=pbs,           # ✅ v2 심볼별 파라미터
-        s1_max_hold_sec=14 * 24 * 3600,    # ✅ v2 14일 강제청산
+        s1_max_hold_sec=s1_max_hold_sec,   # ✅ 최대보유(1분=14일/일봉=30일)
         avg_down=avg_down,                 # ✅ 추매(S2 전용)
+        candle_interval=candle_interval,   # ✅ 캔들 타임프레임("1"/"D")
     )
     return cfg.normalized()
 
@@ -395,6 +401,51 @@ def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     }
     return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
                           avg_down=True, signal_only=signal_only, **kw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 일봉(D1) FX 채널 — HANDOFF_DAILY_FX. namespace "fxd"(1분 mt5와 별개 채널),
+#   win=90일, 쿨다운 일(日), 최대보유 30일, candle_interval="D". executor-a2(MT5) 공유.
+#   §3 🟢(쓸만) 픽만. avg_down 미사용(일봉 핸드오프 무관). maxc=핸드오프 §3 값.
+# ─────────────────────────────────────────────────────────────────────────────
+_D = 86400  # 1일(초)
+
+
+def make_fx_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 FX 추세(S1). 롱=trendlong(z≥+K1) / 숏=trend(z≤−K1). §3 🟢 추세픽."""
+    FXD_TREND = {
+        # 추세롱(z≥+K1) — §3 🟢 4종 (추세숏은 🟢 없음 → 제외)
+        "EURUSD": {"long": {"k1": 2.1, "b": -1.4, "cooldown_sec": 3 * _D, "max_concurrent": 8}},
+        "USDJPY": {"long": {"k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 10}},
+        "USDCAD": {"long": {"k1": 2.7, "b": 0.2,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
+        "NZDUSD": {"long": {"k1": 2.5, "b": 0.8,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
+    }
+    return make_s1_config(name="fxd", params_by_symbol=FXD_TREND, strategy="s1",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=30 * _D, **kw)
+
+
+def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 FX 역추세(S2). 롱=z≤−K1 / 숏=z≥+K1. §3 🟢 역추세픽. 추매 미사용."""
+    FXD_REV = {
+        # 역추세롱(z≤−K1) — §3 🟢 7종
+        "EURUSD": {"long": {"k1": 2.0, "b": -1.2, "cooldown_sec": 3 * _D, "max_concurrent": 9}},
+        "GBPUSD": {"long": {"k1": 2.8, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 10},
+                   "short": {"k1": 2.0,"b": -1.8, "cooldown_sec": 3 * _D, "max_concurrent": 7}},
+        "USDJPY": {"long": {"k1": 2.3, "b": -0.2, "cooldown_sec": 3 * _D, "max_concurrent": 6}},
+        "AUDUSD": {"long": {"k1": 2.6, "b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 10},
+                   "short": {"k1": 1.9,"b": -1.6, "cooldown_sec": 7 * _D, "max_concurrent": 5}},
+        "USDCAD": {"long": {"k1": 1.8, "b": -1.6, "cooldown_sec": 3 * _D, "max_concurrent": 9}},
+        "USDCHF": {"long": {"k1": 2.8, "b": -1.2, "cooldown_sec": 1 * _D, "max_concurrent": 10},
+                   "short": {"k1": 2.2,"b": 0.0,  "cooldown_sec": 3 * _D, "max_concurrent": 7}},
+        "NZDUSD": {"long": {"k1": 2.3, "b": 1.4,  "cooldown_sec": 3 * _D, "max_concurrent": 5},
+                   "short": {"k1": 1.0,"b": -2.0, "cooldown_sec": 10 * _D, "max_concurrent": 3}},
+    }
+    return make_s1_config(name="fxd", params_by_symbol=FXD_REV, strategy="s2",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=30 * _D, **kw)
 
 
 def make_mt5_signal_config(

@@ -15,7 +15,8 @@ from asyncio import Queue
 
 from bots.trade_bot import TradeBot
 from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signal_config,
-                               make_s1_mt5_config, make_s2_config, make_s2_mt5_config)
+                               make_s1_mt5_config, make_s2_config, make_s2_mt5_config,
+                               make_fx_daily_trend_config, make_fx_daily_rev_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -66,6 +67,25 @@ def _build_mt5_controllers(symbols, system_logger):
     ws = Mt5WebSocketController(
         symbols=symbols, system_logger=system_logger,
         price_ws_url=_env("MT5_PRICE_WS_URL", ""), api_key=api_key, symbol_map=symbol_map,
+    )
+    rest = Mt5RestController(
+        system_logger=system_logger,
+        price_base_url=_env("MT5_PRICE_REST_URL", ""), api_key=api_key, symbol_map=symbol_map,
+    )
+    return ws, rest
+
+
+def _build_mt5_controllers_daily(symbols, system_logger):
+    """일봉(D1) 채널용 MT5 컨트롤러. WS는 kline.D 구독(ticker 가격은 동일), REST는 호출측에서 interval=D."""
+    from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
+    from controllers.mt5.mt5_rest_controller import Mt5RestController
+    from utils.symbol_mapper import SymbolAliasMap
+    api_key = _env("MT5_API_KEY", "")
+    symbol_map = SymbolAliasMap.from_env()
+    ws = Mt5WebSocketController(
+        symbols=symbols, system_logger=system_logger,
+        price_ws_url=_env("MT5_PRICE_WS_URL", ""), api_key=api_key, symbol_map=symbol_map,
+        kline_interval="D",
     )
     rest = Mt5RestController(
         system_logger=system_logger,
@@ -166,6 +186,37 @@ ENGINES = {
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
         "publish_config": False,
         "port": 18015,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    # ── 일봉(D1) FX 채널 (HANDOFF_DAILY_FX) — namespace "fxd", executor-a2 공유, win=90/최대보유30일 ──
+    "fxd1": {
+        "name": "FXD1",
+        "make_config": lambda: make_fx_daily_trend_config(signal_only=True),  # 📝 페이퍼(검증 후 False로 승격)
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "FXD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_fxd_trend.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 'fxd' 네임스페이스 config 소유
+        "port": 18016,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "fxd2": {
+        "name": "FXD2",
+        "make_config": lambda: make_fx_daily_rev_config(signal_only=True),  # 📝 페이퍼(검증 후 False로 승격)
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "FXD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_fxd_rev.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'fxd' 네임스페이스 공유(config는 fxd1이 소유)
+        "port": 18017,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },

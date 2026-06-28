@@ -20,7 +20,8 @@ class Mt5RestMarketMixin:
     - update_candles: ONLINE(price) ?쒕쾭 ?ъ슜
     """
 
-    def update_candles(self, candles: list, symbol: str | None = None, count: int | None = None):
+    def update_candles(self, candles: list, symbol: str | None = None, count: int | None = None,
+                       interval: str = "1"):
         """
         - ?쒕쾭 ?붾뱶?ъ씤?? GET /v5/market/candles/with-gaps
         - ?묐떟:
@@ -49,7 +50,7 @@ class Mt5RestMarketMixin:
 
                 params: Dict[str, Any] = {
                     "symbol": sym,
-                    "interval": "1",
+                    "interval": interval,
                     "limit": req_limit,
                 }
                 if end_ms is not None:
