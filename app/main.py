@@ -192,7 +192,7 @@ ENGINES = {
     # ── 일봉(D1) FX 채널 (HANDOFF_DAILY_FX) — namespace "fxd", executor-a2 공유, win=90/최대보유30일 ──
     "fxd1": {
         "name": "FXD1",
-        "make_config": lambda: make_fx_daily_trend_config(signal_only=True),  # 📝 페이퍼(검증 후 False로 승격)
+        "make_config": lambda: make_fx_daily_trend_config(signal_only=False),  # 🔴 LIVE (일봉바게이트+쿨다운persist)
         "make_controllers": _build_mt5_controllers_daily,
         "targets_env": "FXD_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
@@ -207,7 +207,7 @@ ENGINES = {
     },
     "fxd2": {
         "name": "FXD2",
-        "make_config": lambda: make_fx_daily_rev_config(signal_only=True),  # 📝 페이퍼(검증 후 False로 승격)
+        "make_config": lambda: make_fx_daily_rev_config(signal_only=False),  # 🔴 LIVE (일봉바게이트+쿨다운persist)
         "make_controllers": _build_mt5_controllers_daily,
         "targets_env": "FXD_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",

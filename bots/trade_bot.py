@@ -125,8 +125,11 @@ class TradeBot:
             symbols=self.symbols,
         )
 
-        if (getattr(self.config, "strategy", "basic") or "basic").lower() == "s1":
+        _strat = (getattr(self.config, "strategy", "basic") or "basic").lower()
+        if _strat == "s1":
             self._warmup_s1_last_exit()
+        if _strat in ("s1", "s2"):
+            self._warmup_s1_last_entry()  # 진입 쿨다운 복원(재시작 재진입 방지)
 
         # signal processor
         self.signal_processor = SignalProcessor(
@@ -313,12 +316,51 @@ class TradeBot:
             if ek not in self._last_exit_ts_ms:  # newest-first → 처음이 최신
                 self._last_exit_ts_ms[ek] = ts_i
 
+    def _warmup_s1_last_entry(self, *, count: int = 5000):
+        """진입 쿨다운 복원(재시작 재진입 방지): (sym,side)별 최신 ENTRY ts 적재.
+        인메모리 _last_entry_ts_ms가 재시작에 날아가 쿨다운이 풀려 중복진입하는 걸 막음.
+        일봉 등 긴 쿨다운(1~10일)에서 특히 중요(autoheal 재기동 대비)."""
+        key = f"trading:{self.namespace}:signals"
+        now_ms = int(time.time() * 1000)
+        # 심볼별 쿨다운이 제각각 → 가장 긴 쿨다운 기준 룩백(여유). 일봉 최대 10일.
+        max_cd = int(getattr(self.config, "s1_cooldown_sec", 12 * 3600))
+        for dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).values():
+            for p in (dirs or {}).values():
+                max_cd = max(max_cd, int((p or {}).get("cooldown_sec", 0) or 0))
+        look_ms = (max_cd + 60) * 1000
+        tag = (getattr(self.config, "strategy", "") or "").upper()  # S1/S2 — 공유 네임스페이스 분리
+        rows = redis_client.xrevrange(key, max="+", min=f"{now_ms - look_ms}-0", count=count) or []
+        for _sid, fields in rows:
+            f = {}
+            for fk, fv in (fields or {}).items():
+                if isinstance(fk, (bytes, bytearray)): fk = fk.decode("utf-8", "ignore")
+                if isinstance(fv, (bytes, bytearray)): fv = fv.decode("utf-8", "ignore")
+                f[str(fk)] = str(fv)
+            if (f.get("kind") or "").upper() != "ENTRY":
+                continue
+            if tag and tag not in (f.get("reasons_json") or ""):  # 이 전략 신호만
+                continue
+            sym = (f.get("symbol") or "").upper()
+            side = (f.get("side") or "").upper()
+            ts = f.get("ts_ms")
+            if not (sym and side and ts):
+                continue
+            try:
+                ts_i = int(ts)
+            except Exception:
+                continue
+            ek = (sym, side)
+            if ek not in self._last_entry_ts_ms:  # newest-first → 처음이 최신
+                self._last_entry_ts_ms[ek] = ts_i
+
     def _apply_config(self, cfg: TradeConfig) -> None:
         self.ws_stale_sec = cfg.ws_stale_sec
         self.ws_global_stale_sec = cfg.ws_global_stale_sec
         self.entry_percent = cfg.entry_percent
         # 피드 게이트 임계(플래핑 방지). ws_stale_sec보다 길게.
         self.feed_gate_stale_sec = float(getattr(cfg, "feed_gate_stale_sec", 120.0))
+        # 일봉 채널: 최신 일봉 바 최대 허용 나이(초). 초과=주말 폐장 → stale. 1.5일=평일fresh/주말stale.
+        self.daily_bar_max_age_sec = float(getattr(cfg, "daily_bar_max_age_sec", 1.5 * 86400))
         # WS 링크 끊김을 텔레그램 경보로 올리기 전 대기(초). 짧은 깜빡임/재접속은 알림 안 함.
         self.ws_link_alert_after_sec = float(getattr(cfg, "ws_link_alert_after_sec", 180.0))
 
@@ -331,6 +373,21 @@ class TradeBot:
         여기서는 심볼별 recv(monotonic)만 보므로 마감 심볼을 정확히 stale로 잡는다.
         monotonic 기반이라 broker 서버 타임존 오프셋 문제도 없다.
         """
+        # ✅ 일봉 채널: ticker가 fresh해도 '최신 일봉 바'가 오래되면(주말 폐장) stale 처리.
+        #   주말엔 서버가 틱을 흘려 ticker는 fresh로 보이지만 시장은 닫혀 있음 → 진입신호가 기록되고
+        #   executor는 10018(market closed)로 거절 → 팬텀 쿨다운이 개장 후 실진입을 막는 걸 방지.
+        #   평일=당일 세션봉(<1일) fresh / 주말=금요봉 고정(토1.8·일2.8일) stale.
+        if getattr(self.config, "candle_interval", "1") == "D":
+            try:
+                _cs = self.candle.get_candles(symbol)
+                _last_start = _cs[-1].get("start") if _cs else None
+            except Exception:
+                _last_start = None
+            if _last_start is None:
+                return False
+            if (time.time() * 1000 - float(_last_start)) > self.daily_bar_max_age_sec * 1000:
+                return False
+
         get_recv = getattr(self.ws, "get_last_recv_time", None)
         if callable(get_recv):
             recv = get_recv(symbol)  # 심볼별 monotonic 수신시각
