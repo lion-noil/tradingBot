@@ -194,22 +194,10 @@ def refresh_indicators_for_symbol(
         # 초기 None 케이스/기본값 세팅 원하면 아래 한 줄은 유지해도 됨.
         ma_check_enabled_map.setdefault(symbol, now_enabled)
 
-    # 로깅(있을 때만)
-    if log and redis_client is not None:
-        msg = f"[{symbol}] {log['msg']}"
-        if system_logger:
-            system_logger.debug(msg)
-        xadd_pct_log(
-            redis_client,
-            symbol,
-            "MA threshold",
-            log["prev_q"],
-            log["new_q"],
-            log["arrow"],
-            msg,
-            namespace=namespace,
-            cross_times=res["cross_times"],
-        )
+    # MA threshold 변경 시 내부 debug 로그만. OpenPctLog redis 발행 제거(2026-06-29):
+    # basic(MA100) 은퇴 + 프론트 터치/임계 위젯 제거 → 아무도 안 씀. (계산은 상태맵 표시용으로 유지)
+    if log and system_logger:
+        system_logger.debug(f"[{symbol}] {log['msg']}")
 
     prev3_candle_map[symbol] = res.get("prev3_candle")  # None도 포함
 
