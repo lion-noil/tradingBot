@@ -141,5 +141,12 @@ class Mt5RestMarketMixin:
 
         except Exception as e:
             if getattr(self, "system_logger", None):
-                self.system_logger.warning(f"??[MT5] ({symbol}) 罹붾뱾 ?붿껌 ?ㅽ뙣: {e}")
+                es = str(e)
+                # 일시적 서버/터널/네트워크 오류(502/503/530/DNS/연결끊김)는 캔들 버퍼가 직전
+                # 데이터를 유지하므로 무해(MA 유효, 현재가는 WS) -> DEBUG(텔레 억제). 그 외만 WARNING.
+                transient = any(t in es for t in (
+                    "502","503","530","Max retries","resolve","Connection",
+                    "timed out","RemoteDisconnected","Bad Gateway","Tunnel"))
+                log = self.system_logger.debug if transient else self.system_logger.warning
+                log(f"❌ [MT5] ({symbol}) 캔들 요청 실패: {es[:200]}")
 
