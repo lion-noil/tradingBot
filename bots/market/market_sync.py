@@ -18,7 +18,7 @@ class MarketSyncConfig:
     ws_global_stale_sec: float
     candles_num: int
     candle_interval: str = "1"  # "1"(분, 기존) | "D"(일봉). 일봉채널만 "D" → tick이 _tick_daily로 분기.
-    daily_backfill_cooldown_sec: float = 300.0  # 일봉 REST 재갱신 간격
+    daily_backfill_cooldown_sec: float = 3600.0  # 일봉 REST 재갱신 간격(1h). 일봉=하루1봉이라 충분 → 서버부하↓
 
 
 class MarketSync:
