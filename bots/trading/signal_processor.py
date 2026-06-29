@@ -102,7 +102,8 @@ class SignalProcessor:
     def _sigma_mode(self, side: str):
         """(entry_high, position_long). 추세(s1): entry_high==long, 역추세(s2): entry_high!=long."""
         is_long = (side == "LONG")
-        entry_high = is_long if self.strategy == "s1" else (not is_long)
+        # 추세=s1(1분)/s3(일봉): entry_high==long. 역추세=s2(1분)/s4(일봉): entry_high!=long.
+        entry_high = is_long if self.strategy in ("s1", "s3") else (not is_long)
         return entry_high, is_long
 
     def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
@@ -135,7 +136,7 @@ class SignalProcessor:
         if price is None:
             return []
 
-        if self.strategy in ("s1", "s2"):
+        if self.strategy in ("s1", "s2", "s3", "s4"):  # s1/s2=1분, s3/s4=일봉(동일 엔진)
             return self._process_sigma(symbol, price)
 
         now_ma100 = self.deps.get_now_ma100(symbol)

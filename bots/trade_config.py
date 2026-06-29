@@ -420,7 +420,7 @@ def make_fx_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfi
         "USDCAD": {"long": {"k1": 2.7, "b": 0.2,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
         "NZDUSD": {"long": {"k1": 2.5, "b": 0.8,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
     }
-    return make_s1_config(name="fxd", params_by_symbol=FXD_TREND, strategy="s1",
+    return make_s1_config(name="fxd", params_by_symbol=FXD_TREND, strategy="s3",  # s3=일봉 추세
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=30 * _D, **kw)
@@ -442,7 +442,7 @@ def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
         "NZDUSD": {"long": {"k1": 2.3, "b": 1.4,  "cooldown_sec": 3 * _D, "max_concurrent": 5},
                    "short": {"k1": 1.0,"b": -2.0, "cooldown_sec": 10 * _D, "max_concurrent": 3}},
     }
-    return make_s1_config(name="fxd", params_by_symbol=FXD_REV, strategy="s2",
+    return make_s1_config(name="fxd", params_by_symbol=FXD_REV, strategy="s4",  # s4=일봉 역추세
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=30 * _D, **kw)

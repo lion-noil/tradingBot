@@ -128,7 +128,7 @@ class TradeBot:
         _strat = (getattr(self.config, "strategy", "basic") or "basic").lower()
         if _strat == "s1":
             self._warmup_s1_last_exit()
-        if _strat in ("s1", "s2"):
+        if _strat in ("s1", "s2", "s3", "s4"):  # s1/s2=1분, s3/s4=일봉
             self._warmup_s1_last_entry()  # 진입 쿨다운 복원(재시작 재진입 방지)
 
         # signal processor
