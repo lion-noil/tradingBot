@@ -640,6 +640,26 @@ class TradeExecutor:
 
         positions[sym]["LONG"] = {"qty": long_qty, "entries": _entries("LONG")} if long_qty > 0 else None
         positions[sym]["SHORT"] = {"qty": short_qty, "entries": _entries("SHORT")} if short_qty > 0 else None
+
+        # ---- 4) 실시간 손익/명목가치 (MT5만, 있으면) ----
+        # MT5는 심볼별 계약크기가 달라 (가격−진입가)×수량 근사가 크게 틀림(특히 FX).
+        # 브로커가 계산한 정확한 profit/명목가치를 붙여 프론트가 그대로 표시하게 함.
+        metrics_fn = getattr(self.rest, "get_position_metrics", None)
+        if callable(metrics_fn):
+            try:
+                m = metrics_fn(sym) or {}
+                for side in ("LONG", "SHORT"):
+                    pos = positions[sym].get(side)
+                    side_m = m.get(side)
+                    if pos and isinstance(side_m, dict):
+                        if side_m.get("pnl") is not None:
+                            pos["pnl"] = side_m["pnl"]
+                        if side_m.get("value") is not None:
+                            pos["value"] = side_m["value"]
+            except Exception as e:
+                if self.system_logger:
+                    self.system_logger.warning(f"[asset] position metrics failed ({sym}): {e}")
+
         asset["positions"] = positions
         return asset
 

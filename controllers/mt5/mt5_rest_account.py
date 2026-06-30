@@ -145,3 +145,57 @@ class Mt5RestAccountMixin:
 
         return float(total_vol)
 
+    def get_position_metrics(self, symbol: str) -> dict:
+        """
+        심볼의 LONG/SHORT 별 현재 미실현손익(profit, 계정통화=USD)과 명목가치(USD)를 반환.
+        - pnl   : 브로커(MT5)가 계산한 현재 미실현손익 합(정확). 계약크기·환산 모두 반영됨.
+        - value : 명목가치 합 = Σ(volume × 1랏당 명목가치(USD)).  (notionalPerLotAccount 사용)
+        프론트가 (가격−진입가)×수량으로 근사하던 PnL을 이 정확한 값으로 대체하기 위함.
+        반환 예: {"LONG": {"pnl": -38.97, "value": 1234.5}, "SHORT": None}
+        """
+        out = {"LONG": None, "SHORT": None}
+        if not self._ensure_mt5():
+            return out
+
+        sym = (symbol or "").upper()
+        rows = self.get_positions(symbol=sym)
+        if not rows:
+            return out
+
+        # 1.0 lot 당 명목가치(계정통화/USD) — value 계산용
+        n_per_lot = 0.0
+        try:
+            get_rules = getattr(self, "get_symbol_rules", None)
+            if callable(get_rules):
+                rules = get_rules(sym) or {}
+                n_per_lot = float(rules.get("notionalPerLotAccount") or 0.0)
+        except Exception:
+            n_per_lot = 0.0
+
+        agg = {
+            "LONG": {"pnl": 0.0, "value": 0.0, "vol": 0.0},
+            "SHORT": {"pnl": 0.0, "value": 0.0, "vol": 0.0},
+        }
+        for p in rows:
+            vol = float(getattr(p, "volume", 0.0) or 0.0)
+            if vol <= 0:
+                continue
+            ptype = int(getattr(p, "type", -1))
+            if ptype == mt5.POSITION_TYPE_BUY:
+                side = "LONG"
+            elif ptype == mt5.POSITION_TYPE_SELL:
+                side = "SHORT"
+            else:
+                continue
+            agg[side]["pnl"] += float(getattr(p, "profit", 0.0) or 0.0)
+            agg[side]["value"] += vol * n_per_lot
+            agg[side]["vol"] += vol
+
+        for side in ("LONG", "SHORT"):
+            if agg[side]["vol"] > 0:
+                out[side] = {
+                    "pnl": round(agg[side]["pnl"], 4),
+                    "value": round(agg[side]["value"], 2),
+                }
+        return out
+
