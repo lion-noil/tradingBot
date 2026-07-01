@@ -462,10 +462,10 @@ def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 일봉(D1) 크립토(Bybit) 채널 — HANDOFF_DAILY_MT5 §3b. namespace "cryptod"(별도).
-#   ⚠️ 1분(bybit)과 네임스페이스 분리 필수: 포지션 lot·open_signals 인덱스가 (namespace,symbol,side)
-#      키라 전략 미포함 → 같은 네임스페이스면 1분 봇이 일봉 포지션을 자기 청산로직으로 EXIT시킴(충돌). fxd와 동일 이유.
-#   win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D". 거래는 executor-a1(Bybit)이 s3/s4 태그로 2% 사이징.
+# 일봉(D1) 크립토(Bybit) 채널 — HANDOFF_DAILY_MT5 §3b. namespace "bybit" 공유(1분 s1/s2와 동일,
+#   전략 태그 s3/s4로만 구분). basic(MA100) 퇴출로 청산 충돌 없음 — 남은 엔진은 전부 list_open_s1(tag)로
+#   자기 전략 포지션만 관리. win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D".
+#   거래는 executor-a1(Bybit)이 s3/s4 태그로 2% 사이징.
 # ─────────────────────────────────────────────────────────────────────────────
 def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 크립토 추세(S3). 롱=z≥+K1 / 숏=z≤−K1. §3b 🟢 추세픽(양방향)."""
@@ -479,7 +479,7 @@ def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeC
         "XRPUSDT": {"long": {"k1": 3.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
                     "short": {"k1": 1.6,"b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
     }
-    return make_s1_config(name="cryptod", params_by_symbol=CRYPTOD_TREND, strategy="s3",  # 별도 네임스페이스(포지션 격리 필수), 태그=s3
+    return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_TREND, strategy="s3",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=15 * _D, **kw)
@@ -493,15 +493,15 @@ def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeCon
         "XRPUSDT": {"long": {"k1": 2.4, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 8},
                     "short": {"k1": 1.0,"b": -0.4, "cooldown_sec": 10 * _D, "max_concurrent": 2}},
     }
-    return make_s1_config(name="cryptod", params_by_symbol=CRYPTOD_REV, strategy="s4",  # 별도 네임스페이스(포지션 격리 필수), 태그=s4
+    return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_REV, strategy="s4",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 일봉(D1) MT5 비환율 채널 — HANDOFF_DAILY_MT5 §3. namespace "mt5d"(별도, 1분 mt5와 분리 필수 — 위 cryptod 사유 동일).
-#   win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D".
+# 일봉(D1) MT5 비환율 채널 — HANDOFF_DAILY_MT5 §3. namespace "mt5" 공유(1분 s1/s2와 동일, 태그 s3/s4로만 구분).
+#   basic 퇴출로 충돌 없음. win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D".
 #   거래는 executor-a2(MT5)가 s3/s4 태그로 비환율 2% 사이징. ⚠️ 2% 엄수(5%는 청산).
 # ─────────────────────────────────────────────────────────────────────────────
 def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
@@ -518,7 +518,7 @@ def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConf
         "US100":  {"long": {"k1": 1.2, "b": -1.8, "cooldown_sec": 10 * _D, "max_concurrent": 2}},
         "JP225":  {"long": {"k1": 2.5, "b": 0.8,  "cooldown_sec": 1 * _D, "max_concurrent": 12}},
     }
-    return make_s1_config(name="mt5d", params_by_symbol=MT5D_TREND, strategy="s3",  # 별도 네임스페이스(포지션 격리 필수), 태그=s3
+    return make_s1_config(name="mt5", params_by_symbol=MT5D_TREND, strategy="s3",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=15 * _D, **kw)
@@ -537,7 +537,7 @@ def make_mt5_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig
         "UK100":  {"long": {"k1": 1.7, "b": -0.8, "cooldown_sec": 2 * _D, "max_concurrent": 7}},
         "HK50":   {"long": {"k1": 2.1, "b": -2.8, "cooldown_sec": 1 * _D, "max_concurrent": 11}},
     }
-    return make_s1_config(name="mt5d", params_by_symbol=MT5D_REV, strategy="s4",  # 별도 네임스페이스(포지션 격리 필수), 태그=s4
+    return make_s1_config(name="mt5", params_by_symbol=MT5D_REV, strategy="s4",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
                           s1_win=90, candle_interval="D", candles_num=250,
                           s1_max_hold_sec=15 * _D, **kw)

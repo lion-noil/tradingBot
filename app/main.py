@@ -252,7 +252,7 @@ ENGINES = {
         "signals_file": "signals_cryptod_trend.jsonl",
         "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
         "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
-        "publish_config": True,  # 'cryptod' 네임스페이스 config 소유
+        "publish_config": False,  # 'bybit' 네임스페이스 공유 → config는 signal-bybit이 소유
         "port": 18018,
         "warmup_timeout": None,
         "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
@@ -267,7 +267,7 @@ ENGINES = {
         "signals_file": "signals_cryptod_rev.jsonl",
         "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
         "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
-        "publish_config": False,  # 'cryptod' 네임스페이스 공유(config는 cryptod1이 소유)
+        "publish_config": False,  # 'bybit' 네임스페이스 공유 → config는 signal-bybit이 소유
         "port": 18019,
         "warmup_timeout": None,
         "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
@@ -284,7 +284,7 @@ ENGINES = {
         "signals_file": "signals_mt5d_trend.jsonl",
         "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
-        "publish_config": True,  # 'mt5d' 네임스페이스 config 소유
+        "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
         "port": 18020,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
@@ -299,7 +299,7 @@ ENGINES = {
         "signals_file": "signals_mt5d_rev.jsonl",
         "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
-        "publish_config": False,  # 'mt5d' 네임스페이스 공유(config는 mt5d1이 소유)
+        "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
         "port": 18021,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
