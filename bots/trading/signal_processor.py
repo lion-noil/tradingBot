@@ -165,6 +165,12 @@ class SignalProcessor:
         for side in ("LONG", "SHORT"):
             open_items = self.deps.get_open_signal_items(symbol, side)  # [(sid, ts, ep, tag), ...]
 
+            # 🔴 basic(MA100) 청산은 basic이 연 포지션(INIT/SCALE_IN 등)만 대상.
+            #   시그마(S1~S4) 포지션은 자기 TP/SL(진입신호 매칭)로만 청산 — 같은 namespace라도
+            #   basic MA100 크로스가 시그마 포지션을 청산해버리는 오작동 방지.
+            open_items = [it for it in open_items
+                          if str((it[3] if len(it) > 3 else "") or "").upper() not in ("S1", "S2", "S3", "S4")]
+
             if not open_items:
                 continue
 

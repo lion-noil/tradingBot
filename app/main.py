@@ -16,7 +16,9 @@ from asyncio import Queue
 from bots.trade_bot import TradeBot
 from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signal_config,
                                make_s1_mt5_config, make_s2_config, make_s2_mt5_config,
-                               make_fx_daily_trend_config, make_fx_daily_rev_config)
+                               make_fx_daily_trend_config, make_fx_daily_rev_config,
+                               make_crypto_daily_trend_config, make_crypto_daily_rev_config,
+                               make_mt5_daily_trend_config, make_mt5_daily_rev_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -90,6 +92,24 @@ def _build_mt5_controllers_daily(symbols, system_logger):
     rest = Mt5RestController(
         system_logger=system_logger,
         price_base_url=_env("MT5_PRICE_REST_URL", ""), api_key=api_key, symbol_map=symbol_map,
+    )
+    return ws, rest
+
+
+def _build_bybit_controllers_daily(symbols, system_logger):
+    """일봉(D1) 크립토(Bybit) 채널용 컨트롤러. 라이브가격=ticker(WS), 캔들=일봉 REST 백필(interval=D).
+    WS kline은 D 구독(freshness용, 일봉 tick은 REST 백필만 사용). update_candles가 interval=D 처리."""
+    from controllers.bybit.bybit_ws_controller import BybitWebSocketController
+    from controllers.bybit.bybit_rest_controller import BybitRestController
+    ws = BybitWebSocketController(
+        symbols=symbols, system_logger=system_logger,
+        price_ws_url=_env("BYBIT_PRICE_WS_URL", ""),
+    )
+    ws.kline_interval = "D"  # 일봉 kline 구독(1분 채널과 격리)
+    rest = BybitRestController(
+        system_logger=system_logger,
+        trade_base_url=_env("BYBIT_TRADE_REST_URL", ""),
+        price_base_url=_env("BYBIT_PRICE_REST_URL", ""),
     )
     return ws, rest
 
@@ -217,6 +237,70 @@ ENGINES = {
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
         "publish_config": False,  # 'fxd' 네임스페이스 공유(config는 fxd1이 소유)
         "port": 18017,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    # ── 일봉(D1) 크립토(Bybit) 채널 (HANDOFF_DAILY_MT5 §3b) — namespace "cryptod"(별도, 1분과 격리 필수),
+    #   executor-a1(9009). 🔴 LIVE. 거래는 Bybit 거래소, 전략 태그 s3/s4로 구분.
+    "cryptod1": {
+        "name": "CRYPTOD1",
+        "make_config": lambda: make_crypto_daily_trend_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_bybit_controllers_daily,
+        "targets_env": "CRYPTOD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_cryptod_trend.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 'cryptod' 네임스페이스 config 소유
+        "port": 18018,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "cryptod2": {
+        "name": "CRYPTOD2",
+        "make_config": lambda: make_crypto_daily_rev_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_bybit_controllers_daily,
+        "targets_env": "CRYPTOD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_cryptod_rev.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'cryptod' 네임스페이스 공유(config는 cryptod1이 소유)
+        "port": 18019,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    # ── 일봉(D1) MT5 비환율 채널 (HANDOFF_DAILY_MT5 §3) — namespace "mt5d"(별도, 1분과 격리 필수),
+    #   executor-a2(9010). 🔴 LIVE. 거래는 MT5 거래소, 전략 태그 s3/s4로 구분. 사이징 2% 엄수.
+    "mt5d1": {
+        "name": "MT5D1",
+        "make_config": lambda: make_mt5_daily_trend_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "MT5D_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_mt5d_trend.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 'mt5d' 네임스페이스 config 소유
+        "port": 18020,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "mt5d2": {
+        "name": "MT5D2",
+        "make_config": lambda: make_mt5_daily_rev_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "MT5D_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_mt5d_rev.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'mt5d' 네임스페이스 공유(config는 mt5d1이 소유)
+        "port": 18021,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },

@@ -47,11 +47,13 @@ class BybitRestMarketMixin:
     # -------------------------
     # 캔들 업데이트 (가격용, 메인넷)
     # -------------------------
-    def update_candles(self, candles, symbol=None, count=None):
+    def update_candles(self, candles, symbol=None, count=None, interval="1"):
         try:
             symbol = symbol
             # ✅ 가격용 REST URL (메인넷)
             url = f"{self.price_base_url}/v5/market/kline"
+            # ✅ Bybit v5 kline interval: 1분="1", 일봉="D" (일봉 크립토 채널 cryptod에서 interval="D" 전달)
+            itv = "D" if str(interval).upper() == "D" else str(interval or "1")
 
             target = count if (isinstance(count, int) and count > 0) else 1000
             all_candles = []
@@ -62,7 +64,7 @@ class BybitRestMarketMixin:
                 params = {
                     "category": "linear",
                     "symbol": symbol,
-                    "interval": "1",
+                    "interval": itv,
                     "limit": req_limit,
                 }
                 if latest_end is not None:

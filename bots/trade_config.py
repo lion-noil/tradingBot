@@ -233,8 +233,9 @@ def make_bybit_config(
         leverage=leverage,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
-        # ✅ (전략,심볼)별 진입%: 일봉 Bybit 크립토(s3/s4)=2%(0.04). 1분봉(s1/s2)은 맵에 없어 5% fallback.
-        entry_percent_by_strategy={s: {"_default": 0.04} for s in ("s3", "s4")},
+        # ✅ (전략,심볼)별 진입%: 전 전략 2%(0.04). 1분봉(s1/s2)=저사이징(마스터 §5 건당1~2%),
+        #   일봉 Bybit 크립토(s3/s4)=2%. (0.04/100 × 레버50 = 2% notional)
+        entry_percent_by_strategy={s: {"_default": 0.04} for s in ("s1", "s2", "s3", "s4")},
         max_effective_leverage=max_effective_leverage,
 
 
@@ -288,8 +289,14 @@ def make_s1_config(
         "SOLUSDT": {"long": {"k1": 3.4,  "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
                     "short": {"k1": 3.4, "b": -2.0, "cooldown_sec": int(1.5 * _H),  "max_concurrent": MC}},
         "XRPUSDT": {"long": {"k1": 2.55, "b": -0.4, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
+        # XAUTUSDT(테더골드) — S1추세 양방향 🟢 (HANDOFF_S1_trend). 크립토 추세셋 중 강함.
+        "XAUTUSDT": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC},
+                     "short": {"k1": 3.5, "b": 0.8,  "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
     }
     TREND_MT5: dict[str, dict] = {
+        # BTCUSD·ETHUSD 1분 S1추세롱 🟢 (HANDOFF_S1_trend). Bybit BTCUSDT와 별개 거래소/계좌.
+        "BTCUSD": {"long": {"k1": 3.25, "b": -2.0, "cooldown_sec": int(2.75 * _H), "max_concurrent": MC}},
+        "ETHUSD": {"long": {"k1": 3.5,  "b": 1.6,  "cooldown_sec": int(1.75 * _H), "max_concurrent": MC}},
         "US100":  {"long": {"k1": 2.8,  "b": -1.8, "cooldown_sec": int(2.75 * _H), "max_concurrent": MC}},
         "JP225":  {"long": {"k1": 3.35, "b": -2.0, "cooldown_sec": int(2.0 * _H),  "max_concurrent": MC},
                    "short": {"k1": 3.25,"b": 0.8,  "cooldown_sec": int(1.25 * _H), "max_concurrent": MC}},
@@ -369,6 +376,8 @@ def make_s2_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
         "SOLUSDT": {"long": {"k1": 3.3, "b": 1.8,  "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
         "XRPUSDT": {"long": {"k1": 3.5, "b": -0.4, "cooldown_sec": int(2.25 * _H), "max_concurrent": MC},
                     "short": {"k1": 5.0,"b": -2.0, "cooldown_sec": int(0.5 * _H),  "max_concurrent": MC}},
+        # XAUTUSDT 역추세롱 🟢 (HANDOFF_S2_reversion). 숏은 ❌ → 롱만.
+        "XAUTUSDT": {"long": {"k1": 2.75,"b": -1.8, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC}},
     }
     return make_s1_config(name="bybit", params_by_symbol=REV_BYBIT, strategy="s2",
                           avg_down=True, signal_only=signal_only, **kw)
@@ -379,6 +388,8 @@ def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     _H = 3600
     MC = 200
     REV_MT5 = {
+        # BTCUSD 1분 S2역추세롱 🟢 (HANDOFF_S2_reversion). ETHUSD 역추세는 ⚪ → 추세(TREND_MT5)만.
+        "BTCUSD": {"long": {"k1": 3.5, "b": -2.0, "cooldown_sec": int(2.25 * _H), "max_concurrent": MC}},
         "US100":  {"long": {"k1": 3.25,"b": -0.8, "cooldown_sec": int(1.5 * _H), "max_concurrent": MC}},
         "JP225":  {"long": {"k1": 2.7, "b": -2.0, "cooldown_sec": int(3.0 * _H),  "max_concurrent": MC},
                    "short": {"k1": 3.8,"b": 1.0,  "cooldown_sec": int(0.75 * _H), "max_concurrent": MC}},
@@ -453,6 +464,88 @@ def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
                           s1_max_hold_sec=30 * _D, **kw)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 일봉(D1) 크립토(Bybit) 채널 — HANDOFF_DAILY_MT5 §3b. namespace "cryptod"(별도).
+#   ⚠️ 1분(bybit)과 네임스페이스 분리 필수: 포지션 lot·open_signals 인덱스가 (namespace,symbol,side)
+#      키라 전략 미포함 → 같은 네임스페이스면 1분 봇이 일봉 포지션을 자기 청산로직으로 EXIT시킴(충돌). fxd와 동일 이유.
+#   win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D". 거래는 executor-a1(Bybit)이 s3/s4 태그로 2% 사이징.
+# ─────────────────────────────────────────────────────────────────────────────
+def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 크립토 추세(S3). 롱=z≥+K1 / 숏=z≤−K1. §3b 🟢 추세픽(양방향)."""
+    CRYPTOD_TREND = {
+        "BTCUSDT": {"long": {"k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 8},
+                    "short": {"k1": 2.4,"b": 0.2,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
+        "ETHUSDT": {"long": {"k1": 2.6, "b": -1.4, "cooldown_sec": 1 * _D, "max_concurrent": 15},
+                    "short": {"k1": 1.6,"b": -0.8, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
+        "SOLUSDT": {"long": {"k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
+                    "short": {"k1": 1.7,"b": 0.2,  "cooldown_sec": 2 * _D, "max_concurrent": 8}},
+        "XRPUSDT": {"long": {"k1": 3.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
+                    "short": {"k1": 1.6,"b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
+    }
+    return make_s1_config(name="cryptod", params_by_symbol=CRYPTOD_TREND, strategy="s3",  # 별도 네임스페이스(포지션 격리 필수), 태그=s3
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 크립토 역추세(S4). 롱=z≤−K1 / 숏=z≥+K1. §3b 🟢 역추세픽. ETHUSDT는 역추세 ⚪ → 제외."""
+    CRYPTOD_REV = {
+        "BTCUSDT": {"long": {"k1": 1.3, "b": 1.2,  "cooldown_sec": 7 * _D, "max_concurrent": 3}},
+        "SOLUSDT": {"long": {"k1": 2.3, "b": 1.6,  "cooldown_sec": 1 * _D, "max_concurrent": 14}},
+        "XRPUSDT": {"long": {"k1": 2.4, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 8},
+                    "short": {"k1": 1.0,"b": -0.4, "cooldown_sec": 10 * _D, "max_concurrent": 2}},
+    }
+    return make_s1_config(name="cryptod", params_by_symbol=CRYPTOD_REV, strategy="s4",  # 별도 네임스페이스(포지션 격리 필수), 태그=s4
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 일봉(D1) MT5 비환율 채널 — HANDOFF_DAILY_MT5 §3. namespace "mt5d"(별도, 1분 mt5와 분리 필수 — 위 cryptod 사유 동일).
+#   win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D".
+#   거래는 executor-a2(MT5)가 s3/s4 태그로 비환율 2% 사이징. ⚠️ 2% 엄수(5%는 청산).
+# ─────────────────────────────────────────────────────────────────────────────
+def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 MT5 비환율 추세(S3). §3 🟢 추세픽(양방향). 크립토CFD·금속이 주력."""
+    MT5D_TREND = {
+        "BTCUSD": {"long": {"k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 8},
+                   "short": {"k1": 2.4,"b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "ETHUSD": {"long": {"k1": 2.0, "b": -2.4, "cooldown_sec": 5 * _D, "max_concurrent": 3},
+                   "short": {"k1": 1.6,"b": -0.2, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
+        "XAGUSD": {"long": {"k1": 2.3, "b": 0.8,  "cooldown_sec": 2 * _D, "max_concurrent": 7}},
+        "XAUUSD": {"long": {"k1": 2.2, "b": -1.4, "cooldown_sec": 3 * _D, "max_concurrent": 5}},
+        "WTI":    {"long": {"k1": 1.5, "b": -3.0, "cooldown_sec": 7 * _D, "max_concurrent": 3},
+                   "short": {"k1": 2.3,"b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
+        "US100":  {"long": {"k1": 1.2, "b": -1.8, "cooldown_sec": 10 * _D, "max_concurrent": 2}},
+        "JP225":  {"long": {"k1": 2.5, "b": 0.8,  "cooldown_sec": 1 * _D, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="mt5d", params_by_symbol=MT5D_TREND, strategy="s3",  # 별도 네임스페이스(포지션 격리 필수), 태그=s3
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_mt5_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """일봉 MT5 비환율 역추세(S4). §3 🟢 역추세픽. 지수·원유가 주력."""
+    MT5D_REV = {
+        "BTCUSD": {"long": {"k1": 1.0, "b": 0.0,  "cooldown_sec": 10 * _D, "max_concurrent": 2}},
+        "XAGUSD": {"long": {"k1": 2.0, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 12}},
+        "XAUUSD": {"long": {"k1": 2.1, "b": -2.2, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "WTI":    {"long": {"k1": 1.7, "b": 0.8,  "cooldown_sec": 3 * _D, "max_concurrent": 5}},
+        "US100":  {"long": {"k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 12}},
+        "JP225":  {"long": {"k1": 1.7, "b": -0.8, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "GER40":  {"long": {"k1": 2.3, "b": -0.4, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "UK100":  {"long": {"k1": 1.7, "b": -0.8, "cooldown_sec": 2 * _D, "max_concurrent": 7}},
+        "HK50":   {"long": {"k1": 2.1, "b": -2.8, "cooldown_sec": 1 * _D, "max_concurrent": 11}},
+    }
+    return make_s1_config(name="mt5d", params_by_symbol=MT5D_REV, strategy="s4",  # 별도 네임스페이스(포지션 격리 필수), 태그=s4
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=90, candle_interval="D", candles_num=250,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
 def make_mt5_signal_config(
     *,
     indicator_min_thr: float = 0.005,
@@ -495,13 +588,15 @@ def make_mt5_signal_config(
         leverage=50,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
-        # ✅ (전략,심볼)별 진입%: 일봉(s3/s4) MT5 심볼=2%(0.04), FX는 _default 5%(0.1).
-        #   1분봉(s1/s2)은 맵에 없음 → entry_percent(5%) fallback. (5%=0.1, 2%=0.04)
+        # ✅ (전략,심볼)별 진입%:
+        #   1분봉(s1/s2) = 전부 2%(0.04) — 마스터 §5 저사이징(건당 1~2%). FX 포함.
+        #   일봉(s3/s4) = MT5 비환율 10종 2%(0.04) / FX는 _default 5%(0.1). (5%=0.1, 2%=0.04)
         entry_percent_by_strategy={
-            s: {"_default": 0.1,  # 일봉 FX 5% 유지
-                "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
-                "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
-            for s in ("s3", "s4")  # 일봉 추세/역추세. MT5 10종=2%
+            **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉 전부 2%
+            **{s: {"_default": 0.1,  # 일봉 FX 5% 유지
+                   "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
+                   "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
+               for s in ("s3", "s4")},  # 일봉 추세/역추세. MT5 비환율 10종=2%
         },
 
         max_effective_leverage=10.0,
