@@ -89,10 +89,14 @@ class TelegramLogHandler(logging.Handler):
                     side = obj.get("side")
 
                     price = obj.get("price")
-                    ma100 = obj.get("ma100")
-                    d_pct = obj.get("ma_delta_pct") or 0
                     pnl_pct = obj.get("pnl_pct")
                     entry_price = obj.get("entry_price")
+                    # ✅ 시그마(S1~S4) 필드 — basic(MA100) 퇴출로 모든 신호가 시그마
+                    z = obj.get("z")
+                    k1 = obj.get("k1")
+                    b_ = obj.get("b")
+                    tp_price = obj.get("tp_price")
+                    sl_price = obj.get("sl_price")
 
                     dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
 
@@ -119,12 +123,6 @@ class TelegramLogHandler(logging.Handler):
                         except Exception:
                             return "N/A"
 
-                    pct_txt = "N/A"
-                    try:
-                        pct_txt = f"{float(d_pct):+.2f}%"
-                    except Exception:
-                        pass
-
                     # ✅ 1줄: 헤드라인(짧게)
                     headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
 
@@ -140,29 +138,40 @@ class TelegramLogHandler(logging.Handler):
                         except Exception:
                             pass
 
-                    # ✅ 3줄: p/M100/Δ
-                    line_stats = (
-                        f"p: {_fmt1(price, dp)}  "
-                        f"M100: {_fmt1(ma100, dp)}  "
-                        f"({pct_txt})"
-                    )
-
-                    # ✅ 4줄: entry (EXIT만)
-                    entry_line = ""
-                    if kind == "EXIT":
+                    # ✅ 3줄: 가격 + z(진입) / entry(청산). M100은 시그마 무관이라 제거.
+                    stats_parts = [f"p: {_fmt1(price, dp)}"]
+                    if kind == "ENTRY":
+                        try:
+                            if z is not None:
+                                ztxt = f"z: {float(z):+.2f}"
+                                if k1 is not None:
+                                    ztxt += f" (K{k1}" + (f"/B{b_}" if b_ is not None else "") + ")"
+                                stats_parts.append(ztxt)
+                        except Exception:
+                            pass
+                    else:  # EXIT
                         try:
                             if entry_price not in (None, "", 0, 0.0):
-                                entry_line = f"entry: {_fmt1(entry_price, dp)}"
+                                stats_parts.append(f"entry: {_fmt1(entry_price, dp)}")
                         except Exception:
-                            entry_line = ""
+                            pass
+                    line_stats = "  ".join(stats_parts)
+
+                    # ✅ 4줄: TP/SL 레벨(진입신호에 매칭된 청산 기준 — 시그마 payload에 항상 포함)
+                    levels_line = ""
+                    try:
+                        if tp_price not in (None, "") and sl_price not in (None, ""):
+                            levels_line = f"TP {_fmt1(tp_price, dp)} / SL {_fmt1(sl_price, dp)}"
+                    except Exception:
+                        levels_line = ""
 
                     # ✅ 최종 조합
                     lines = [headline]
                     if line_reason:
                         lines.append(line_reason)
                     lines.append(line_stats)
-                    if entry_line:
-                        lines.append(entry_line)
+                    if levels_line:
+                        lines.append(levels_line)
 
                     text = "\n".join(lines)
 
