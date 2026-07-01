@@ -93,7 +93,9 @@ class TradeExecutor:
         k0 = next(iter(wallet.keys()), "")
         return (k0 or "ACC"), float(wallet.get(k0) or 0.0) if k0 else 0.0
 
-    ENTRY_MAX_MULT = 4   # 1진입 단계 상향 상한: base(5%)×4 = 20%까지 (소액 자본 최소주문 대응)
+    ENTRY_MAX_MULT = 8   # 1진입 단계 상향 상한: base×8까지 (소액 자본 최소주문 대응).
+    #   최소주문 처음 충족하는 최소 단계에서 멈춤 → 포지션은 항상 min-qty 크기(상한↑=진입가능 심볼↑, 크기↑ 아님).
+    #   예: BTCUSDT(Bybit) 잔고 443·2%base → mult7(≈0.001 BTC)에서 최소주문 충족. (4로는 미달=skip이었음)
 
     def calc_entry_qty_for_symbol(self, symbol: str, side_u: str, *, strategy: Optional[str] = None) -> tuple[float, dict]:
         sym = symbol.upper().strip()
@@ -113,7 +115,7 @@ class TradeExecutor:
         rules = self._get_rules(sym) or {}
         min_qty = float(rules.get("minOrderQty") or 0.0) or float(rules.get("qtyStep") or 0.0) or 0.0
 
-        # 5%→10→15→20%(base×1..4) 단계 상향: 최소수량 충족하는 최소 단계 채택. 20%로도 미달이면 0(skip).
+        # base×1..8 단계 상향: 최소수량 충족하는 최소 단계 채택. 8배로도 미달이면 0(skip).
         qty, used_pct, raw = 0.0, base_pct, 0.0
         for mult in range(1, int(self.ENTRY_MAX_MULT) + 1):
             pct = base_pct * mult
@@ -185,7 +187,7 @@ class TradeExecutor:
         if lev <= 0:
             raise RuntimeError(f"[preflight] {sym}: leverage invalid ({lev})")
 
-        # 1진입은 base(5%)→최대 20%(×ENTRY_MAX_MULT)까지 상향 가능 → 최대치로도 최소 못 넘기면 진입 불가
+        # 1진입은 base→최대 base×ENTRY_MAX_MULT(=8배)까지 상향 가능 → 최대치로도 최소 못 넘기면 진입 불가
         max_pct = entry_percent * float(self.ENTRY_MAX_MULT)
         entry_notional_max = bal * (max_pct / 100.0) * lev
 
