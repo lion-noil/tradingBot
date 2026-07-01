@@ -27,7 +27,7 @@ class MinEntryResult:
 class TradeExecutorDeps:
     get_asset: Callable[[], Dict[str, Any]]
     set_asset: Callable[[Dict[str, Any]], None]
-    get_entry_percent: Callable[[str], float]
+    get_entry_percent: Callable[..., float]  # (symbol) 또는 (symbol, strategy) — 후자로 (전략,심볼)별 %
     get_max_effective_leverage: Callable[[], float]
     save_asset: Callable[[Dict[str, Any], Optional[str]], None]
     save_trade_record: Callable[[Dict[str, Any]], None]
@@ -95,10 +95,10 @@ class TradeExecutor:
 
     ENTRY_MAX_MULT = 4   # 1진입 단계 상향 상한: base(5%)×4 = 20%까지 (소액 자본 최소주문 대응)
 
-    def calc_entry_qty_for_symbol(self, symbol: str, side_u: str) -> tuple[float, dict]:
+    def calc_entry_qty_for_symbol(self, symbol: str, side_u: str, *, strategy: Optional[str] = None) -> tuple[float, dict]:
         sym = symbol.upper().strip()
         ccy, bal = self._pick_wallet_balance()
-        base_pct = float(self.deps.get_entry_percent(sym) or 0.0)
+        base_pct = float(self.deps.get_entry_percent(sym, strategy) or 0.0)
         lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
 
         fn = getattr(self.rest, "calc_notional_per_qty_account", None)
@@ -670,6 +670,7 @@ class TradeExecutor:
             price: float,
             *,
             entry_signal_id: Optional[str] = None,
+            strategy: Optional[str] = None,  # ✅ (전략,심볼)별 진입% 조회용
     ) -> None:
         side_u = (side or "").upper().strip()
         if side_u not in ("LONG", "SHORT"):
@@ -691,8 +692,8 @@ class TradeExecutor:
                     )
                 return
 
-        # ✅ 명목가치 기반 qty 계산
-        qty, qmeta = self.calc_entry_qty_for_symbol(symbol, side_u)
+        # ✅ 명목가치 기반 qty 계산 (전략별 진입% 반영)
+        qty, qmeta = self.calc_entry_qty_for_symbol(symbol, side_u, strategy=strategy)
 
         if qty <= 0:
             if self.system_logger:

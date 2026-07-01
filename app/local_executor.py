@@ -473,8 +473,19 @@ def build_ctx(engine: str) -> ExecContext:
         asset=asset,
     )
 
-    def _get_entry_percent_for_symbol(symbol: str) -> float:
+    def _get_entry_percent_for_symbol(symbol: str, strategy: str = None) -> float:
+        # (전략,심볼) → 전략 _default → 심볼 → 전역 순으로 진입% 조회.
+        #   1분봉(s1/s2)과 일봉(s3/s4)이 같은 심볼이라도 다른 %를 갖게 함(일봉 MT5=2% 등).
         sym = (symbol or "").upper().strip()
+        strat = (strategy or "").lower().strip()
+        bys = getattr(cfg, "entry_percent_by_strategy", None) or {}
+        if strat and strat in bys:
+            sd = bys[strat] or {}
+            v = sd.get(sym)
+            if v is None:
+                v = sd.get("_default")
+            if v is not None:
+                return max(0.001, float(v))
         m = getattr(cfg, "entry_percent_by_symbol", None) or {}
         v = m.get(sym)
         if v is None:
@@ -505,7 +516,7 @@ def build_ctx(engine: str) -> ExecContext:
     deps = TradeExecutorDeps(
         get_asset=lambda: ctx.asset,
         set_asset=lambda a: (ctx.asset.clear(), ctx.asset.update(a or {})),
-        get_entry_percent=lambda sym: _get_entry_percent_for_symbol(sym),
+        get_entry_percent=lambda sym, strat=None: _get_entry_percent_for_symbol(sym, strat),
         get_max_effective_leverage=lambda: float(max_eff),
         save_asset=lambda a, sym: save_asset(state_ns_engine, rest, a, sym),
         save_trade_record=lambda data: save_trade_record(state_ns_engine, data),
@@ -658,6 +669,7 @@ async def handle_action(msg: Dict[str, Any]) -> None:
             side,
             float(price),
             entry_signal_id=str(signal_id),
+            strategy=strat,  # ✅ (전략,심볼)별 진입% — 일봉(s3/s4)=2% 등
         )
         system_logger.debug(
             build_asset_log_with_lots(

@@ -82,6 +82,9 @@ class TradeConfig:
 
     # ✅ 심볼별 진입 퍼센트 (없으면 entry_percent 사용)
     entry_percent_by_symbol: Dict[str, float] = field(default_factory=dict)
+    # ✅ (전략,심볼)별 진입 퍼센트 {strategy: {SYM: pct, "_default": pct}}. executor가 액션 strategy로 조회.
+    #   1분봉(s1/s2)·일봉(s3/s4)이 같은 심볼이라도 다른 %(일봉 MT5=2% 등). 비면 심볼/전역 fallback.
+    entry_percent_by_strategy: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     # 인디케이터
     indicator_min_thr: float = 0.005
@@ -230,6 +233,8 @@ def make_bybit_config(
         leverage=leverage,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
+        # ✅ (전략,심볼)별 진입%: 일봉 Bybit 크립토(s3/s4)=2%(0.04). 1분봉(s1/s2)은 맵에 없어 5% fallback.
+        entry_percent_by_strategy={s: {"_default": 0.04} for s in ("s3", "s4")},
         max_effective_leverage=max_effective_leverage,
 
 
@@ -490,6 +495,14 @@ def make_mt5_signal_config(
         leverage=50,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
+        # ✅ (전략,심볼)별 진입%: 일봉(s3/s4) MT5 심볼=2%(0.04), FX는 _default 5%(0.1).
+        #   1분봉(s1/s2)은 맵에 없음 → entry_percent(5%) fallback. (5%=0.1, 2%=0.04)
+        entry_percent_by_strategy={
+            s: {"_default": 0.1,  # 일봉 FX 5% 유지
+                "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
+                "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
+            for s in ("s3", "s4")  # 일봉 추세/역추세. MT5 10종=2%
+        },
 
         max_effective_leverage=10.0,
 
