@@ -98,11 +98,9 @@ class TradeConfig:
     # signal_only (True면 시그널만, 실제 주문 X)
     signal_only: bool = False
 
-    # ✅ 전략 선택: "basic"(기존 MA100 리버전) | "s1"(σ-복귀 롱)
-    strategy: str = "basic"
-    # basic 전략의 롱/숏 진입 on/off. 롱=S1, 숏=S2로 분리하면 둘 다 False(basic 은퇴). True=종전대로.
-    basic_long_enabled: bool = True
-    basic_short_enabled: bool = True
+    # ✅ 전략 선택: "s1"(σ추세)/"s2"(σ역추세)/"s3"(일봉추세)/"s4"(일봉역추세).
+    #   basic(MA100 리버전)은 퇴출됨 — 시그마 파라미터 없는 엔진(bybit/mt5)은 config publish/상태표시 전용(무매매).
+    strategy: str = "s1"
     # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
     s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
@@ -225,6 +223,7 @@ def make_bybit_config(
 
     cfg = TradeConfig(
         name="bybit",               # 🔹 Bybit용 네임스페이스
+        strategy="none",            # 🔹 매매 안 함(basic 퇴출) — config publish/상태표시 전용. 매매는 s1/s2가 담당
         symbols=list(symbols),
 
         ws_stale_sec=ws_stale_sec,
@@ -247,8 +246,6 @@ def make_bybit_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=signal_only,
-        basic_long_enabled=False,   # 🔴 롱=S1, 숏=S2로 분리 → basic 은퇴
-        basic_short_enabled=False,
     )
     return cfg.normalized()
 
@@ -579,6 +576,7 @@ def make_mt5_signal_config(
 
     cfg = TradeConfig(
         name="mt5",
+        strategy="none",            # 🔹 매매 안 함(basic 퇴출) — config publish/상태표시 전용. 매매는 s1/s2가 담당
         symbols=list(symbols),
 
         ws_stale_sec=30.0,
@@ -610,7 +608,5 @@ def make_mt5_signal_config(
 
         min_ma_threshold=min_ma_threshold,
         signal_only=False,
-        basic_long_enabled=False,   # 🔴 롱=S1, 숏=S2로 분리 → basic 은퇴
-        basic_short_enabled=False,
     )
     return cfg.normalized()

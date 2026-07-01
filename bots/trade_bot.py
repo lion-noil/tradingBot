@@ -107,7 +107,6 @@ class TradeBot:
 
         # bootstrap
         self.market.bootstrap(symbols=self.symbols)
-        self._last_scaleout_ts_ms: dict[tuple[str, str], int] = {}
         self._last_exit_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 쿨다운용(구; exit 기준)
         self._last_entry_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 v2 진입기준 쿨다운용
         # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
@@ -117,7 +116,6 @@ class TradeBot:
         # 전역 heartbeat가 살아있어 여기 안 걸린다.
         self._ws_link_down_since: float | None = None  # monotonic, 링크 stale 시작 시각
         self._ws_link_alerted: bool = False            # 현재 끊김 구간에 대해 경보 보냈는지
-        self._warmup_last_scaleout_ts()
 
         self.open_signals_index = OpenSignalsIndex()
         self.open_signals_index.load_from_redis(
@@ -125,7 +123,7 @@ class TradeBot:
             symbols=self.symbols,
         )
 
-        _strat = (getattr(self.config, "strategy", "basic") or "basic").lower()
+        _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
         if _strat == "s1":
             self._warmup_s1_last_exit()
         if _strat in ("s1", "s2", "s3", "s4"):  # s1/s2=1분, s3/s4=일봉
@@ -135,28 +133,6 @@ class TradeBot:
         self.signal_processor = SignalProcessor(
             system_logger=self.system_logger,
             deps=SignalProcessorDeps(
-                get_now_ma100=lambda s: self.state.now_ma100.get(s),
-                get_prev3_candle=lambda s: self.state.prev3_candle.get(s),
-                get_ma_threshold=lambda s: (
-                    self.state.ma_threshold.get(s)
-                    if self.state.ma_check_enabled.get(s, True)
-                    else None
-                ),
-                get_momentum_threshold=lambda s: self.state.momentum_threshold.get(s),
-
-                get_position_max_hold_sec=lambda: self.config.position_max_hold_sec,
-                get_near_touch_window_sec=lambda: self.config.near_touch_window_sec,
-                get_open_signal_items=lambda sym, side: [
-                    it for it in self.open_signals_index.list_open(
-                        namespace=self.namespace, symbol=sym, side=side.upper(), newest_first=True)
-                    if (len(it) < 4 or (it[3] or "").upper() != "S1")  # S1 포지션은 basic 로직에서 제외
-                ],
-
-                get_last_scaleout_ts_ms=lambda sym, side: self._last_scaleout_ts_ms.get(
-                    ((sym or "").upper(), (side or "").upper())),
-                set_last_scaleout_ts_ms=lambda sym, side, ts_ms: self._last_scaleout_ts_ms.__setitem__(
-                    ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
-
                 log_signal=lambda sym, side, kind, price, sig: record_and_index_signal(
                     namespace=self.namespace,
                     open_index=self.open_signals_index,
@@ -170,7 +146,7 @@ class TradeBot:
                     trading_logger=self.trading_logger,
                 ),
 
-                # ✅ S1 전용 deps (strategy="s1"일 때만 사용; basic은 호출 안 함)
+                # ✅ 시그마(S1~S4) 전용 deps
                 get_recent_closes=lambda s: [
                     c["close"] for c in self.candle.get_candles(s) if c.get("close") is not None
                 ],
@@ -187,9 +163,7 @@ class TradeBot:
                 set_last_entry_ts_ms=lambda sym, side, ts_ms: self._last_entry_ts_ms.__setitem__(
                     ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
             ),
-            strategy=getattr(self.config, "strategy", "basic"),
-            basic_long_enabled=bool(getattr(self.config, "basic_long_enabled", True)),
-            basic_short_enabled=bool(getattr(self.config, "basic_short_enabled", True)),
+            strategy=getattr(self.config, "strategy", "s1"),
             s1_params=S1Params(
                 win=int(getattr(self.config, "s1_win", 10080)),
                 k1=float(getattr(self.config, "s1_k1", 2.5)),
@@ -235,57 +209,6 @@ class TradeBot:
             extract_fn=extract_market_status_summary,
             should_fn=should_log_update_market,
         )
-
-    def _warmup_last_scaleout_ts(self, *, lookback_sec: int = 30 * 60, count: int = 2000):
-        key = f"trading:{self.namespace}:signals"
-        now_ms = int(time.time() * 1000)
-        min_ms = now_ms - int(lookback_sec) * 1000
-
-        # 최신부터 역순으로 긁기
-        # stream id는 "ms-seq" 형태라 대략 ms와 비슷
-        min_id = f"{min_ms}-0"
-        rows = redis_client.xrevrange(key, max="+", min=min_id, count=count) or []
-
-        def decode_fields(fields: dict) -> dict[str, str]:
-            out = {}
-            for k, v in (fields or {}).items():
-                if isinstance(k, (bytes, bytearray)):
-                    k = k.decode("utf-8", "ignore")
-                if isinstance(v, (bytes, bytearray)):
-                    v = v.decode("utf-8", "ignore")
-                out[str(k)] = str(v)
-            return out
-
-        for sid, fields in rows:
-            is_scaleout = False  # ✅ 매 루프마다 초기화
-
-            f = decode_fields(fields)
-            kind = (f.get("kind") or "").upper()
-            if kind != "EXIT":
-                continue
-            rj = f.get("reasons_json") or ""
-            if "SCALE_OUT" in rj:
-                is_scaleout = True
-
-            sym = (f.get("symbol") or "").upper()
-            side = (f.get("side") or "").upper()
-            ts_ms = f.get("ts_ms")
-            if ts_ms is None:
-                continue
-
-            try:
-                ts_ms_i = int(ts_ms)
-            except Exception:
-                continue
-
-            if not is_scaleout:
-                continue
-
-            if sym and side:
-                k = (sym, side)
-                # 최신부터 읽으니까, 처음 발견한 게 최신임
-                if k not in self._last_scaleout_ts_ms:
-                    self._last_scaleout_ts_ms[k] = ts_ms_i
 
     def _warmup_s1_last_exit(self, *, count: int = 5000):
         """S1 쿨다운 복원: 쿨다운 기간만큼 거슬러 올라가 (sym,side)별 최신 EXIT ts 적재."""
@@ -495,7 +418,7 @@ class TradeBot:
                             "signal_id": act.signal_id,
                             "close_open_signal_id": getattr(act, "close_open_signal_id", None),
                             # ✅ executor 실행 게이트용: 전략명 + signal_only(미검증 전략은 신호만, 실주문 X)
-                            "strategy": (getattr(self.config, "strategy", "basic") or "basic"),
+                            "strategy": (getattr(self.config, "strategy", "s1") or "s1"),
                             "signal_only": bool(getattr(self.config, "signal_only", False)),
                         })
 
