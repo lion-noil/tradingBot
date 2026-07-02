@@ -126,10 +126,11 @@ class TelegramLogHandler(logging.Handler):
                     # ✅ 1줄: 헤드라인(짧게)
                     headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
 
-                    # ✅ 2줄: (reason) (PNL ...)
+                    # ✅ 2줄: (reason) (PNL ...) — 추매(ADD)는 새 게임과 구분 표시
                     line_reason = ""
                     if reason0:
-                        line_reason += f"({reason0})"
+                        _is_add = isinstance(reasons, list) and any(str(x).upper() == "ADD" for x in reasons[1:])
+                        line_reason += f"({reason0} 추매)" if _is_add else f"({reason0})"
 
                     if kind == "EXIT":
                         try:
