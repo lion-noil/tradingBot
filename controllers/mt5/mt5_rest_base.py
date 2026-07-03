@@ -1,5 +1,6 @@
 # controllers/mt5/mt5_rest_base.py
 import json
+import time
 from typing import Any, Dict, Optional
 import requests
 
@@ -29,6 +30,12 @@ class Mt5RestBase:
         self.api_key = api_key
         self._symbol_rules: dict[str, dict] = {}
         self.symbol_map = symbol_map  # SymbolAliasMap | None
+        # ✅ 가격 API 지속-장애 격상: transient는 DEBUG로 조용하지만, 마지막 성공 후
+        #   NET_ALERT_AFTER_SEC 이상 계속 실패하면 ERROR 1회(텔레그램) + 복구 시 INFO 1회.
+        #   (몇초 blip=침묵 / 진짜 장애=경보 — 콜드스타트 백필 버스트(~1분)는 임계 아래)
+        self.NET_ALERT_AFTER_SEC = 300.0
+        self._net_ok_ts: float = time.time()
+        self._net_alerted: bool = False
 
     def _broker_sym(self, symbol: str) -> str:
         """Canonical → broker symbol. No-op if no mapping set."""
@@ -108,9 +115,18 @@ class Mt5RestBase:
                 transient = any(t in es for t in (
                     "502", "503", "530", "Max retries", "resolve", "Connection",
                     "timed out", "RemoteDisconnected", "Bad Gateway", "Tunnel"))
-                log = self.system_logger.debug if (transient and use == "price") \
-                    else self.system_logger.error
-                log(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
+                if transient and use == "price":
+                    # ✅ 지속-장애 격상: 마지막 성공 후 임계 초과면 침묵하지 않고 1회 경보
+                    down_sec = time.time() - self._net_ok_ts
+                    if down_sec >= self.NET_ALERT_AFTER_SEC and not self._net_alerted:
+                        self._net_alerted = True
+                        self.system_logger.error(
+                            f"🚨 [MT5 REST] 가격 API {int(down_sec)}초째 연속 실패 — "
+                            f"서버/터널 점검 필요 (마지막 오류: {es[:120]})")
+                    else:
+                        self.system_logger.debug(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
+                else:
+                    self.system_logger.error(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
             raise
 
         if resp.status_code != 200:
@@ -119,6 +135,14 @@ class Mt5RestBase:
                     f"[MT5 REST] HTTP {resp.status_code} use={use} {resp.text[:200]}"
                 )
             resp.raise_for_status()
+
+        # ✅ 가격 API 정상 응답 → 장애 타이머 리셋(+격상 경보 났었으면 복구 알림 1회)
+        if use == "price":
+            self._net_ok_ts = time.time()
+            if self._net_alerted:
+                self._net_alerted = False
+                if self.system_logger:
+                    self.system_logger.info("✅ [MT5 REST] 가격 API 복구됨")
 
         try:
             return resp.json()
