@@ -248,6 +248,7 @@ class SignalProcessor:
                     "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag, "ADD"],
                     "price": price, "z": z, "ma": ma, "sd": sd,
                     "tp_price": a_tp, "sl_price": a_sl, "k1": p.k1, "b": p.b,
+                    "cooldown_sec": int(p.cooldown_sec),
                     "game_id": gid,
                 }
                 sigid, _ = self._record(symbol, side, "ENTRY", price, payload)
@@ -261,6 +262,7 @@ class SignalProcessor:
                 "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag],
                 "price": price, "z": z, "ma": ma, "sd": sd,
                 "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
+                "cooldown_sec": int(p.cooldown_sec),
             }
             signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
             if self.deps.set_last_entry_ts_ms:   # 글로벌 쿨다운 = 새 게임 기준(엔진 last)

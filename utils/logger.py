@@ -97,6 +97,22 @@ class TelegramLogHandler(logging.Handler):
                     b_ = obj.get("b")
                     tp_price = obj.get("tp_price")
                     sl_price = obj.get("sl_price")
+                    cooldown_sec = obj.get("cooldown_sec")
+
+                    def _fmt_cd(sec):
+                        """쿨다운 사람 읽기 좋게: 일봉=Xd, 1분봉=X.Xh(정수면 Xh), <1h=Xm."""
+                        try:
+                            s = int(sec)
+                        except Exception:
+                            return None
+                        if s <= 0:
+                            return None
+                        if s % 86400 == 0:
+                            return f"{s // 86400}d"
+                        if s >= 3600:
+                            h = s / 3600.0
+                            return f"{h:g}h"
+                        return f"{s // 60}m"
 
                     dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
 
@@ -146,7 +162,11 @@ class TelegramLogHandler(logging.Handler):
                             if z is not None:
                                 ztxt = f"z: {float(z):+.2f}"
                                 if k1 is not None:
-                                    ztxt += f" (K{k1}" + (f"/B{b_}" if b_ is not None else "") + ")"
+                                    _cd = _fmt_cd(cooldown_sec)
+                                    ztxt += (f" (K{k1}"
+                                             + (f"/B{b_}" if b_ is not None else "")
+                                             + (f"/cd{_cd}" if _cd else "")
+                                             + ")")
                                 stats_parts.append(ztxt)
                         except Exception:
                             pass
