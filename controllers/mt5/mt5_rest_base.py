@@ -100,7 +100,17 @@ class Mt5RestBase:
                 )
         except requests.RequestException as e:
             if self.system_logger:
-                self.system_logger.error(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
+                # 일시적 네트워크 오류(타임아웃/502/503/530/DNS/연결끊김)의 시세 조회(use=price)는
+                # 다음 tick에 자동 재시도되므로 무해 → DEBUG(텔레 억제). 재시작 직후 캔들 풀백필이
+                # 서버를 점유해 가격조회가 잠깐 밀리는 콜드스타트 버스트가 대표 사례.
+                # 주문/계좌(use=trade)는 실주문 관련이라 transient여도 ERROR 유지.
+                es = str(e)
+                transient = any(t in es for t in (
+                    "502", "503", "530", "Max retries", "resolve", "Connection",
+                    "timed out", "RemoteDisconnected", "Bad Gateway", "Tunnel"))
+                log = self.system_logger.debug if (transient and use == "price") \
+                    else self.system_logger.error
+                log(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
             raise
 
         if resp.status_code != 200:
