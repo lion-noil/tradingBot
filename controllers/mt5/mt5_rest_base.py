@@ -36,6 +36,21 @@ class Mt5RestBase:
         self.NET_ALERT_AFTER_SEC = 300.0
         self._net_ok_ts: float = time.time()
         self._net_alerted: bool = False
+        # 터널/원진 일시장애로 나오는 HTTP 상태(cloudflare 5xx 계열) — price는 transient 취급
+        self.TRANSIENT_HTTP = {502, 503, 504, 520, 521, 522, 524, 530}
+
+    def _note_price_net_fail(self, desc: str) -> None:
+        """가격 API 일시 실패 공통 처리: 평소 DEBUG, 마지막 성공 후 임계 초과면 ERROR 1회 격상."""
+        if not self.system_logger:
+            return
+        down_sec = time.time() - self._net_ok_ts
+        if down_sec >= self.NET_ALERT_AFTER_SEC and not self._net_alerted:
+            self._net_alerted = True
+            self.system_logger.error(
+                f"🚨 [MT5 REST] 가격 API {int(down_sec)}초째 연속 실패 — "
+                f"서버/터널 점검 필요 (마지막 오류: {desc[:120]})")
+        else:
+            self.system_logger.debug(f"[MT5 REST] {desc[:200]}")
 
     def _broker_sym(self, symbol: str) -> str:
         """Canonical → broker symbol. No-op if no mapping set."""
@@ -116,24 +131,22 @@ class Mt5RestBase:
                     "502", "503", "530", "Max retries", "resolve", "Connection",
                     "timed out", "RemoteDisconnected", "Bad Gateway", "Tunnel"))
                 if transient and use == "price":
-                    # ✅ 지속-장애 격상: 마지막 성공 후 임계 초과면 침묵하지 않고 1회 경보
-                    down_sec = time.time() - self._net_ok_ts
-                    if down_sec >= self.NET_ALERT_AFTER_SEC and not self._net_alerted:
-                        self._net_alerted = True
-                        self.system_logger.error(
-                            f"🚨 [MT5 REST] 가격 API {int(down_sec)}초째 연속 실패 — "
-                            f"서버/터널 점검 필요 (마지막 오류: {es[:120]})")
-                    else:
-                        self.system_logger.debug(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
+                    # ✅ 평소 DEBUG, 지속 장애(임계 초과)면 1회 격상 — _note_price_net_fail
+                    self._note_price_net_fail(f"네트워크 예외(use={use}): {es}")
                 else:
                     self.system_logger.error(f"[MT5 REST] 네트워크 예외(use={use}): {e}")
             raise
 
         if resp.status_code != 200:
             if self.system_logger:
-                self.system_logger.warning(
-                    f"[MT5 REST] HTTP {resp.status_code} use={use} {resp.text[:200]}"
-                )
+                # ✅ 터널/원진 일시장애 상태코드(502/503/530 등)의 price 조회는 transient 취급:
+                #   평소 DEBUG + 지속 장애면 1회 격상. 그 외(4xx, trade 등)는 기존 WARNING.
+                if use == "price" and resp.status_code in self.TRANSIENT_HTTP:
+                    self._note_price_net_fail(f"HTTP {resp.status_code} use={use}")
+                else:
+                    self.system_logger.warning(
+                        f"[MT5 REST] HTTP {resp.status_code} use={use} {resp.text[:200]}"
+                    )
             resp.raise_for_status()
 
         # ✅ 가격 API 정상 응답 → 장애 타이머 리셋(+격상 경보 났었으면 복구 알림 1회)
