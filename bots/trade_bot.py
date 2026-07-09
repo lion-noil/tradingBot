@@ -174,7 +174,8 @@ class TradeBot:
             s1_params_by_symbol={
                 str(sym).upper(): {
                     str(dr).upper(): S1Params(
-                        win=int(getattr(self.config, "s1_win", 10080)),
+                        # ✅ 심볼×방향별 win (HANDOFF_MASTER v2: 일봉 창 60~200 재배정). 미지정 시 채널 s1_win.
+                        win=int(dd.get("win", getattr(self.config, "s1_win", 10080))),
                         k1=float(dd.get("k1", 2.5)), b=float(dd.get("b", 2.0)),
                         cooldown_sec=int(dd.get("cooldown_sec", 12 * 3600)),
                     )
