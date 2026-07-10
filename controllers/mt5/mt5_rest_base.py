@@ -30,24 +30,29 @@ class Mt5RestBase:
         self.api_key = api_key
         self._symbol_rules: dict[str, dict] = {}
         self.symbol_map = symbol_map  # SymbolAliasMap | None
-        # ✅ 가격 API 지속-장애 격상: transient는 DEBUG로 조용하지만, 마지막 성공 후
-        #   NET_ALERT_AFTER_SEC 이상 계속 실패하면 ERROR 1회(텔레그램) + 복구 시 INFO 1회.
-        #   (몇초 blip=침묵 / 진짜 장애=경보 — 콜드스타트 백필 버스트(~1분)는 임계 아래)
+        # ✅ 가격 API 지속-장애 격상: transient는 DEBUG로 조용하지만, "실패가 시작된 시점"부터
+        #   NET_ALERT_AFTER_SEC 이상 실패가 지속되면 ERROR 1회(텔레그램) + 복구 시 INFO 1회.
+        #   ⚠️ 기준은 '첫 실패 후 경과'지 '마지막 성공 후 경과'가 아님 — 일봉 봇은 REST를 시간당
+        #   1회만 써서 성공 간격이 원래 1시간이라, 성공 기준이면 blip 1번이 "1시간 장애"로 오발됨
+        #   (2026-07-10 fxd2 오발 실측: 3598초 경보 → 2초 뒤 복구).
         self.NET_ALERT_AFTER_SEC = 300.0
-        self._net_ok_ts: float = time.time()
+        self._net_fail_since: float | None = None   # 연속 실패 시작 시각(성공 시 리셋)
         self._net_alerted: bool = False
         # 터널/원진 일시장애로 나오는 HTTP 상태(cloudflare 5xx 계열) — price는 transient 취급
         self.TRANSIENT_HTTP = {502, 503, 504, 520, 521, 522, 524, 530}
 
     def _note_price_net_fail(self, desc: str) -> None:
-        """가격 API 일시 실패 공통 처리: 평소 DEBUG, 마지막 성공 후 임계 초과면 ERROR 1회 격상."""
+        """가격 API 일시 실패 공통 처리: 평소 DEBUG, 실패 지속(첫 실패 후 임계 초과) 시 ERROR 1회 격상."""
         if not self.system_logger:
             return
-        down_sec = time.time() - self._net_ok_ts
+        now = time.time()
+        if self._net_fail_since is None:
+            self._net_fail_since = now
+        down_sec = now - self._net_fail_since
         if down_sec >= self.NET_ALERT_AFTER_SEC and not self._net_alerted:
             self._net_alerted = True
             self.system_logger.error(
-                f"🚨 [MT5 REST] 가격 API {int(down_sec)}초째 연속 실패 — "
+                f"🚨 [MT5 REST] 가격 API 실패 {int(down_sec)}초째 지속 — "
                 f"서버/터널 점검 필요 (마지막 오류: {desc[:120]})")
         else:
             self.system_logger.debug(f"[MT5 REST] {desc[:200]}")
@@ -149,9 +154,9 @@ class Mt5RestBase:
                     )
             resp.raise_for_status()
 
-        # ✅ 가격 API 정상 응답 → 장애 타이머 리셋(+격상 경보 났었으면 복구 알림 1회)
+        # ✅ 가격 API 정상 응답 → 연속실패 타이머 리셋(+격상 경보 났었으면 복구 알림 1회)
         if use == "price":
-            self._net_ok_ts = time.time()
+            self._net_fail_since = None
             if self._net_alerted:
                 self._net_alerted = False
                 if self.system_logger:
