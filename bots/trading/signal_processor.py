@@ -168,12 +168,16 @@ class SignalProcessor:
                     continue
                 for r in legs:   # 그 게임의 전 다리 청산
                     sid, ep = r[0], float(r[2] or 0.0)
+                    leg_ts = int(r[1] or 0)
                     pnl_pct = ((price / ep - 1.0) if is_long else (1.0 - price / ep)) * 100.0 if ep else None
                     payload = {
                         "kind": "EXIT", "side": side, "mode": f"{tag}_{reason}", "strategy": tag,
                         "reasons": [f"{tag}_{reason}"], "open_signal_id": sid,
                         "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
                         "tp_price": last_tp, "sl_price": last_sl, "game_id": gid,
+                        # ✅ 텔레그램 표기용: 실제 보유시간(이 다리) / 최대보유
+                        "held_sec": max(0, (now_ms - leg_ts) // 1000) if leg_ts else None,
+                        "max_hold_sec": hold or None,
                     }
                     signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
                     actions.append(TradeAction(action="EXIT", symbol=symbol, side=side, price=price,
@@ -200,6 +204,9 @@ class SignalProcessor:
                 "reasons": [f"{tag}_{reason}"], "open_signal_id": sid,
                 "price": price, "entry_price": float(ep), "pnl_pct": pnl_pct,
                 "tp_price": float(tp), "sl_price": float(sl),
+                # ✅ 텔레그램 표기용: 실제 보유시간 / 최대보유
+                "held_sec": max(0, (now_ms - int(ts_ms)) // 1000) if ts_ms else None,
+                "max_hold_sec": hold or None,
             }
             signal_id, ts_out = self._record(symbol, side, "EXIT", price, payload)
             actions.append(TradeAction(action="EXIT", symbol=symbol, side=side, price=price,
@@ -265,6 +272,9 @@ class SignalProcessor:
                     "tp_price": a_tp, "sl_price": a_sl, "k1": p.k1, "b": p.b,
                     "cooldown_sec": int(p.cooldown_sec),
                     "game_id": gid,
+                    # ✅ 텔레그램 표기용: 추매는 다리 수만 늘어남(게임 수 불변) → 현재중첩=n
+                    "concurrent": n, "max_concurrent": self._sigma_maxc_for(symbol, side),
+                    "max_hold_sec": self._hold_sec_for(symbol, side) or None,
                 }
                 sigid, _ = self._record(symbol, side, "ENTRY", price, payload)
                 actions.append(TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
@@ -280,6 +290,9 @@ class SignalProcessor:
                 "price": price, "z": z, "ma": ma, "sd": sd,
                 "tp_price": tp, "sl_price": sl, "k1": p.k1, "b": p.b,
                 "cooldown_sec": int(p.cooldown_sec),
+                # ✅ 텔레그램 표기용: 이 진입 포함 현재중첩 / 최대중첩 / 최대보유
+                "concurrent": n + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
+                "max_hold_sec": self._hold_sec_for(symbol, side) or None,
             }
             signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
             if self.deps.set_last_entry_ts_ms:   # 글로벌 쿨다운 = 새 게임 기준(엔진 last)
@@ -332,6 +345,9 @@ class SignalProcessor:
             "price": price, "m_min": m, "drop_pct": round(ret, 5),
             "tp_price": tp, "sl_price": sl,
             "cooldown_sec": int(p.cooldown_sec),
+            # ✅ 텔레그램 표기용: 이 진입 포함 현재중첩 / 최대중첩 / 최대보유(페이드 셀별 24~72h)
+            "concurrent": len(rows) + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
+            "max_hold_sec": self._hold_sec_for(symbol, side) or None,
         }
         signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
         if self.deps.set_last_entry_ts_ms:

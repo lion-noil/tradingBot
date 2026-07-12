@@ -118,7 +118,7 @@ class TelegramLogHandler(logging.Handler):
                     cooldown_sec = obj.get("cooldown_sec")
 
                     def _fmt_cd(sec):
-                        """쿨다운 사람 읽기 좋게: 일봉=Xd, 1분봉=X.Xh(정수면 Xh), <1h=Xm."""
+                        """쿨다운/한도 사람 읽기 좋게: 일봉=Xd, 1분봉=X.Xh(정수면 Xh), <1h=Xm."""
                         try:
                             s = int(sec)
                         except Exception:
@@ -130,6 +130,20 @@ class TelegramLogHandler(logging.Handler):
                         if s >= 3600:
                             h = s / 3600.0
                             return f"{h:g}h"
+                        return f"{s // 60}m"
+
+                    def _fmt_dur(sec):
+                        """경과시간(비정수 duration): ≥1d=X.Xd, ≥1h=X.Xh, <1h=Xm."""
+                        try:
+                            s = int(sec)
+                        except Exception:
+                            return None
+                        if s < 0:
+                            return None
+                        if s >= 86400:
+                            return f"{s / 86400.0:.1f}d"
+                        if s >= 3600:
+                            return f"{s / 3600.0:.1f}h"
                         return f"{s // 60}m"
 
                     dp = _guess_dp_from_price(price, min_dp=1, max_dp=4)
@@ -196,7 +210,31 @@ class TelegramLogHandler(logging.Handler):
                                 stats_parts.append(f"entry: {_fmt1(entry_price, dp)}")
                         except Exception:
                             pass
+                        # ✅ 청산: 실제 보유시간 / 최대보유 (예: 보유 3.2d/14d)
+                        try:
+                            _held = _fmt_dur(obj.get("held_sec"))
+                            _mh = _fmt_cd(obj.get("max_hold_sec"))
+                            if _held:
+                                stats_parts.append(f"보유 {_held}" + (f"/{_mh}" if _mh else ""))
+                        except Exception:
+                            pass
                     line_stats = "  ".join(stats_parts)
+
+                    # ✅ 진입: 현재중첩/최대중첩 + 최대보유 (예: 중첩 3/12 · 보유≤14d)
+                    overlap_line = ""
+                    if kind == "ENTRY":
+                        try:
+                            _cc = obj.get("concurrent")
+                            _mc = obj.get("max_concurrent")
+                            parts = []
+                            if _cc is not None and _mc is not None:
+                                parts.append(f"중첩 {int(_cc)}/{int(_mc)}")
+                            _mh = _fmt_cd(obj.get("max_hold_sec"))
+                            if _mh:
+                                parts.append(f"보유≤{_mh}")
+                            overlap_line = " · ".join(parts)
+                        except Exception:
+                            overlap_line = ""
 
                     # ✅ 4줄: TP/SL 레벨. S11 SL無/시간청산 셀은 도달불가 레벨(×1e9)로 기록되므로
                     #   가격 대비 50배 밖이면 "없음(시간청산)"으로 표기.
@@ -219,6 +257,8 @@ class TelegramLogHandler(logging.Handler):
                     lines.append(line_stats)
                     if levels_line:
                         lines.append(levels_line)
+                    if overlap_line:
+                        lines.append(overlap_line)
 
                     text = "\n".join(lines)
 
