@@ -55,10 +55,13 @@ class SignalProcessor:
                  s1_params_by_symbol: Optional[Dict[str, S1Params]] = None,
                  s1_maxc_by_symbol: Optional[Dict[str, int]] = None,
                  s1_max_hold_sec: int = 14 * 24 * 3600,
-                 avg_down: bool = False):
+                 avg_down: bool = False,
+                 entries_disabled: bool = False):
         self.deps = deps
         self.system_logger = system_logger
         self.strategy = (strategy or "s1").lower()
+        # ✅ 드레인 모드(구 전략 마이그레이션): 신규 진입(추매 포함) 전면 중지, 청산 관리만 지속
+        self.entries_disabled = bool(entries_disabled)
         self.s1_params = s1_params or S1Params()
         # ✅ 시그마 엔진: 심볼별·방향별 파라미터/캡. 중첩 맵.
         #   s1_params_by_symbol = {SYM: {"LONG": S1Params, "SHORT": S1Params}}  (없는 방향은 키 부재)
@@ -79,11 +82,17 @@ class SignalProcessor:
         return int(d.get((side or "").upper(), 1))
 
     def _sigma_mode(self, side: str):
-        """(entry_high, position_long). 추세(s1): entry_high==long, 역추세(s2): entry_high!=long."""
+        """(entry_high, position_long). 추세: entry_high==long, 역추세: entry_high!=long."""
         is_long = (side == "LONG")
-        # 추세=s1(1분)/s3(일봉): entry_high==long. 역추세=s2(1분)/s4(일봉): entry_high!=long.
-        entry_high = is_long if self.strategy in ("s1", "s3") else (not is_long)
+        # 추세=s1(1분)/s3(일봉)/s11(1분봉책 z추세). 역추세=s2/s4/s12.
+        entry_high = is_long if self.strategy in ("s1", "s3", "s11") else (not is_long)
         return entry_high, is_long
+
+    def _hold_sec_for(self, symbol: str, side: str) -> int:
+        """셀별 최대보유(S11 페이드 24~72h 등). 미지정(0)이면 채널 기본."""
+        p = self._sigma_params_for(symbol, side)
+        h = int(getattr(p, "hold_sec", 0) or 0) if p else 0
+        return h if h > 0 else self.s1_max_hold_sec
 
     def _record(self, symbol: str, side: str, kind: str, price: Optional[float], sig: Dict[str, Any]) -> tuple[
         str, int]:
@@ -92,8 +101,10 @@ class SignalProcessor:
     async def process_symbol(self, symbol: str, price: Optional[float]) -> List[TradeAction]:
         if price is None:
             return []
-        if self.strategy in ("s1", "s2", "s3", "s4"):  # s1/s2=1분, s3/s4=일봉(동일 엔진)
+        if self.strategy in ("s1", "s2", "s3", "s4", "s11", "s12"):  # z-시그마 계열(동일 엔진)
             return self._process_sigma(symbol, price)
+        if self.strategy == "s13":  # 급락페이드(1분봉책 신규 패밀리)
+            return self._process_fade(symbol, price)
         # basic(MA100) 등 비-시그마 전략은 퇴출 → 신호 없음(config publish/상태표시 노드).
         return []
 
@@ -144,13 +155,14 @@ class SignalProcessor:
             # 트리거 시 그 게임의 전 다리만 동시청산(다른 게임은 유지).
             games = self._group_games(rows)
             actions: List[TradeAction] = []
+            hold = self._hold_sec_for(symbol, side)
             for gid, legs in games.items():
                 first_ts = int(legs[0][1] or 0)
                 last_tp, last_sl = float(legs[-1][3]), float(legs[-1][4])
                 pos = S1Position(0.0, last_tp, last_sl, first_ts)
                 reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
-                if not reason and self.s1_max_hold_sec and first_ts and \
-                        (now_ms - first_ts) >= self.s1_max_hold_sec * 1000:
+                if not reason and hold and first_ts and \
+                        (now_ms - first_ts) >= hold * 1000:
                     reason = "TIME"
                 if not reason:
                     continue
@@ -172,12 +184,13 @@ class SignalProcessor:
 
         # 비-추매(S1 추세 등): 다리별 독립 청산
         actions = []
+        hold = self._hold_sec_for(symbol, side)
         for r in rows:
             sid, ts_ms, ep, tp, sl = r[0], r[1], r[2], r[3], r[4]
             pos = S1Position(float(ep), float(tp), float(sl), int(ts_ms or 0))
             reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
-            if not reason and self.s1_max_hold_sec and ts_ms and \
-                    (now_ms - int(ts_ms)) >= self.s1_max_hold_sec * 1000:
+            if not reason and hold and ts_ms and \
+                    (now_ms - int(ts_ms)) >= hold * 1000:
                 reason = "TIME"
             if not reason:
                 continue
@@ -198,6 +211,8 @@ class SignalProcessor:
     def _decide_entry_sigma(self, symbol: str, price: float, side: str) -> List[TradeAction]:
         """정본(중첩/ontop): 유효 신호+쿨다운 통과 시 — (a) 열린 각 게임에 추매 1회(역추세 전용),
         (b) 새 게임 오픈(중첩 유지). 비-추매(S1 추세)는 (b)만 = maxc 스택."""
+        if self.entries_disabled:   # ✅ 드레인 모드: 신규 진입·추매 전면 중지(청산만 유지)
+            return []
         p = self._sigma_params_for(symbol, side)
         if p is None:
             return []
@@ -258,6 +273,8 @@ class SignalProcessor:
         # ── (b) 새 게임(중첩 유지) — maxc 캡만 적용(계정 200랏은 executor 증거금에서 별도 제한) ──
         if n < self._sigma_maxc_for(symbol, side):
             tp, sl = base_lv
+            if getattr(p, "no_sl", False):   # ✅ S11 SL無 셀: SL을 도달불가 레벨로(청산=TP/TIME만)
+                sl = price * 1e-9 if is_long else price * 1e9
             payload = {
                 "kind": "ENTRY", "side": side, "strategy": tag, "reasons": [tag],
                 "price": price, "z": z, "ma": ma, "sd": sd,
@@ -270,3 +287,54 @@ class SignalProcessor:
             actions.append(TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
                                        sig=payload, signal_id=signal_id))
         return actions
+
+    # ──────────────────────────────────────────────────────────────
+    # 급락페이드(s13, HANDOFF_MASTER v4 §2-A′) — z와 독립: M분 원시 수익률 ≤ −drop_pct → 롱.
+    #   청산: retr_mult>0 → TP=진입가×(1+retr_mult×|실낙폭|) + 시간캡 / retr_mult=0 → 순수 시간청산.
+    #   SL 없음(도달불가 레벨 기록). 청산 스캔은 시그마 공용(_decide_exits_sigma: TP/TIME).
+    # ──────────────────────────────────────────────────────────────
+    def _process_fade(self, symbol: str, price: float) -> List[TradeAction]:
+        exits = self._decide_exits_sigma(symbol, price, "LONG") if \
+            self._sigma_params_for(symbol, "LONG") is not None else []
+        if exits:
+            return exits
+        return self._decide_entry_fade(symbol, price)
+
+    def _decide_entry_fade(self, symbol: str, price: float) -> List[TradeAction]:
+        if self.entries_disabled:
+            return []
+        side = "LONG"   # 페이드는 급락 매수만(급등페이드숏은 검증 후 기각)
+        p = self._sigma_params_for(symbol, side)
+        if p is None or int(getattr(p, "m_min", 0) or 0) <= 0:
+            return []
+        now_ms = int(time.time() * 1000)
+        if self.deps.get_last_entry_ts_ms is not None:
+            if not s1_cooldown_ok(self.deps.get_last_entry_ts_ms(symbol, side), now_ms, p):
+                return []
+        rows = self.deps.get_open_s1_positions(symbol, side) or []
+        if len(rows) >= self._sigma_maxc_for(symbol, side):
+            return []
+        closes = self.deps.get_recent_closes(symbol)
+        m = int(p.m_min)
+        if not closes or len(closes) <= m:
+            return []
+        ret = float(price) / float(closes[-1 - m]) - 1.0
+        if ret > -float(p.drop_pct):     # 낙폭 미달
+            return []
+        # TP: 되돌림×배수(BTC) 또는 없음(시간청산 셀). SL 없음.
+        if float(getattr(p, "retr_mult", 0.0) or 0.0) > 0:
+            tp = price * (1.0 + float(p.retr_mult) * abs(ret))
+        else:
+            tp = price * 1e9
+        sl = price * 1e-9
+        payload = {
+            "kind": "ENTRY", "side": side, "strategy": "S13", "reasons": ["S13"],
+            "price": price, "m_min": m, "drop_pct": round(ret, 5),
+            "tp_price": tp, "sl_price": sl,
+            "cooldown_sec": int(p.cooldown_sec),
+        }
+        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
+        if self.deps.set_last_entry_ts_ms:
+            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
+        return [TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                            sig=payload, signal_id=signal_id)]

@@ -30,6 +30,13 @@ class S1Params:
     b: float = 2.0              # TP 복귀 밴드 (z=-b). b < k1 필수
     cooldown_sec: int = 12 * 3600
     fee_roundtrip: float = 0.0011  # 리포팅용(체결가엔 미반영)
+    # ✅ S11(1분봉책, HANDOFF_MASTER v4) 확장 필드
+    no_sl: bool = False         # True=SL 없음(크립토 롱 SL유해) — SL을 도달불가 레벨로 기록
+    hold_sec: int = 0           # 셀별 최대보유 오버라이드(0=채널 기본 s1_max_hold_sec)
+    # 급락페이드(S13) 전용 — m_min>0이면 페이드 셀
+    m_min: int = 0              # 트리거 창(분): M분 수익률
+    drop_pct: float = 0.0       # 트리거 낙폭(0.04 = -4%)
+    retr_mult: float = 0.0      # >0이면 TP=진입가×(1+retr_mult×실낙폭), 0=시간청산만
 
     def validate(self) -> None:
         # B<0 허용(v2): b<0이면 TP가 평균 위(오버슈팅까지). b<k1만 필수(TP가 진입가보다 위 보장은 levels에서 가드).

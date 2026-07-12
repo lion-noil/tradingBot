@@ -18,7 +18,9 @@ from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signa
                                make_s1_mt5_config, make_s2_config, make_s2_mt5_config,
                                make_fx_daily_trend_config, make_fx_daily_rev_config,
                                make_crypto_daily_trend_config, make_crypto_daily_rev_config,
-                               make_mt5_daily_trend_config, make_mt5_daily_rev_config)
+                               make_mt5_daily_trend_config, make_mt5_daily_rev_config,
+                               make_s11_trend_config, make_s11_rev_config, make_s11_fade_config,
+                               make_s11_mt5_trend_config, make_s11_mt5_fade_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -136,7 +138,7 @@ ENGINES = {
     },
     "s1": {
         "name": "S1",
-        "make_config": lambda: make_s1_config(signal_only=False),  # 🔴 LIVE (lock1 해제)
+        "make_config": lambda: make_s1_config(signal_only=False, entries_disabled=True),  # 🟡 드레인(S11 대체, ≤14d 자연소진)
         "make_controllers": _build_bybit_controllers,
         "targets_env": "S1_EXECUTOR_TARGETS",
         "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
@@ -166,7 +168,7 @@ ENGINES = {
     },
     "s1mt5": {
         "name": "S1-MT5",
-        "make_config": lambda: make_s1_mt5_config(signal_only=False),  # 🔴 LIVE
+        "make_config": lambda: make_s1_mt5_config(signal_only=False, entries_disabled=True),  # 🟡 드레인(S11 대체)
         "make_controllers": _build_mt5_controllers,
         "targets_env": "S1MT5_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
@@ -181,7 +183,7 @@ ENGINES = {
     },
     "s2": {
         "name": "S2",
-        "make_config": lambda: make_s2_config(signal_only=False),  # 🔴 LIVE (Bybit 추세숏)
+        "make_config": lambda: make_s2_config(signal_only=False, entries_disabled=True),  # 🟡 드레인(S11 대체)
         "make_controllers": _build_bybit_controllers,
         "targets_env": "S2_EXECUTOR_TARGETS",
         "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
@@ -196,7 +198,7 @@ ENGINES = {
     },
     "s2mt5": {
         "name": "S2-MT5",
-        "make_config": lambda: make_s2_mt5_config(signal_only=False),  # 🔴 LIVE (MT5 추세숏)
+        "make_config": lambda: make_s2_mt5_config(signal_only=False, entries_disabled=True),  # 🟡 드레인(S11 대체)
         "make_controllers": _build_mt5_controllers,
         "targets_env": "S2MT5_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
@@ -301,6 +303,82 @@ ENGINES = {
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
         "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
         "port": 18021,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    # ── S11 「1분봉책」 (HANDOFF_MASTER v4 §2-A′) — 구 S1/S2 대체. namespace "s11"(Bybit)/"s11m"(MT5) ──
+    "s11t": {
+        "name": "S11-TREND",
+        "make_config": lambda: make_s11_trend_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S11_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s11_trend.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's11' 네임스페이스 config 소유
+        "port": 18022,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s11r": {
+        "name": "S11-REV",
+        "make_config": lambda: make_s11_rev_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S11_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s11_rev.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's11' 공유(config는 s11t 소유)
+        "port": 18023,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s11f": {
+        "name": "S11-FADE",
+        "make_config": lambda: make_s11_fade_config(signal_only=False),  # 🔴 LIVE
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S11_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s11_fade.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's11' 공유
+        "port": 18024,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s11mt": {
+        "name": "S11M-TREND",
+        "make_config": lambda: make_s11_mt5_trend_config(signal_only=False),  # 🔴 LIVE (보수 1% 사이징)
+        "make_controllers": _build_mt5_controllers,
+        "targets_env": "S11M_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s11m_trend.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's11m' 네임스페이스 config 소유
+        "port": 18025,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "s11mf": {
+        "name": "S11M-FADE",
+        "make_config": lambda: make_s11_mt5_fade_config(signal_only=False),  # 🔴 LIVE (보수 1% 사이징)
+        "make_controllers": _build_mt5_controllers,
+        "targets_env": "S11M_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s11m_fade.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's11m' 공유(config는 s11mt 소유)
+        "port": 18026,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },

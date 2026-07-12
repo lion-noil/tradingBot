@@ -207,6 +207,82 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # ── S11 「1분봉책」 (HANDOFF_MASTER v4) — 구 S1/S2 대체. ns s11(Bybit, executor-a1)/s11m(MT5, a2) ──
+  signal-s11t:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11t
+      - S11_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s11r:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11r
+      - S11_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s11f:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11f
+      - S11_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s11mt:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11mt
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
+  signal-s11mf:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11mf
+      - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
   # 라벨 autoheal=true 인 컨테이너만 대상. 데몬측 restart라 행된 PID1도 확실히 종료.

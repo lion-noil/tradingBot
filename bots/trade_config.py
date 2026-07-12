@@ -98,9 +98,12 @@ class TradeConfig:
     # signal_only (True면 시그널만, 실제 주문 X)
     signal_only: bool = False
 
-    # ✅ 전략 선택: "s1"(σ추세)/"s2"(σ역추세)/"s3"(일봉추세)/"s4"(일봉역추세).
+    # ✅ 전략 선택: "s1"(σ추세)/"s2"(σ역추세)/"s3"(일봉추세)/"s4"(일봉역추세)
+    #   /"s11"(1분봉책 z추세)/"s12"(1분봉책 z역추세)/"s13"(급락페이드).
     #   basic(MA100 리버전)은 퇴출됨 — 시그마 파라미터 없는 엔진(bybit/mt5)은 config publish/상태표시 전용(무매매).
     strategy: str = "s1"
+    # ✅ 드레인 모드(구 전략 마이그레이션): True면 신규 진입·추매 중지, 오픈 포지션 청산 관리만 지속
+    entries_disabled: bool = False
     # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
     s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
@@ -232,9 +235,10 @@ def make_bybit_config(
         leverage=leverage,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
-        # ✅ (전략,심볼)별 진입%: 전 전략 2%(0.04). 1분봉(s1/s2)=저사이징(마스터 §5 건당1~2%),
+        # ✅ (전략,심볼)별 진입%: 전 전략 2%(0.04). 1분봉(s1/s2 드레인, s11~s13 1분봉책)=저사이징,
         #   일봉 Bybit 크립토(s3/s4)=2%. (0.04/100 × 레버50 = 2% notional)
-        entry_percent_by_strategy={s: {"_default": 0.04} for s in ("s1", "s2", "s3", "s4")},
+        entry_percent_by_strategy={s: {"_default": 0.04}
+                                   for s in ("s1", "s2", "s3", "s4", "s11", "s12", "s13")},
         max_effective_leverage=max_effective_leverage,
 
 
@@ -262,11 +266,12 @@ def make_s1_config(
     symbols: list[str] | tuple[str, ...] | None = None,
     name: str = "bybit",        # ✅ 네임스페이스/엔진 ("bybit" | "mt5")
     params_by_symbol: dict | None = None,  # ✅ 심볼별 v2 파라미터(없으면 name으로 기본맵 선택)
-    strategy: str = "s1",       # ✅ "s1"(추세) | "s2"(역추세) — 동일 엔진, 방향만 다름
+    strategy: str = "s1",       # ✅ "s1"(추세) | "s2"(역추세) | "s11"/"s12"/"s13"(1분봉책) — 동일 엔진 계열
     avg_down: bool = False,     # ✅ 추매(S2 역추세 전용)
     s1_win: int = 10080,        # ✅ MA/σ 창. 1분봉=10080(7일). 일봉채널=90(90일).
     candle_interval: str = "1",  # ✅ "1"(분) | "D"(일봉채널)
     s1_max_hold_sec: int = 14 * 24 * 3600,  # ✅ 최대보유. 1분=14일, 일봉=30일.
+    entries_disabled: bool = False,  # ✅ 드레인 모드(신규진입 중지, 청산만)
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) / S2(추세 숏) 신호 설정. namespace=name, strategy 분기.
     - 심볼: .env BYBIT_S1_SYMBOLS
@@ -352,6 +357,7 @@ def make_s1_config(
         s1_max_hold_sec=s1_max_hold_sec,   # ✅ 최대보유(1분=14일/일봉=30일)
         avg_down=avg_down,                 # ✅ 추매(S2 전용)
         candle_interval=candle_interval,   # ✅ 캔들 타임프레임("1"/"D")
+        entries_disabled=entries_disabled,  # ✅ 드레인 모드
     )
     return cfg.normalized()
 
@@ -414,6 +420,95 @@ def make_s2_mt5_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     }
     return make_s1_config(name="mt5", params_by_symbol=REV_MT5, strategy="s2",
                           avg_down=True, signal_only=signal_only, **kw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S11 「1분봉책」 — HANDOFF_MASTER v4 §2-A′ (2026-07-11/12). 구 S1/S2 폐기·대체.
+#   3패밀리: s11=z추세 / s12=z역추세 / s13=급락페이드. 창 6~24시간(구 7일 대비 대폭 축소).
+#   네임스페이스: Bybit="s11", MT5="s11m" (구 채널과 분리 필수 — open_signals 격리).
+#   롱=SL無(no_sl, 크립토 SL유해 4회 재확인) 단 XAUT추세롱·XRP숏은 SL 유지. 보유 14d(페이드는 셀별 24~72h).
+#   방법론: 무게이트 베이스자립 + 상장 전기간 연도균형. fee 0.11%(USDJPY 0.02%).
+# ─────────────────────────────────────────────────────────────────────────────
+_H = 3600   # 1시간(초)
+
+
+def make_s11_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 z추세 (Bybit). 롱=z≥+K1(SL無), XRP만 숏(z≤−K1, SL유지)."""
+    S11_TREND = {
+        "BTCUSDT": {"long": {"win": 1440, "k1": 6.0, "b": 0.0,  "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "ETHUSDT": {"long": {"win": 720,  "k1": 6.0, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "SOLUSDT": {"long": {"win": 1440, "k1": 5.5, "b": 2.5,  "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "XAUTUSDT": {"long": {"win": 1440, "k1": 4.0, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200}},  # 금: SL 무해→유지
+        "XRPUSDT": {"short": {"win": 720, "k1": 5.0, "b": -0.5, "cooldown_sec": 1 * _H, "max_concurrent": 200}},   # 유일 숏: SL유
+    }
+    return make_s1_config(name="s11", params_by_symbol=S11_TREND, strategy="s11",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=14 * _D, **kw)
+
+
+def make_s11_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 z역추세 (Bybit). 롱=z≤−K1, SL無. 추매 없음(구 S2와 다름)."""
+    S11_REV = {
+        "BTCUSDT": {"long": {"win": 1320, "k1": 5.0,  "b": -1.0, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        "XAUTUSDT": {"long": {"win": 1440, "k1": 4.25, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s11", params_by_symbol=S11_REV, strategy="s12",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=14 * _D, **kw)
+
+
+def make_s11_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 급락페이드 (Bybit). M분 수익률≤−X% 롱 / BTC=되돌림×1.5 익절+캡48h, 나머지=시간청산 24h. SL無."""
+    S11_FADE = {
+        "BTCUSDT": {"long": {"m_min": 60, "drop_pct": 0.04, "retr_mult": 1.5, "hold_sec": 48 * _H,
+                             "cooldown_sec": 1800, "max_concurrent": 12}},
+        "ETHUSDT": {"long": {"m_min": 30, "drop_pct": 0.04, "hold_sec": 24 * _H,
+                             "cooldown_sec": 1800, "max_concurrent": 12}},
+        "SOLUSDT": {"long": {"m_min": 15, "drop_pct": 0.05, "hold_sec": 24 * _H,
+                             "cooldown_sec": 1800, "max_concurrent": 12}},  # ⚠️꼬리 -55% — 저사이징 전제
+        "XRPUSDT": {"long": {"m_min": 30, "drop_pct": 0.05, "hold_sec": 24 * _H,
+                             "cooldown_sec": 1800, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="s11", params_by_symbol=S11_FADE, strategy="s13",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=48 * _H, **kw)
+
+
+def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 확장판 z추세롱 (MT5·FX, 2026-07-12). ⚠️데이터 3.5년(2022 미검증) → 보수 사이징 등급. 전셀 SL無."""
+    S11M_TREND = {
+        "JP225":  {"long": {"win": 1440, "k1": 4.0,  "b": -1.5, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "US100":  {"long": {"win": 720,  "k1": 5.25, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        "GER40":  {"long": {"win": 1440, "k1": 3.75, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "UK100":  {"long": {"win": 1440, "k1": 3.75, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "HK50":   {"long": {"win": 360,  "k1": 5.75, "b": -3.0, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        "XAGUSD": {"long": {"win": 1320, "k1": 4.75, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        "WTI":    {"long": {"win": 720,  "k1": 4.5,  "b": -2.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "USDJPY": {"long": {"win": 1440, "k1": 4.5,  "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s11m", params_by_symbol=S11M_TREND, strategy="s11",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=14 * _D, **kw)
+
+
+def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 확장판 급락페이드 (MT5·FX). JP225 4h−3%(T48h)·HK50 2h−2%(T72h)·USDJPY 2h−1%(T48h). 시간청산·SL無."""
+    S11M_FADE = {
+        "JP225":  {"long": {"m_min": 240, "drop_pct": 0.03, "hold_sec": 48 * _H,
+                            "cooldown_sec": 1800, "max_concurrent": 12}},
+        "HK50":   {"long": {"m_min": 120, "drop_pct": 0.02, "hold_sec": 72 * _H,
+                            "cooldown_sec": 1800, "max_concurrent": 12}},
+        "USDJPY": {"long": {"m_min": 120, "drop_pct": 0.01, "hold_sec": 48 * _H,
+                            "cooldown_sec": 1800, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="s11m", params_by_symbol=S11M_FADE, strategy="s13",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=72 * _H, **kw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -593,7 +688,9 @@ def make_mt5_signal_config(
         #   1분봉(s1/s2) = 전부 2%(0.04) — 마스터 §5 저사이징(건당 1~2%). FX 포함.
         #   일봉(s3/s4) = MT5 비환율 10종 2%(0.04) / FX는 _default 5%(0.1). (5%=0.1, 2%=0.04)
         entry_percent_by_strategy={
-            **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉 전부 2%
+            **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉(드레인 중) 2%
+            # S11 확장판(MT5·FX)은 데이터 3.5년(2022 미검증) → 마스터 권고 "보수 사이징" = 1%(0.02)
+            **{s: {"_default": 0.02} for s in ("s11", "s12", "s13")},
             **{s: {"_default": 0.1,  # 일봉 FX 5% 유지
                    "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
                    "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}

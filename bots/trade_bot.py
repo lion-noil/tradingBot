@@ -126,7 +126,7 @@ class TradeBot:
         _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
         if _strat == "s1":
             self._warmup_s1_last_exit()
-        if _strat in ("s1", "s2", "s3", "s4"):  # s1/s2=1분, s3/s4=일봉
+        if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13"):  # 1분/일봉/1분봉책 전 시그마계열
             self._warmup_s1_last_entry()  # 진입 쿨다운 복원(재시작 재진입 방지)
 
         # signal processor
@@ -178,6 +178,12 @@ class TradeBot:
                         win=int(dd.get("win", getattr(self.config, "s1_win", 10080))),
                         k1=float(dd.get("k1", 2.5)), b=float(dd.get("b", 2.0)),
                         cooldown_sec=int(dd.get("cooldown_sec", 12 * 3600)),
+                        # ✅ S11(1분봉책 v4): SL無 셀·셀별 보유·급락페이드 파라미터
+                        no_sl=bool(dd.get("no_sl", False)),
+                        hold_sec=int(dd.get("hold_sec", 0) or 0),
+                        m_min=int(dd.get("m_min", 0) or 0),
+                        drop_pct=float(dd.get("drop_pct", 0.0) or 0.0),
+                        retr_mult=float(dd.get("retr_mult", 0.0) or 0.0),
                     )
                     for dr, dd in (dirs or {}).items()
                 }
@@ -192,6 +198,7 @@ class TradeBot:
             },
             s1_max_hold_sec=int(getattr(self.config, "s1_max_hold_sec", 14 * 24 * 3600)),
             avg_down=bool(getattr(self.config, "avg_down", False)),
+            entries_disabled=bool(getattr(self.config, "entries_disabled", False)),  # ✅ 드레인 모드
         )
 
         # reporter

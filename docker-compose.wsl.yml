@@ -1,0 +1,56 @@
+# WSL2 docker-ce overlay (replaces Docker Desktop).
+# MT5 signal bots must reach executor-a2 (Windows-native, 127.0.0.1:9010).
+# Under WSL2 mirrored networking + hostAddressLoopback, only a container in
+# network_mode:host can reach the Windows loopback. So MT5 signals run on host
+# net and target 127.0.0.1:9010 (instead of host.docker.internal via bridge).
+# Crypto signals + executor-a1 + autoheal stay on the default bridge unchanged.
+#
+# Run:  docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
+
+services:
+  signal-mt5:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-s1-mt5:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-s2-mt5:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-fxd1:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-fxd2:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  # 일봉 MT5 비환율 채널 — executor-a2(Windows-native 127.0.0.1:9010) 접근 위해 host net
+  signal-mt5d1:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-mt5d2:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  # S11 확장판(MT5) — executor-a2 접근 위해 host net
+  signal-s11mt:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-s11mf:
+    network_mode: host
+    environment:
+      - MT5_EXECUTOR_TARGETS=127.0.0.1:9010

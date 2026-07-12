@@ -178,11 +178,17 @@ class TelegramLogHandler(logging.Handler):
                             pass
                     line_stats = "  ".join(stats_parts)
 
-                    # ✅ 4줄: TP/SL 레벨(진입신호에 매칭된 청산 기준 — 시그마 payload에 항상 포함)
+                    # ✅ 4줄: TP/SL 레벨. S11 SL無/시간청산 셀은 도달불가 레벨(×1e9)로 기록되므로
+                    #   가격 대비 50배 밖이면 "없음(시간청산)"으로 표기.
                     levels_line = ""
                     try:
+                        def _reachable(v):
+                            return (v not in (None, "") and price
+                                    and float(price) / 50 < float(v) < float(price) * 50)
+                        tp_txt = _fmt1(tp_price, dp) if _reachable(tp_price) else "—"
+                        sl_txt = _fmt1(sl_price, dp) if _reachable(sl_price) else "—"
                         if tp_price not in (None, "") and sl_price not in (None, ""):
-                            levels_line = f"TP {_fmt1(tp_price, dp)} / SL {_fmt1(sl_price, dp)}"
+                            levels_line = f"TP {tp_txt} / SL {sl_txt}"
                     except Exception:
                         levels_line = ""
 
