@@ -60,6 +60,24 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
         timeout=10,
     ).raise_for_status()
 
+# ✅ 전략 태그 → 사람 읽는 셀(패밀리) 라벨. 같은 네임스페이스(s11/s11m)에 여러 패밀리가
+#   공존하므로 텔레그램에서 어떤 셀의 신호인지 코드만으론 구분 불가 → 라벨 병기.
+_STRAT_KR = {
+    "S1": "추세", "S2": "역추세", "S3": "일봉추세", "S4": "일봉역추세",
+    "S11": "z추세", "S12": "z역추세", "S13": "급락페이드",
+}
+
+
+def _strat_label(reason0: str) -> str:
+    """reasons[0] → 표시 라벨. 'S12'→'S12 z역추세', 'S12_TP'→'S12 z역추세·TP' (모르는 태그는 그대로)."""
+    base, _, suffix = (reason0 or "").partition("_")
+    kr = _STRAT_KR.get(base.upper())
+    disp = f"{base} {kr}" if kr else base
+    if suffix:
+        disp += f"·{suffix}"
+    return disp
+
+
 def _guess_dp_from_price(px, min_dp=1, max_dp=4):
     try:
         s = f"{float(px):.10f}".rstrip("0").rstrip(".")
@@ -142,11 +160,13 @@ class TelegramLogHandler(logging.Handler):
                     # ✅ 1줄: 헤드라인(짧게)
                     headline = f"{badge} {engine_tag}[{symbol}] {side_kr}{title}신호"
 
-                    # ✅ 2줄: (reason) (PNL ...) — 추매(ADD)는 새 게임과 구분 표시
+                    # ✅ 2줄: (전략셀 라벨) (PNL ...) — 추매(ADD)는 새 게임과 구분 표시
+                    #   예: (S12 z역추세) / (S13 급락페이드) / 청산: (S12 z역추세·TP)
                     line_reason = ""
                     if reason0:
+                        _label = _strat_label(reason0)
                         _is_add = isinstance(reasons, list) and any(str(x).upper() == "ADD" for x in reasons[1:])
-                        line_reason += f"({reason0} 추매)" if _is_add else f"({reason0})"
+                        line_reason += f"({_label} 추매)" if _is_add else f"({_label})"
 
                     if kind == "EXIT":
                         try:
