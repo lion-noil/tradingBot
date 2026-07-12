@@ -786,6 +786,24 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         system_logger.debug(f"[sender] disconnect {addr}")
 
 
+def _min_entry_pct(cfg, sym: str) -> Optional[float]:
+    """해당 심볼에 적용될 수 있는 가장 보수적인(최소) 진입% — 전략별 % 전부 훑음.
+    preflight 경보가 실제 진입 skip 가능성과 일치하도록 최소값 기준으로 검사."""
+    vals: list[float] = []
+    bys = getattr(cfg, "entry_percent_by_strategy", None) or {}
+    for sd in bys.values():
+        v = (sd or {}).get(sym)
+        if v is None:
+            v = (sd or {}).get("_default")
+        if v is not None:
+            vals.append(float(v))
+    if vals:
+        return min(vals)
+    m = getattr(cfg, "entry_percent_by_symbol", None) or {}
+    v = m.get(sym, getattr(cfg, "entry_percent", None))
+    return float(v) if v is not None else None
+
+
 def _warmup_all_symbols(ctx: ExecContext) -> None:
     cfg = load_engine_config(ctx.engine)
 
@@ -806,19 +824,22 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
     for sym in symbols:
         try:
             warmup_symbol_rules(ctx, sym)
-            ctx.trade_executor.assert_min_entry_notional_ok(sym)
+            # ✅ 전략별 % 중 최소값 기준으로 검사 — 가장 작은 사이징 전략이
+            #    base×ENTRY_MAX_MULT 상향으로도 최소주문 미달이면 경보.
+            ctx.trade_executor.assert_min_entry_notional_ok(sym, entry_percent=_min_entry_pct(cfg, sym))
             ok_syms.append(sym)
         except Exception as e:
             fail_syms.append((sym, str(e)))
 
     if fail_syms:
-        # 🔔 1진입(5%)이 최소주문 미만인 심볼 → 텔레그램 경보(WARNING). 중단하지 않음:
+        # 🔔 base×ENTRY_MAX_MULT 상향으로도 최소주문 미만인 심볼 → 텔레그램 경보(WARNING). 중단하지 않음:
         #    해당 심볼만 진입 시 floor→skip되고, 나머지 심볼은 정상 거래.
+        max_mult = int(getattr(ctx.trade_executor, "ENTRY_MAX_MULT", 8))
         names = ", ".join(s for s, _ in fail_syms)
         detail = "\n".join(f"  • {s}: {e}" for s, e in fail_syms[:15])
         system_logger.warning(
-            f"⚠️ [{ctx.engine}] 1진입을 최대 20%까지 올려도 최소주문 미달인 심볼 {len(fail_syms)}개 "
-            f"— 진입 불가(나머지는 5~20% 자동 상향으로 정상):\n  [{names}]\n{detail}"
+            f"⚠️ [{ctx.engine}] 1진입을 base×{max_mult}까지 올려도 최소주문 미달인 심볼 {len(fail_syms)}개 "
+            f"— 진입 불가(나머지는 자동 상향으로 정상):\n  [{names}]\n{detail}"
         )
     else:
         system_logger.debug(f"[warmup] 전 심볼 1진입 ≥ 최소주문 OK ({len(ok_syms)}개)")

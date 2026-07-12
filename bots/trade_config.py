@@ -235,10 +235,14 @@ def make_bybit_config(
         leverage=leverage,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
-        # ✅ (전략,심볼)별 진입%: 전 전략 2%(0.04). 1분봉(s1/s2 드레인, s11~s13 1분봉책)=저사이징,
-        #   일봉 Bybit 크립토(s3/s4)=2%. (0.04/100 × 레버50 = 2% notional)
-        entry_percent_by_strategy={s: {"_default": 0.04}
-                                   for s in ("s1", "s2", "s3", "s4", "s11", "s12", "s13")},
+        # ✅ (전략,심볼)별 진입%: 구 1분봉(s1/s2 드레인)·일봉 Bybit 크립토(s3/s4)=2%(0.04).
+        #   S11 1분봉책(s11/s12/s13)=5%(0.1) — S11_SYMBOLS.md §5 진입비율 실측(2026-07-12):
+        #   5%=CAGR 41.7%/MTM 낙폭 53.3%(2022 스트레스 상한)/청산 불가능 수준.
+        #   (0.04/100 × 레버50 = 2% notional, 0.1/100 × 레버50 = 5% notional)
+        entry_percent_by_strategy={
+            **{s: {"_default": 0.04} for s in ("s1", "s2", "s3", "s4")},
+            **{s: {"_default": 0.1} for s in ("s11", "s12", "s13")},
+        },
         max_effective_leverage=max_effective_leverage,
 
 

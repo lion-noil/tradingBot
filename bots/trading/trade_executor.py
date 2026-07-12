@@ -126,8 +126,22 @@ class TradeExecutor:
                 break
 
         entry_notional = bal * (used_pct / 100.0) * lev
-        return qty, {"ccy": ccy, "bal": bal, "entry_notional": entry_notional,
-                     "raw_qty": raw, "per": per, "entry_percent_used": used_pct}
+        meta = {"ccy": ccy, "bal": bal, "entry_notional": entry_notional,
+                "raw_qty": raw, "per": per, "entry_percent_used": used_pct}
+
+        if qty <= 0:
+            # 스케일업 실패 사유를 meta에 남김 — [OPEN] qty=0 skip 로그에서 원인 즉시 확인용
+            raw_1 = (bal * (base_pct / 100.0) * lev) / n
+            needed_mult = (min_qty / raw_1) if raw_1 > 0 else float("inf")
+            meta["skip_reason"] = (
+                f"min_qty={min_qty} needs base×{needed_mult:.1f} "
+                f"> ENTRY_MAX_MULT={self.ENTRY_MAX_MULT} (base_pct={base_pct} bal={bal:.2f})"
+            )
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[entry-scaleup] {sym} {side_u}: 최소주문 미달 — {meta['skip_reason']}"
+                )
+        return qty, meta
 
     def _price_from_rules(self, symbol: str) -> float:
         r = self._get_rules(symbol) or {}
@@ -148,7 +162,9 @@ class TradeExecutor:
             return last
         return 0.0
 
-    def assert_min_entry_notional_ok(self, symbol: str) -> None:
+    def assert_min_entry_notional_ok(self, symbol: str, *, entry_percent: Optional[float] = None) -> None:
+        # entry_percent 미지정 시 전역/심볼 % 사용. 전략별 %가 있는 엔진은 호출측에서
+        # 최소(가장 보수적인) 전략 %를 넘겨야 실제 진입 skip 가능성과 경보가 일치함.
         sym = (symbol or "").upper().strip()
 
         # 1) rules에서 min_qty 확보
@@ -179,7 +195,9 @@ class TradeExecutor:
         if bal <= 0:
             raise RuntimeError(f"[preflight] {sym}: wallet empty ({ccy})")
 
-        entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        if entry_percent is None:
+            entry_percent = float(self.deps.get_entry_percent(sym) or 0.0)
+        entry_percent = float(entry_percent or 0.0)
         if entry_percent <= 0:
             raise RuntimeError(f"[preflight] {sym}: entry_percent invalid ({entry_percent})")
 
