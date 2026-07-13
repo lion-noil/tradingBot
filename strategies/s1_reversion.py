@@ -34,9 +34,11 @@ class S1Params:
     no_sl: bool = False         # True=SL 없음(크립토 롱 SL유해) — SL을 도달불가 레벨로 기록
     hold_sec: int = 0           # 셀별 최대보유 오버라이드(0=채널 기본 s1_max_hold_sec)
     # 급락페이드(S13) 전용 — m_min>0이면 페이드 셀
-    m_min: int = 0              # 트리거 창(분): M분 수익률
+    m_min: int = 0              # 트리거 창(봉 수): M봉 수익률. 1분 채널=분, 4h 채널=4h봉 수
     drop_pct: float = 0.0       # 트리거 낙폭(0.04 = -4%)
     retr_mult: float = 0.0      # >0이면 TP=진입가×(1+retr_mult×실낙폭), 0=시간청산만
+    # ewz(S14, S22 4시간봉책) 전용 — ewz_s>0이면 ewz 셀
+    ewz_s: int = 0              # EMA span(봉 수). resid=C−EMA_s(C), σ=EMA_s(|resid|), ez=resid/σ
 
     def validate(self) -> None:
         # B<0 허용(v2): b<0이면 TP가 평균 위(오버슈팅까지). b<k1만 필수(TP가 진입가보다 위 보장은 levels에서 가드).
@@ -67,6 +69,35 @@ def s1_indicators(closes: Sequence[float], win: int, price: Optional[float] = No
         return m, sd, None
     px = float(price) if price is not None else float(w[-1])
     return m, sd, (px - m) / sd
+
+
+def ewz_indicators(closes: Sequence[float], s: int, price: Optional[float] = None
+                   ) -> Optional[float]:
+    """ewz(EMA 잔차 z) — S22 백테스트(s22_bybit_final.ema)와 동일 산식.
+    mu_i = a·C_i + (1−a)·mu_{i−1} (a=2/(s+1), 현재봉 포함), resid=C−mu,
+    sig_i = a·|resid_i| + (1−a)·sig_{i−1}, ez = resid/sig.
+    price 지정 시 현재가를 진행중 봉의 종가로 보고 한 스텝 더 갱신해 ez 산출.
+    표본 부족(len<s)이거나 sig≤0이면 None."""
+    n = len(closes)
+    if s <= 0 or n < s:
+        return None
+    a = 2.0 / (s + 1)
+    mu = float(closes[0])
+    sig = 0.0   # 백테스트 ema(|resid|) 시드: resid[0]=0
+    for i in range(1, n):
+        c = float(closes[i])
+        mu = a * c + (1.0 - a) * mu
+        sig = a * abs(c - mu) + (1.0 - a) * sig
+    if price is not None:
+        px = float(price)
+        mu = a * px + (1.0 - a) * mu
+        sig = a * abs(px - mu) + (1.0 - a) * sig
+        resid = px - mu
+    else:
+        resid = float(closes[-1]) - mu
+    if sig <= 0:
+        return None
+    return resid / sig
 
 
 def s1_entry_levels(z: Optional[float], ma: Optional[float], sd: Optional[float],

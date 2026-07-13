@@ -20,7 +20,9 @@ from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signa
                                make_crypto_daily_trend_config, make_crypto_daily_rev_config,
                                make_mt5_daily_trend_config, make_mt5_daily_rev_config,
                                make_s11_trend_config, make_s11_rev_config, make_s11_fade_config,
-                               make_s11_mt5_trend_config, make_s11_mt5_fade_config)
+                               make_s11_mt5_trend_config, make_s11_mt5_fade_config,
+                               make_s22_trend_config, make_s22_rev_config,
+                               make_s22_ewz_config, make_s22_fade_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -381,6 +383,67 @@ ENGINES = {
         "port": 18026,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    # ── S22 「4시간봉책」 (HANDOFF_S22 2026-07-13) — Bybit 8셀, 진입 5%. namespace "s22" ──
+    "s22t": {
+        "name": "S22-TREND",
+        "make_config": lambda: make_s22_trend_config(signal_only=False),  # 🔴 LIVE (BTC·XRP z추세롱)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S22_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s22_trend.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's22' 네임스페이스 config 소유
+        "port": 18027,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s22r": {
+        "name": "S22-REV",
+        "make_config": lambda: make_s22_rev_config(signal_only=False),  # 🔴 LIVE (SOL·XRP z역추롱)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S22_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s22_rev.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's22' 공유(config는 s22t 소유)
+        "port": 18028,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s22e": {
+        "name": "S22-EWZ",
+        "make_config": lambda: make_s22_ewz_config(signal_only=False),  # 🔴 LIVE (ETH롱·숏, SOL롱 — 신규 s14)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S22_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s22_ewz.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's22' 공유
+        "port": 18029,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s22f": {
+        "name": "S22-FADE",
+        "make_config": lambda: make_s22_fade_config(signal_only=False),  # 🔴 LIVE (XRP 48h -15% 페이드)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S22_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s22_fade.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 's22' 공유
+        "port": 18030,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
     },
 }
 

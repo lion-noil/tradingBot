@@ -126,7 +126,7 @@ class TradeBot:
         _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
         if _strat == "s1":
             self._warmup_s1_last_exit()
-        if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13"):  # 1분/일봉/1분봉책 전 시그마계열
+        if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):  # 1분/일봉/1분봉책/4h책 전 시그마계열
             self._warmup_s1_last_entry()  # 진입 쿨다운 복원(재시작 재진입 방지)
 
         # signal processor
@@ -184,6 +184,8 @@ class TradeBot:
                         m_min=int(dd.get("m_min", 0) or 0),
                         drop_pct=float(dd.get("drop_pct", 0.0) or 0.0),
                         retr_mult=float(dd.get("retr_mult", 0.0) or 0.0),
+                        # ✅ S22(4시간봉책) ewz 셀
+                        ewz_s=int(dd.get("ewz_s", 0) or 0),
                     )
                     for dr, dd in (dirs or {}).items()
                 }

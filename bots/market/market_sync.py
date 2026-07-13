@@ -17,8 +17,9 @@ class MarketSyncConfig:
     ws_stale_sec: float
     ws_global_stale_sec: float
     candles_num: int
-    candle_interval: str = "1"  # "1"(분, 기존) | "D"(일봉). 일봉채널만 "D" → tick이 _tick_daily로 분기.
+    candle_interval: str = "1"  # "1"(분, 기존) | "D"(일봉) | "240"(4h, S22). 비-1분은 tick이 _tick_interval로 분기.
     daily_backfill_cooldown_sec: float = 3600.0  # 일봉 REST 재갱신 간격(1h). 일봉=하루1봉이라 충분 → 서버부하↓
+    interval_backfill_cooldown_sec: float = 300.0  # 시간봉(4h 등) REST 재갱신 간격(5분). 봉폭 대비 지연 무시 가능
 
 
 class MarketSync:
@@ -84,6 +85,7 @@ class MarketSync:
                         self.system_logger.error(f"[MarketSync] subscribe failed: {e}")
 
         # 1) 캔들 백필 + 2) 인디케이터 refresh (bootstrap_candles_for_symbol 안에서 수행)
+        #    ✅ 채널 인터벌로 부트스트랩(비-1분 채널이 1m 캔들로 시작하는 창을 제거)
         for sym in symbols:
             bootstrap_candles_for_symbol(
                 rest_client=self.rest,
@@ -92,6 +94,7 @@ class MarketSync:
                 symbol=sym,
                 candles_num=self.cfg.candles_num,
                 system_logger=self.system_logger,
+                interval=self.cfg.candle_interval,
             )
 
         if self.system_logger:
@@ -270,9 +273,10 @@ class MarketSync:
         if (expected_closed - int(engine_last)) < 2:
             return
 
-    def _tick_daily(self, symbol: str, now_ts: float) -> Optional[float]:
-        """일봉 채널 전용 tick(분 로직 완전 우회·격리). 라이브 가격=ticker(WS),
-        캔들=일봉 REST 주기 백필. 분 단위 확정봉/갭백필 로직 안 씀 → 1분 서비스 무영향."""
+    def _tick_interval(self, symbol: str, now_ts: float) -> Optional[float]:
+        """비-1분 채널(일봉 "D"/시간봉 "240" 등) 전용 tick(분 로직 완전 우회·격리).
+        라이브 가격=ticker(WS), 캔들=해당 인터벌 REST 주기 백필.
+        분 단위 확정봉/갭백필 로직 안 씀 → 1분 서비스 무영향."""
         self.ensure_symbol(symbol)
         price = self.get_price(symbol, now_ts)
         if price is not None and self.on_price:
@@ -280,26 +284,29 @@ class MarketSync:
                 self.on_price(symbol, float(price), self.ws.get_last_exchange_ts(symbol))
             except Exception:
                 pass
-        # 일봉 캔들 REST 주기 갱신 (긴 쿨다운). 분 WS 캔들 미사용.
-        if self._can_backfill_now(symbol, now_ts, cooldown_sec=self.cfg.daily_backfill_cooldown_sec) \
+        itv = self.cfg.candle_interval
+        cd = self.cfg.daily_backfill_cooldown_sec if itv == "D" \
+            else self.cfg.interval_backfill_cooldown_sec
+        # 캔들 REST 주기 갱신 (인터벌별 쿨다운). 분 WS 캔들 미사용.
+        if self._can_backfill_now(symbol, now_ts, cooldown_sec=cd) \
                 and self._enter_backfill(symbol):
             try:
                 self.rest.update_candles(self.candle.get_candles(symbol), symbol=symbol,
-                                         count=self.cfg.candles_num, interval="D")
+                                         count=self.cfg.candles_num, interval=itv)
                 try:
                     self.refresh_indicators(symbol)
                 except Exception:
                     pass
             except Exception as e:
                 if self.system_logger:
-                    self.system_logger.debug(f"❌ [일봉 backfill] ({symbol}) failed: {e}")
+                    self.system_logger.debug(f"❌ [{itv} backfill] ({symbol}) failed: {e}")
             finally:
                 self._exit_backfill(symbol)
         return price
 
     def tick(self, symbol: str, now_ts: float) -> Optional[float]:
-        if self.cfg.candle_interval == "D":
-            return self._tick_daily(symbol, now_ts)
+        if self.cfg.candle_interval != "1":
+            return self._tick_interval(symbol, now_ts)
         self.ensure_symbol(symbol)  # ✅ 여기 추가
         price = self.get_price(symbol, now_ts)
         self._backfill_or_accumulate(symbol, price, now_ts)

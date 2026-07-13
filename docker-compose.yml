@@ -283,6 +283,67 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # ── S22 「4시간봉책」 (HANDOFF_S22 2026-07-13) — Bybit 8셀, 진입 5%. ns s22, executor-a1 ──
+  signal-s22t:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22t
+      - S22_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s22r:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22r
+      - S22_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s22e:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22e
+      - S22_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s22f:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22f
+      - S22_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
   # 라벨 autoheal=true 인 컨테이너만 대상. 데몬측 restart라 행된 PID1도 확실히 종료.

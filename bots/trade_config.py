@@ -238,10 +238,12 @@ def make_bybit_config(
         # ✅ (전략,심볼)별 진입%: 구 1분봉(s1/s2 드레인)·일봉 Bybit 크립토(s3/s4)=2%(0.04).
         #   S11 1분봉책(s11/s12/s13)=5%(0.1) — S11_SYMBOLS.md §5 진입비율 실측(2026-07-12):
         #   5%=CAGR 41.7%/MTM 낙폭 53.3%(2022 스트레스 상한)/청산 불가능 수준.
+        #   S22 4시간봉책(s14=ewz 포함, HANDOFF_S22)=5% — z/페이드 셀은 s11~s13 태그 공유(동률 5%).
+        #   ⚠️ S11+S22 동시 5%는 2022형 이벤트 합산낙폭 62%(청산은 38배 여유) — HANDOFF_S22 §3.
         #   (0.04/100 × 레버50 = 2% notional, 0.1/100 × 레버50 = 5% notional)
         entry_percent_by_strategy={
             **{s: {"_default": 0.04} for s in ("s1", "s2", "s3", "s4")},
-            **{s: {"_default": 0.1} for s in ("s11", "s12", "s13")},
+            **{s: {"_default": 0.1} for s in ("s11", "s12", "s13", "s14")},
         },
         max_effective_leverage=max_effective_leverage,
 
@@ -694,7 +696,7 @@ def make_mt5_signal_config(
         entry_percent_by_strategy={
             **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉(드레인 중) 2%
             # S11 확장판(MT5·FX)은 데이터 3.5년(2022 미검증) → 마스터 권고 "보수 사이징" = 1%(0.02)
-            **{s: {"_default": 0.02} for s in ("s11", "s12", "s13")},
+            **{s: {"_default": 0.02} for s in ("s11", "s12", "s13", "s14")},
             **{s: {"_default": 0.1,  # 일봉 FX 5% 유지
                    "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
                    "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
@@ -714,3 +716,68 @@ def make_mt5_signal_config(
         signal_only=False,
     )
     return cfg.normalized()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S22 「4시간봉책」 — HANDOFF_S22 (2026-07-13). Bybit 라이브 v1 = 8셀, 진입 5%/자산.
+#   namespace "s22" (S11/일봉과 open_signals 분리 필수). candle_interval="240"(4h, UTC 정렬).
+#   패밀리: z추세(s11)/z역추세(s12)/급락페이드(s13)=기존 엔진 재사용, ewz추세(s14)=신규.
+#   공통: 봉마감 진입(틱 근사), SL 없음(숏 포함 — 숏 손절 대체=시간청산), 보유≤15d.
+#   워밍업 600봉(win240+EMA 안정화) → candles_num=700.
+#   검증: 상장 전기간·연도균형·이웃격자 견고성. 계획기대=이웃 중앙값(보수치).
+# ─────────────────────────────────────────────────────────────────────────────
+_H4 = 4 * _H   # 4시간봉 1개(초)
+
+
+def make_s22_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22 z추세롱 (Bybit 4h). #1 BTC K3.25/B-2.5 cd24h / #6 XRP K4.0/B-3.0 cd12h.
+    TP=진입가 대비 밴드거리 미러(엔진 entry_high pct=1-(MA+Bσ)/price, B<0=오버슛), 고가터치≈틱."""
+    S22_TREND = {
+        "BTCUSDT": {"long": {"win": 240, "k1": 3.25, "b": -2.5, "cooldown_sec": 24 * _H, "max_concurrent": 200, "no_sl": True}},
+        "XRPUSDT": {"long": {"win": 240, "k1": 4.0,  "b": -3.0, "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s22", params_by_symbol=S22_TREND, strategy="s11",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22 z역추세롱 (Bybit 4h). #5 SOL K2.75/TP=MA+1.0σ(B=-1.0) cd24h / #7 XRP K3.0/TP=MA-1.5σ(B=+1.5) cd12h.
+    엔진 entry_low pct=(MA-Bσ)/price-1 → TP=MA-Bσ. 추매 없음."""
+    S22_REV = {
+        "SOLUSDT": {"long": {"win": 240, "k1": 2.75, "b": -1.0, "cooldown_sec": 24 * _H, "max_concurrent": 200, "no_sl": True}},
+        "XRPUSDT": {"long": {"win": 240, "k1": 3.0,  "b": 1.5,  "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s22", params_by_symbol=S22_REV, strategy="s12",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22_ewz_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22 ewz추세 (Bybit 4h, 신규 패밀리 s14). resid=C-EMA_s, σ=EMA_s(|resid|), ez=resid/σ.
+    #2 ETH롱 s200 k3.0 T90봉(15d) / #3 ETH숏 s50 k2.5 T18봉(3d, 22년 헤지) / #4 SOL롱 s20 k3.0 T60봉(10d).
+    청산=시간청산 전용(hold_sec), 쿨다운 24h(진입기준 6봉)."""
+    S22_EWZ = {
+        "ETHUSDT": {"long":  {"ewz_s": 200, "k1": 3.0, "cooldown_sec": 24 * _H, "hold_sec": 90 * _H4, "max_concurrent": 200},
+                    "short": {"ewz_s": 50,  "k1": 2.5, "cooldown_sec": 24 * _H, "hold_sec": 18 * _H4, "max_concurrent": 200}},
+        "SOLUSDT": {"long":  {"ewz_s": 20,  "k1": 3.0, "cooldown_sec": 24 * _H, "hold_sec": 60 * _H4, "max_concurrent": 200}},
+    }
+    return make_s1_config(name="s22", params_by_symbol=S22_EWZ, strategy="s14",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22 급락페이드 (Bybit 4h). #8 XRP: 12봉(48h) 수익률 ≤-15% → TP=진입가×(1+1.5×|낙폭|), 캡 60봉(10d).
+    ⚠️ m_min은 '봉 수'(엔진이 closes 인덱스로 사용) — 4h 채널에서 12=48h."""
+    S22_FADE = {
+        "XRPUSDT": {"long": {"m_min": 12, "drop_pct": 0.15, "retr_mult": 1.5, "hold_sec": 60 * _H4,
+                             "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="s22", params_by_symbol=S22_FADE, strategy="s13",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=10 * _D, **kw)

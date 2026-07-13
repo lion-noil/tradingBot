@@ -11,16 +11,19 @@ def bootstrap_candles_for_symbol(
         symbol: str,
         candles_num: int,
         system_logger=None,
+        interval: str = "1",
 ) -> None:
     """
     과거 캔들 백필 + 인디케이터(MA100 등) 갱신만 담당.
     - 시그널 전용 모드에서도 반드시 필요.
+    - interval: 채널 캔들 타임프레임("1"/"D"/"240") — 비-1분 채널도 처음부터 올바른 캔들로 시작.
     """
     try:
         rest_client.update_candles(
             candle_engine.get_candles(symbol),
             symbol=symbol,
             count=candles_num,
+            interval=interval,
         )
         refresh_indicators(symbol)
     except Exception as e:

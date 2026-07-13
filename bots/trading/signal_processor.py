@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 import time
 from strategies.s1_reversion import (
     S1Params, S1Position, s1_indicators, s1_cooldown_ok,
-    sigma_entry_levels, sigma_exit_on_tick, avgdown_levels,
+    sigma_entry_levels, sigma_exit_on_tick, avgdown_levels, ewz_indicators,
 )
 
 # ✅ tag 포함 (signal_id, ts_ms, entry_price, entry_tag)
@@ -105,6 +105,8 @@ class SignalProcessor:
             return self._process_sigma(symbol, price)
         if self.strategy == "s13":  # 급락페이드(1분봉책 신규 패밀리)
             return self._process_fade(symbol, price)
+        if self.strategy == "s14":  # ewz 추세(S22 4시간봉책 신규 패밀리) — 시간청산 전용
+            return self._process_ewz(symbol, price)
         # basic(MA100) 등 비-시그마 전략은 퇴출 → 신호 없음(config publish/상태표시 노드).
         return []
 
@@ -347,6 +349,72 @@ class SignalProcessor:
             "cooldown_sec": int(p.cooldown_sec),
             # ✅ 텔레그램 표기용: 이 진입 포함 현재중첩 / 최대중첩 / 최대보유(페이드 셀별 24~72h)
             "concurrent": len(rows) + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
+            "max_hold_sec": self._hold_sec_for(symbol, side) or None,
+        }
+        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
+        if self.deps.set_last_entry_ts_ms:
+            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
+        return [TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                            sig=payload, signal_id=signal_id)]
+
+    # ──────────────────────────────────────────────────────────────
+    # ewz 추세(s14, HANDOFF_S22) — EMA 잔차 z: resid=C−EMA_s, σ=EMA_s(|resid|), ez=resid/σ.
+    #   진입: 롱 ez≥+K1 / 숏 ez≤−K1 (방향은 파라미터 키 LONG/SHORT로 지정).
+    #   청산: 시간청산 전용(셀별 hold_sec) — TP/SL 없음(도달불가 레벨 기록, 스캔은 시그마 공용 TIME).
+    # ──────────────────────────────────────────────────────────────
+    def _process_ewz(self, symbol: str, price: float) -> List[TradeAction]:
+        exits: List[TradeAction] = []
+        for side in ("LONG", "SHORT"):
+            if self._sigma_params_for(symbol, side) is not None:
+                exits += self._decide_exits_sigma(symbol, price, side)
+        if exits:
+            return exits
+        entries: List[TradeAction] = []
+        for side in ("LONG", "SHORT"):
+            if self._sigma_params_for(symbol, side) is not None:
+                entries += self._decide_entry_ewz(symbol, price, side)
+        return entries
+
+    def _decide_entry_ewz(self, symbol: str, price: float, side: str) -> List[TradeAction]:
+        if self.entries_disabled:
+            return []
+        p = self._sigma_params_for(symbol, side)
+        if p is None or int(getattr(p, "ewz_s", 0) or 0) <= 0:
+            return []
+        is_long = (side == "LONG")
+        now_ms = int(time.time() * 1000)
+        if self.deps.get_last_entry_ts_ms is not None:
+            if not s1_cooldown_ok(self.deps.get_last_entry_ts_ms(symbol, side), now_ms, p):
+                return []
+        rows = self.deps.get_open_s1_positions(symbol, side) or []
+        n = len(rows)
+        if n >= self._sigma_maxc_for(symbol, side):
+            return []
+        closes = self.deps.get_recent_closes(symbol)
+        s = int(p.ewz_s)
+        if not closes or len(closes) <= s:
+            return []
+        # closes[-1]은 진행중 봉(REST 스냅샷) — 현재가를 그 봉의 종가로 치환해 ez 산출
+        ez = ewz_indicators(closes[:-1], s, price)
+        if ez is None:
+            return []
+        if is_long:
+            if ez < p.k1:
+                return []
+        else:
+            if ez > -p.k1:
+                return []
+        # 시간청산 전용: TP/SL 도달불가 레벨(청산 스캔은 TIME만 발동)
+        if is_long:
+            tp, sl = price * 1e9, price * 1e-9
+        else:
+            tp, sl = price * 1e-9, price * 1e9
+        payload = {
+            "kind": "ENTRY", "side": side, "strategy": "S14", "reasons": ["S14"],
+            "price": price, "z": round(float(ez), 4), "k1": p.k1, "ewz_s": s,
+            "tp_price": tp, "sl_price": sl,
+            "cooldown_sec": int(p.cooldown_sec),
+            "concurrent": n + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
             "max_hold_sec": self._hold_sec_for(symbol, side) or None,
         }
         signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
