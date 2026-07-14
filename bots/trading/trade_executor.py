@@ -93,9 +93,11 @@ class TradeExecutor:
         k0 = next(iter(wallet.keys()), "")
         return (k0 or "ACC"), float(wallet.get(k0) or 0.0) if k0 else 0.0
 
-    ENTRY_MAX_MULT = 8   # 1진입 단계 상향 상한: base×8까지 (소액 자본 최소주문 대응).
+    ENTRY_MAX_MULT = 16   # 1진입 단계 상향 상한: base×16까지 (소액 자본 최소주문 대응).
     #   최소주문 처음 충족하는 최소 단계에서 멈춤 → 포지션은 항상 min-qty 크기(상한↑=진입가능 심볼↑, 크기↑ 아님).
     #   예: BTCUSDT(Bybit) 잔고 443·2%base → mult7(≈0.001 BTC)에서 최소주문 충족. (4로는 미달=skip이었음)
+    #   16으로 상향(2026-07-14): MT5 XAUUSD(min_notional≈4020 USD)가 s11m 1%base×8(0.16%)로도 미달 →
+    #     ×16(0.32%)에서 충족. 단, XAUUSD 실매매는 s3/s4(2%base)라 실제론 mult≈5에서 진입됨.
 
     def calc_entry_qty_for_symbol(self, symbol: str, side_u: str, *, strategy: Optional[str] = None) -> tuple[float, dict]:
         sym = symbol.upper().strip()
