@@ -209,6 +209,7 @@ services:
 
   # ── S11 「1분봉책」 (HANDOFF_MASTER v4) — 구 S1/S2 대체. ns s11(Bybit, executor-a1)/s11m(MT5, a2) ──
   signal-s11t:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -224,6 +225,7 @@ services:
       - executor-a1
 
   signal-s11r:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -239,6 +241,7 @@ services:
       - executor-a1
 
   signal-s11f:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -254,6 +257,7 @@ services:
       - executor-a1
 
   signal-s11mt:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -269,6 +273,7 @@ services:
       - ./logs:/app/logs
 
   signal-s11mf:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -285,6 +290,7 @@ services:
 
   # ── S22 「4시간봉책」 (HANDOFF_S22 2026-07-13) — Bybit 8셀, 진입 5%. ns s22, executor-a1 ──
   signal-s22t:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -300,6 +306,7 @@ services:
       - executor-a1
 
   signal-s22r:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -315,6 +322,7 @@ services:
       - executor-a1
 
   signal-s22e:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -330,6 +338,7 @@ services:
       - executor-a1
 
   signal-s22f:
+    profiles: ["retired"]   # 책 통합(signal-s11/s22/s11m)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -343,6 +352,53 @@ services:
       - ./logs:/app/logs
     depends_on:
       - executor-a1
+
+  # ── 책 통합 채널 (2026-07-14) — 셀 패밀리별 컨테이너를 책당 1프로세스로 통합. ──
+  #   WS 1개 공유 + 쿨다운 태그별 분리 + 텔레그램 '전체 N'=책 유니버스.
+  #   구 s11t/r/f·s22t/r/e/f·s11mt/mf는 retired 프로파일(위) — 롤백 시 프로파일만 해제.
+  signal-s11:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11
+      - S11_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  signal-s22:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22
+      - S22_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  # S11 MT5 확장판 통합 — executor-a2(Windows-native 127.0.0.1:9010) 접근은 wsl 오버레이(host net)가 지정
+  signal-s11m:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s11m
+      - S11M_EXECUTOR_TARGETS=host.docker.internal:9010
+    volumes:
+      - ./logs:/app/logs
 
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.

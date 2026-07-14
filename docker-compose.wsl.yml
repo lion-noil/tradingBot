@@ -44,7 +44,13 @@ services:
     environment:
       - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
 
-  # S11 확장판(MT5) — executor-a2 접근 위해 host net
+  # S11 MT5 책 통합 — executor-a2 접근 위해 host net (uvicorn 포트 18033, 호스트넷 충돌 없음)
+  signal-s11m:
+    network_mode: host
+    environment:
+      - S11M_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  # S11 확장판(MT5) — executor-a2 접근 위해 host net (retired: 책 통합 signal-s11m으로 대체)
   signal-s11mt:
     network_mode: host
     environment:

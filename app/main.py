@@ -445,6 +445,60 @@ ENGINES = {
         "warmup_timeout": None,
         "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
     },
+    # ── 책 통합 엔진 (2026-07-14) — 셀 패밀리별 컨테이너를 책당 1프로세스로 통합. ──
+    #   WS 1개 공유(중복 구독 제거) + 쿨다운 태그별 분리 + 텔레그램 '전체 N'=책 유니버스.
+    #   구 채널(s11t/r/f, s22t/r/e/f, s11mt/mf)은 compose에서 retired 프로파일로 봉인(롤백용).
+    "s11": {
+        "name": "S11-BOOK",
+        "make_configs": lambda: [make_s11_trend_config(signal_only=False),   # 첫 항목=primary(config publish 소유)
+                                 make_s11_rev_config(signal_only=False),
+                                 make_s11_fade_config(signal_only=False)],   # 🔴 LIVE (1분봉책 11셀)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S11_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s11_book.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's11' 네임스페이스 config 소유(구 s11t 역할 승계)
+        "port": 18031,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s22": {
+        "name": "S22-BOOK",
+        "make_configs": lambda: [make_s22_trend_config(signal_only=False),   # 첫 항목=primary
+                                 make_s22_rev_config(signal_only=False),
+                                 make_s22_ewz_config(signal_only=False),
+                                 make_s22_fade_config(signal_only=False)],   # 🔴 LIVE (4시간봉책 8셀)
+        "make_controllers": _build_bybit_controllers,
+        "targets_env": "S22_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s22_book.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's22' 네임스페이스 config 소유(구 s22t 역할 승계)
+        "port": 18032,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s11m": {
+        "name": "S11M-BOOK",
+        "make_configs": lambda: [make_s11_mt5_trend_config(signal_only=False),  # 첫 항목=primary
+                                 make_s11_mt5_fade_config(signal_only=False)],  # 🔴 LIVE (S11 MT5 확장판)
+        "make_controllers": _build_mt5_controllers,
+        "targets_env": "S11M_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s11m_book.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's11m' 네임스페이스 config 소유(구 s11mt 역할 승계)
+        "port": 18033,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
 }
 
 
@@ -604,8 +658,23 @@ async def startup_event():
     _heartbeat()  # 부팅 즉시 1회 → healthcheck가 워밍업 시작 전에 오인 kill 안 하도록
     system_logger.debug(f"🚀 신호 봇 시작 (engine={ENGINE}, name={NAME})")
 
-    cfg = SPEC["make_config"]()
-    symbols = tuple(getattr(cfg, "symbols", []) or [])
+    # ✅ 책 모드(make_configs): 서브 config 리스트 — 첫 항목=primary, 심볼=합집합(순서보존)
+    sub_cfgs = None
+    if SPEC.get("make_configs"):
+        sub_cfgs = SPEC["make_configs"]()
+        cfg = sub_cfgs[0]
+        _seen = []
+        for _c in sub_cfgs:
+            for _s in (getattr(_c, "symbols", []) or []):
+                if _s not in _seen:
+                    _seen.append(_s)
+        symbols = tuple(_seen)
+        system_logger.debug(
+            f"🔧 {NAME} 책 모드: 서브 {len(sub_cfgs)}개 "
+            f"tags={[getattr(c, 'strategy', '?') for c in sub_cfgs]}")
+    else:
+        cfg = SPEC["make_config"]()
+        symbols = tuple(getattr(cfg, "symbols", []) or [])
     if not symbols:
         system_logger.error(f"⚠️ [{NAME}] 거래 심볼이 없습니다 — .env(심볼 env) 확인.")
     system_logger.debug(f"🔧 {NAME} symbols={symbols}, config={cfg.as_dict()}")
@@ -632,6 +701,7 @@ async def startup_event():
         config=cfg,
         action_sender=local_sender,
         publish_config=SPEC["publish_config"],
+        sub_configs=sub_cfgs,  # ✅ 책 모드(None이면 단일 모드)
     )
 
     asyncio.create_task(bot_loop(bot, ws_controller, NAME, SPEC["warmup_timeout"]))

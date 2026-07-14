@@ -32,6 +32,9 @@ class TradeBot:
             symbols=("BTCUSDT",),
             config: TradeConfig | None = None,
             publish_config: bool = True,  # False면 config를 Redis에 브로드캐스트 안 함(네임스페이스 공유 시 충돌 방지)
+            sub_configs: list | None = None,  # ✅ 책 모드: 셀 패밀리별 config 리스트(첫 항목=primary).
+            #    한 프로세스가 프로세서 여러 개를 돌리며 WS/캔들/인덱스를 공유 — 컨테이너 통합.
+            #    None이면 기존 단일 모드(하위호환 100%).
     ):
         self.ws = ws_controller
         self.rest = rest_controller
@@ -44,6 +47,17 @@ class TradeBot:
         # config
         self.config = (TradeConfig().normalized() if config is None else config.normalized())
         self.namespace: str = getattr(self.config, "name", None) or "bybit"
+        # ✅ 책 모드 서브 config들 (전부 같은 namespace/candle_interval이어야 함)
+        self.sub_configs: list[TradeConfig] | None = (
+            [c.normalized() for c in sub_configs] if sub_configs else None)
+        if self.sub_configs:
+            for _sc in self.sub_configs:
+                _ns = getattr(_sc, "name", None) or "bybit"
+                _iv = getattr(_sc, "candle_interval", "1")
+                if _ns != self.namespace or _iv != getattr(self.config, "candle_interval", "1"):
+                    raise ValueError(
+                        f"[TradeBot] 책 모드 서브 config 불일치: ns={_ns} interval={_iv} "
+                        f"(primary ns={self.namespace})")
         if publish_config:
             self.config.to_redis(redis_client, publish=True)
 
@@ -123,14 +137,63 @@ class TradeBot:
             symbols=self.symbols,
         )
 
-        _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
-        if _strat == "s1":
-            self._warmup_s1_last_exit()
-        if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):  # 1분/일봉/1분봉책/4h책 전 시그마계열
-            self._warmup_s1_last_entry()  # 진입 쿨다운 복원(재시작 재진입 방지)
+        # ── 시그널 프로세서 구성 ──
+        # 단일 모드: 기존과 동일(프로세서 1개, 유니버스=채널 태그 범위).
+        # 책 모드(sub_configs): 셀 패밀리별 프로세서 N개가 WS/캔들/인덱스/전송을 공유.
+        #   쿨다운 상태는 태그별 분리(dict 분리), 유니버스 중첩은 tag=None → 책 전체 합산.
+        if self.sub_configs:
+            self._procs: list[tuple[SignalProcessor, TradeConfig]] = []
+            for sub in self.sub_configs:
+                _strat = (getattr(sub, "strategy", "s1") or "s1").lower()
+                e_store: dict[tuple[str, str], int] = {}
+                x_store: dict[tuple[str, str], int] = {}
+                if _strat == "s1":
+                    self._warmup_s1_last_exit(store=x_store)
+                if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):
+                    self._warmup_s1_last_entry(cfg=sub, store=e_store)
+                sp = self._make_signal_processor(sub, e_store, x_store, universe_tag=None)
+                self._procs.append((sp, sub))
+            self.signal_processor = self._procs[0][0]  # 하위호환(외부 참조 대비)
+        else:
+            _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
+            if _strat == "s1":
+                self._warmup_s1_last_exit(store=self._last_exit_ts_ms)
+            if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):  # 1분/일봉/1분봉책/4h책 전 시그마계열
+                self._warmup_s1_last_entry(cfg=self.config, store=self._last_entry_ts_ms)  # 진입 쿨다운 복원
+            self.signal_processor = self._make_signal_processor(
+                self.config, self._last_entry_ts_ms, self._last_exit_ts_ms,
+                universe_tag=(getattr(self.config, "strategy", "") or "").upper())
+            self._procs = [(self.signal_processor, self.config)]
 
-        # signal processor
-        self.signal_processor = SignalProcessor(
+        # reporter
+        self.reporter = StatusReporter(
+            system_logger=self.system_logger,
+            deps=StatusReporterDeps(
+                get_symbols=lambda: self.symbols,
+                get_jump_state=lambda: self.jump_service.get_state_map(),
+                get_ma_threshold=lambda: self.state.ma_threshold,
+                get_now_ma100=lambda: self.state.now_ma100,
+                get_price=lambda s, now_ts: self.market.get_price(s, now_ts),
+                get_ma_check_enabled=lambda: self.state.ma_check_enabled,
+                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
+            ),
+            build_fn=build_market_status_log,
+            extract_fn=extract_market_status_summary,
+            should_fn=should_log_update_market,
+        )
+
+    def _make_signal_processor(
+            self,
+            cfg: TradeConfig,
+            entry_store: dict,
+            exit_store: dict,
+            *,
+            universe_tag: str | None,
+    ) -> SignalProcessor:
+        """cfg(전략 태그·파라미터맵) 기준 SignalProcessor 생성.
+        entry/exit_store = 이 프로세서 전용 쿨다운 상태(책 모드에서 태그별 분리).
+        universe_tag = '전체 N' 카운트 범위 태그(None=네임스페이스 전체 = 책 유니버스)."""
+        return SignalProcessor(
             system_logger=self.system_logger,
             deps=SignalProcessorDeps(
                 log_signal=lambda sym, side, kind, price, sig: record_and_index_signal(
@@ -152,30 +215,35 @@ class TradeBot:
                 ],
                 get_open_s1_positions=lambda sym, side: self.open_signals_index.list_open_s1(
                     namespace=self.namespace, symbol=sym, side=(side or "").upper(),
-                    tag=(getattr(self.config, "strategy", "") or "").upper()  # S1/S2 분리
+                    tag=(getattr(cfg, "strategy", "") or "").upper()  # 전략 태그 분리
                 ),
-                get_last_exit_ts_ms=lambda sym, side: self._last_exit_ts_ms.get(
+                # ✅ 텔레그램 '전체 N' 표기용: 유니버스 열린 게임 수(책 모드=네임스페이스 전체)
+                get_open_universe_count=lambda: self.open_signals_index.count_open_universe(
+                    namespace=self.namespace,
+                    tag=universe_tag,
+                ),
+                get_last_exit_ts_ms=lambda sym, side: exit_store.get(
                     ((sym or "").upper(), (side or "").upper())),
-                set_last_exit_ts_ms=lambda sym, side, ts_ms: self._last_exit_ts_ms.__setitem__(
+                set_last_exit_ts_ms=lambda sym, side, ts_ms: exit_store.__setitem__(
                     ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
-                get_last_entry_ts_ms=lambda sym, side: self._last_entry_ts_ms.get(
+                get_last_entry_ts_ms=lambda sym, side: entry_store.get(
                     ((sym or "").upper(), (side or "").upper())),
-                set_last_entry_ts_ms=lambda sym, side, ts_ms: self._last_entry_ts_ms.__setitem__(
+                set_last_entry_ts_ms=lambda sym, side, ts_ms: entry_store.__setitem__(
                     ((sym or "").upper(), (side or "").upper()), int(ts_ms)),
             ),
-            strategy=getattr(self.config, "strategy", "s1"),
+            strategy=getattr(cfg, "strategy", "s1"),
             s1_params=S1Params(
-                win=int(getattr(self.config, "s1_win", 10080)),
-                k1=float(getattr(self.config, "s1_k1", 2.5)),
-                b=float(getattr(self.config, "s1_b", 2.0)),
-                cooldown_sec=int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)),
+                win=int(getattr(cfg, "s1_win", 10080)),
+                k1=float(getattr(cfg, "s1_k1", 2.5)),
+                b=float(getattr(cfg, "s1_b", 2.0)),
+                cooldown_sec=int(getattr(cfg, "s1_cooldown_sec", 12 * 3600)),
             ),
             # ✅ 시그마 v3: 심볼별·방향별 파라미터/캡 (중첩맵 {SYM:{LONG/SHORT:{...}}})
             s1_params_by_symbol={
                 str(sym).upper(): {
                     str(dr).upper(): S1Params(
                         # ✅ 심볼×방향별 win (HANDOFF_MASTER v2: 일봉 창 60~200 재배정). 미지정 시 채널 s1_win.
-                        win=int(dd.get("win", getattr(self.config, "s1_win", 10080))),
+                        win=int(dd.get("win", getattr(cfg, "s1_win", 10080))),
                         k1=float(dd.get("k1", 2.5)), b=float(dd.get("b", 2.0)),
                         cooldown_sec=int(dd.get("cooldown_sec", 12 * 3600)),
                         # ✅ S11(1분봉책 v4): SL無 셀·셀별 보유·급락페이드 파라미터
@@ -189,39 +257,24 @@ class TradeBot:
                     )
                     for dr, dd in (dirs or {}).items()
                 }
-                for sym, dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+                for sym, dirs in (getattr(cfg, "s1_params_by_symbol", {}) or {}).items()
             },
             s1_maxc_by_symbol={
                 str(sym).upper(): {
                     str(dr).upper(): int(dd.get("max_concurrent", 1))
                     for dr, dd in (dirs or {}).items()
                 }
-                for sym, dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).items()
+                for sym, dirs in (getattr(cfg, "s1_params_by_symbol", {}) or {}).items()
             },
-            s1_max_hold_sec=int(getattr(self.config, "s1_max_hold_sec", 14 * 24 * 3600)),
-            avg_down=bool(getattr(self.config, "avg_down", False)),
-            entries_disabled=bool(getattr(self.config, "entries_disabled", False)),  # ✅ 드레인 모드
+            s1_max_hold_sec=int(getattr(cfg, "s1_max_hold_sec", 14 * 24 * 3600)),
+            avg_down=bool(getattr(cfg, "avg_down", False)),
+            entries_disabled=bool(getattr(cfg, "entries_disabled", False)),  # ✅ 드레인 모드
         )
 
-        # reporter
-        self.reporter = StatusReporter(
-            system_logger=self.system_logger,
-            deps=StatusReporterDeps(
-                get_symbols=lambda: self.symbols,
-                get_jump_state=lambda: self.jump_service.get_state_map(),
-                get_ma_threshold=lambda: self.state.ma_threshold,
-                get_now_ma100=lambda: self.state.now_ma100,
-                get_price=lambda s, now_ts: self.market.get_price(s, now_ts),
-                get_ma_check_enabled=lambda: self.state.ma_check_enabled,
-                get_min_ma_threshold=lambda: self.state.min_ma_threshold,
-            ),
-            build_fn=build_market_status_log,
-            extract_fn=extract_market_status_summary,
-            should_fn=should_log_update_market,
-        )
-
-    def _warmup_s1_last_exit(self, *, count: int = 5000):
+    def _warmup_s1_last_exit(self, *, count: int = 5000, store: dict | None = None):
         """S1 쿨다운 복원: 쿨다운 기간만큼 거슬러 올라가 (sym,side)별 최신 EXIT ts 적재."""
+        if store is None:
+            store = self._last_exit_ts_ms
         key = f"trading:{self.namespace}:signals"
         now_ms = int(time.time() * 1000)
         look_ms = (int(getattr(self.config, "s1_cooldown_sec", 12 * 3600)) + 60) * 1000
@@ -246,22 +299,28 @@ class TradeBot:
             except Exception:
                 continue
             ek = (sym, side)
-            if ek not in self._last_exit_ts_ms:  # newest-first → 처음이 최신
-                self._last_exit_ts_ms[ek] = ts_i
+            if ek not in store:  # newest-first → 처음이 최신
+                store[ek] = ts_i
 
-    def _warmup_s1_last_entry(self, *, count: int = 5000):
+    def _warmup_s1_last_entry(self, *, count: int = 5000,
+                              cfg: TradeConfig | None = None, store: dict | None = None):
         """진입 쿨다운 복원(재시작 재진입 방지): (sym,side)별 최신 ENTRY ts 적재.
         인메모리 _last_entry_ts_ms가 재시작에 날아가 쿨다운이 풀려 중복진입하는 걸 막음.
-        일봉 등 긴 쿨다운(1~10일)에서 특히 중요(autoheal 재기동 대비)."""
+        일봉 등 긴 쿨다운(1~10일)에서 특히 중요(autoheal 재기동 대비).
+        책 모드: cfg/store를 서브별로 넘겨 태그별 쿨다운 상태를 분리 복원."""
+        if cfg is None:
+            cfg = self.config
+        if store is None:
+            store = self._last_entry_ts_ms
         key = f"trading:{self.namespace}:signals"
         now_ms = int(time.time() * 1000)
         # 심볼별 쿨다운이 제각각 → 가장 긴 쿨다운 기준 룩백(여유). 일봉 최대 10일.
-        max_cd = int(getattr(self.config, "s1_cooldown_sec", 12 * 3600))
-        for dirs in (getattr(self.config, "s1_params_by_symbol", {}) or {}).values():
+        max_cd = int(getattr(cfg, "s1_cooldown_sec", 12 * 3600))
+        for dirs in (getattr(cfg, "s1_params_by_symbol", {}) or {}).values():
             for p in (dirs or {}).values():
                 max_cd = max(max_cd, int((p or {}).get("cooldown_sec", 0) or 0))
         look_ms = (max_cd + 60) * 1000
-        tag = (getattr(self.config, "strategy", "") or "").upper()  # S1/S2 — 공유 네임스페이스 분리
+        tag = (getattr(cfg, "strategy", "") or "").upper()  # 전략 태그 — 공유 네임스페이스 분리
         rows = redis_client.xrevrange(key, max="+", min=f"{now_ms - look_ms}-0", count=count) or []
         for _sid, fields in rows:
             f = {}
@@ -283,8 +342,8 @@ class TradeBot:
             except Exception:
                 continue
             ek = (sym, side)
-            if ek not in self._last_entry_ts_ms:  # newest-first → 처음이 최신
-                self._last_entry_ts_ms[ek] = ts_i
+            if ek not in store:  # newest-first → 처음이 최신
+                store[ek] = ts_i
 
     def _apply_config(self, cfg: TradeConfig) -> None:
         self.ws_stale_sec = cfg.ws_stale_sec
@@ -415,22 +474,25 @@ class TradeBot:
                     if self.system_logger:
                         self.system_logger.debug(f"[{symbol}] ▶️ 시세 피드 복구 → 신호 처리 재개")  # 텔레그램 안 보냄
 
-                actions: List[TradeAction] = await self.signal_processor.process_symbol(symbol, price)
+                # ✅ 책 모드: 프로세서(셀 패밀리)별 순차 처리 — 단일 모드는 _procs가 1개라 동일 동작.
+                #    strategy/signal_only는 각 서브 config 것을 실어 executor 게이트가 셀별로 판정.
+                for _sp, _subcfg in self._procs:
+                    actions: List[TradeAction] = await _sp.process_symbol(symbol, price)
 
-                for act in actions:
-                    if self.action_sender is not None:
-                        await self.action_sender.send({
-                            "ts_ms": int(time.time() * 1000),
-                            "symbol": act.symbol,
-                            "action": act.action,
-                            "side": (act.side or "").upper() if act.side else None,
-                            "price": act.price,
-                            "signal_id": act.signal_id,
-                            "close_open_signal_id": getattr(act, "close_open_signal_id", None),
-                            # ✅ executor 실행 게이트용: 전략명 + signal_only(미검증 전략은 신호만, 실주문 X)
-                            "strategy": (getattr(self.config, "strategy", "s1") or "s1"),
-                            "signal_only": bool(getattr(self.config, "signal_only", False)),
-                        })
+                    for act in actions:
+                        if self.action_sender is not None:
+                            await self.action_sender.send({
+                                "ts_ms": int(time.time() * 1000),
+                                "symbol": act.symbol,
+                                "action": act.action,
+                                "side": (act.side or "").upper() if act.side else None,
+                                "price": act.price,
+                                "signal_id": act.signal_id,
+                                "close_open_signal_id": getattr(act, "close_open_signal_id", None),
+                                # ✅ executor 실행 게이트용: 전략명 + signal_only(미검증 전략은 신호만, 실주문 X)
+                                "strategy": (getattr(_subcfg, "strategy", "s1") or "s1"),
+                                "signal_only": bool(getattr(_subcfg, "signal_only", False)),
+                            })
 
             except Exception as e:
                 if self.system_logger:

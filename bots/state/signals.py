@@ -365,6 +365,26 @@ class OpenSignalsIndex:
             out.append((sid, int(ts), float(p), tp, sl, gid))
         return out
 
+    def count_open_universe(self, *, namespace: str, tag: Optional[str] = None) -> int:
+        """네임스페이스(유니버스) 전체에서 열린 '게임' 수 — 모든 심볼·방향 합산.
+        게임=game_id로 묶음(추매 다리는 같은 게임 1개). tag 지정 시 그 전략만.
+        텔레그램 '전체 N' 표기용 — list_open_s1과 동일 모집단(tp/sl 있는 시그마 포지션)."""
+        tagu = (tag or "").upper()
+        games: set = set()
+        for (ns, sym, side), d in self._dq.items():
+            if ns != namespace or not d:
+                continue
+            lv = self._levels.get((ns, sym, side), {})
+            for (sid, ts, p, _tag) in d:
+                levels = lv.get(sid)
+                if not levels:                       # tp/sl 없으면 시그마 포지션 아님
+                    continue
+                if tagu and (_tag or "").upper() != tagu:
+                    continue
+                gid = levels[2] if len(levels) > 2 and levels[2] else sid
+                games.add(gid)
+        return len(games)
+
 
 def record_and_index_signal(
         *,

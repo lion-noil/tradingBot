@@ -220,21 +220,27 @@ class TelegramLogHandler(logging.Handler):
                             pass
                     line_stats = "  ".join(stats_parts)
 
-                    # ✅ 진입: 현재중첩/최대중첩 + 최대보유 (예: 중첩 3/12 · 보유≤14d)
+                    # ✅ 진입: 현재중첩/최대중첩 + 유니버스 + 최대보유 (예: 중첩 3/12 · 전체 27 · 보유≤14d)
+                    #    청산: 남은중첩/캡 + 유니버스 남은            (예: 남은 2/12 · 전체 26)
                     overlap_line = ""
-                    if kind == "ENTRY":
-                        try:
-                            _cc = obj.get("concurrent")
-                            _mc = obj.get("max_concurrent")
-                            parts = []
-                            if _cc is not None and _mc is not None:
-                                parts.append(f"중첩 {int(_cc)}/{int(_mc)}")
+                    try:
+                        _cc = obj.get("concurrent")
+                        _mc = obj.get("max_concurrent")
+                        parts = []
+                        if _cc is not None and _mc is not None:
+                            _lbl = "중첩" if kind == "ENTRY" else "남은"
+                            parts.append(f"{_lbl} {int(_cc)}/{int(_mc)}")
+                        # ✅ 유니버스(채널 전체 심볼·방향) 합산 게임 수
+                        _cu = obj.get("concurrent_universe")
+                        if _cu is not None:
+                            parts.append(f"전체 {int(_cu)}")
+                        if kind == "ENTRY":   # 보유≤는 진입에만(청산은 line_stats에 '보유 X/Y')
                             _mh = _fmt_cd(obj.get("max_hold_sec"))
                             if _mh:
                                 parts.append(f"보유≤{_mh}")
-                            overlap_line = " · ".join(parts)
-                        except Exception:
-                            overlap_line = ""
+                        overlap_line = " · ".join(parts)
+                    except Exception:
+                        overlap_line = ""
 
                     # ✅ 4줄: TP/SL 레벨. S11 SL無/시간청산 셀은 도달불가 레벨(×1e9)로 기록되므로
                     #   가격 대비 50배 밖이면 "없음(시간청산)"으로 표기.
