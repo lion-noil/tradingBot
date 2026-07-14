@@ -289,36 +289,43 @@ class Mt5RestTradeMixin:
                     if req["volume"] <= 0:
                         return None
 
-            last_res = None
+            # filling 모드 순회 규칙 (10030 함정 방지):
+            #   10030 = "이 filling 모드 자체가 미지원" → 다음 모드로 폴백.
+            #   그 외 거절(10006 등) = "filling 모드는 수용됐으나 딴 이유로 거절"(오프쿼트/롤오버/슬리피지)
+            #     → 다른 모드로 넘어가면 미지원(10030)만 나와 진짜 사유를 덮으므로 여기서 확정하고 순회 중단.
+            #   (예: XAGUSD는 FOK만 지원 → FOK가 10006이면 IOC/RETURN은 10030뿐 → 10006을 그대로 보고해야 함)
+            last_res = None       # 마지막 order_send 결과(폴백 포함)
+            meaningful_res = None  # 10030이 아닌 '유의미한' 결과(수용된 모드의 성공/실제거절)
             for tf in self._filling_attempt_order(sym):
                 req["type_filling"] = tf
                 res = mt5.order_send(req)
-                last_res = res
                 if res is None:
                     continue
+                last_res = res
 
                 last_retcode = int(getattr(res, "retcode", -1))
                 last_comment = str(getattr(res, "comment", ""))
 
                 if last_retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                    break
+                    meaningful_res = res
+                    break  # 체결/접수 성공
 
                 if last_retcode == 10030 or "filling" in (last_comment or "").lower():
                     if getattr(self, "system_logger", None):
                         self.system_logger.debug(
-                            f"[MT5] {sym} filling={tf} rejected: ret={last_retcode} {last_comment}")
-                    continue
+                            f"[MT5] {sym} filling={tf} 미지원(ret={last_retcode}) → 다음 모드 폴백")
+                    continue  # 이 모드는 미지원 → 다음 filling 모드 시도
 
-                # 10006(Request rejected): IOC/FOK 브로커 거절 시 RETURN으로 폴백
-                if last_retcode == 10006 and tf != mt5.ORDER_FILLING_RETURN:
-                    if getattr(self, "system_logger", None):
-                        self.system_logger.debug(
-                            f"[MT5] {sym} filling={tf} rejected(10006): trying RETURN")
-                    continue
-
+                # 수용된 filling 모드의 실제 거절(10006/10004/10021 등) → 확정, 순회 중단
+                meaningful_res = res
+                if getattr(self, "system_logger", None):
+                    self.system_logger.debug(
+                        f"[MT5] {sym} filling={tf} 수용·주문거절(ret={last_retcode} {last_comment}) "
+                        f"→ filling 순회 중단(진짜 사유 보존)")
                 break
 
-            res = last_res
+            # 유의미한 결과 우선(FOK 10006 등), 없으면 마지막 폴백(전 모드 10030) 보고
+            res = meaningful_res or last_res
             if res is None:
                 if getattr(self, "system_logger", None):
                     self.system_logger.error(f"[ERROR] order_send returned None: {mt5.last_error()}")
