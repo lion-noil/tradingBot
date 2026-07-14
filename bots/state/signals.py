@@ -93,7 +93,8 @@ def record_signal_with_ts(
         price: Optional[float] = None,
         payload: Any = None,
         ts_ms: Optional[int] = None,
-        keep_days: int = 10,
+        keep_days: int = 35,  # ⚠️ 반드시 최대보유(일봉 30d)보다 길게 — 10이면 장기보유 포지션의
+        #   hash(TP/SL)가 만료되고 zset 청소에 걸려 청산 불가 고아가 됨 (2026-07-14 실사고 14건 복구)
         trim_approx: bool = True,
 ) -> Tuple[str, int]:
     """
