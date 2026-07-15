@@ -507,6 +507,18 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
                           s1_max_hold_sec=14 * _D, **kw)
 
 
+def make_s11_mt5_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S11 확장판 z역추세롱 (MT5 크립토 CFD, 2026-07-15 추가). Bybit S11 BTC 역추롱 그대로.
+    실보유 평균 5.0일(중앙 2.2일) → 스왑 실비용 반영 기대 +0.92% (14d 가정 +0.67%는 과대계상이었음)."""
+    S11M_REV = {
+        "BTCUSD": {"long": {"win": 1320, "k1": 5.0, "b": -1.0, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s11m", params_by_symbol=S11M_REV, strategy="s12",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_max_hold_sec=14 * _D, **kw)
+
+
 def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S11 확장판 급락페이드 (MT5·FX). JP225 4h−3%(T48h)·HK50 2h−2%(T72h)·USDJPY 2h−1%(T48h). 시간청산·SL無."""
     S11M_FADE = {

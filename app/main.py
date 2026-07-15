@@ -21,6 +21,7 @@ from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signa
                                make_mt5_daily_trend_config, make_mt5_daily_rev_config,
                                make_s11_trend_config, make_s11_rev_config, make_s11_fade_config,
                                make_s11_mt5_trend_config, make_s11_mt5_fade_config,
+                               make_s11_mt5_rev_config,
                                make_s22_trend_config, make_s22_rev_config,
                                make_s22_ewz_config, make_s22_fade_config)
 from utils.logger import setup_logger
@@ -486,6 +487,7 @@ ENGINES = {
     "s11m": {
         "name": "S11M-BOOK",
         "make_configs": lambda: [make_s11_mt5_trend_config(signal_only=False),  # 첫 항목=primary
+                                 make_s11_mt5_rev_config(signal_only=False),   # BTC 역추롱(크립토 CFD)
                                  make_s11_mt5_fade_config(signal_only=False)],  # 🔴 LIVE (S11 MT5 확장판)
         "make_controllers": _build_mt5_controllers,
         "targets_env": "S11M_EXECUTOR_TARGETS",
