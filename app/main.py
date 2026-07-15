@@ -23,7 +23,9 @@ from bots.trade_config import (make_bybit_config, make_s1_config, make_mt5_signa
                                make_s11_mt5_trend_config, make_s11_mt5_fade_config,
                                make_s11_mt5_rev_config,
                                make_s22_trend_config, make_s22_rev_config,
-                               make_s22_ewz_config, make_s22_fade_config)
+                               make_s22_ewz_config, make_s22_fade_config,
+                               make_s22m_trend_config, make_s22m_rev_config, make_s22m_ewz_config,
+                               make_s22m_fade_config, make_s22m_sweep_config)
 from utils.logger import setup_logger
 from utils.local_action_sender import LocalActionSender, Target
 
@@ -93,6 +95,25 @@ def _build_mt5_controllers_daily(symbols, system_logger):
         symbols=symbols, system_logger=system_logger,
         price_ws_url=_env("MT5_PRICE_WS_URL", ""), api_key=api_key, symbol_map=symbol_map,
         kline_interval="D",
+    )
+    rest = Mt5RestController(
+        system_logger=system_logger,
+        price_base_url=_env("MT5_PRICE_REST_URL", ""), api_key=api_key, symbol_map=symbol_map,
+    )
+    return ws, rest
+
+
+def _build_mt5_controllers_4h(symbols, system_logger):
+    """4h(S22m) 채널용 MT5 컨트롤러 — WS kline.240 구독, REST interval=240 (mt5_server 4h 패치 필요)."""
+    from controllers.mt5.mt5_ws_controller import Mt5WebSocketController
+    from controllers.mt5.mt5_rest_controller import Mt5RestController
+    from utils.symbol_mapper import SymbolAliasMap
+    api_key = _env("MT5_API_KEY", "")
+    symbol_map = SymbolAliasMap.from_env()
+    ws = Mt5WebSocketController(
+        symbols=symbols, system_logger=system_logger,
+        price_ws_url=_env("MT5_PRICE_WS_URL", ""), api_key=api_key, symbol_map=symbol_map,
+        kline_interval="240",
     )
     rest = Mt5RestController(
         system_logger=system_logger,
@@ -532,6 +553,25 @@ ENGINES = {
         "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
         "publish_config": True,  # 'fxd' 네임스페이스 config 소유(구 fxd1 승계)
         "port": 18036,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "s22m": {
+        "name": "S22M-BOOK",
+        "make_configs": lambda: [make_s22m_trend_config(signal_only=False),   # 첫 항목=primary(s22m config 소유)
+                                 make_s22m_rev_config(signal_only=False),
+                                 make_s22m_ewz_config(signal_only=False),
+                                 make_s22m_fade_config(signal_only=False),
+                                 make_s22m_sweep_config(signal_only=False)],  # 🔴 LIVE (S22 확장판 16셀, 1%)
+        "make_controllers": _build_mt5_controllers_4h,
+        "targets_env": "S22M_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s22m_book.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 's22m' 네임스페이스 config 소유
+        "port": 18037,
         "warmup_timeout": 120.0,
         "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
     },

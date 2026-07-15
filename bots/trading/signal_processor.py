@@ -35,6 +35,8 @@ class SignalProcessorDeps:
     # --- 시그마(S1=추세/S2=역추세/S3=일봉추세/S4=일봉역추세) 전용 ---
     get_recent_closes: Callable[[str], Optional[List[float]]]
     get_open_s1_positions: Callable[[str, str], List[tuple]]
+    # ✅ S15 유동성스윕용: 최근 캔들 dict 리스트(start/high/low/close) — 없으면 s15 비활성
+    get_recent_candles: Optional[Callable[[str], Optional[List[dict]]]] = None
     # ✅ 유니버스(crypto/mt5/fx 3분류, 심볼 기반) 열린 게임 수 — 텔레그램 '전체 N' 표기용(없으면 생략)
     get_open_universe_count: Optional[Callable[[str], int]] = None
     get_last_exit_ts_ms: Optional[Callable[[str, str], Optional[int]]] = None
@@ -120,6 +122,8 @@ class SignalProcessor:
             return self._process_fade(symbol, price)
         if self.strategy == "s14":  # ewz 추세(S22 4시간봉책 신규 패밀리) — 시간청산 전용
             return self._process_ewz(symbol, price)
+        if self.strategy == "s15":  # 유동성스윕(S22 확장판) — 봉마감 판정, 시간청산 전용
+            return self._process_sweep(symbol, price)
         # basic(MA100) 등 비-시그마 전략은 퇴출 → 신호 없음(config publish/상태표시 노드).
         return []
 
@@ -407,6 +411,72 @@ class SignalProcessor:
                 entries += self._decide_entry_ewz(symbol, price, side)
         return entries
 
+    # ──────────────────────────────────────────────────────────────
+    # 유동성스윕(s15, HANDOFF_S22 §6) — 직전 봉의 저가가 그 이전 N봉 저점을 하향 이탈했는데
+    #   종가는 그 위로 복귀(스탑헌트 반전) → 롱. 봉마감 판정(마감봉 1개당 1회), 청산=시간(hold_sec).
+    #   SL 없음(도달불가 기록). 백테스트: s22x_portfolio.sweepcell.
+    # ──────────────────────────────────────────────────────────────
+    def _process_sweep(self, symbol: str, price: float) -> List[TradeAction]:
+        exits = self._decide_exits_sigma(symbol, price, "LONG") if \
+            self._sigma_params_for(symbol, "LONG") is not None else []
+        if exits:
+            return exits
+        return self._decide_entry_sweep(symbol, price)
+
+    def _decide_entry_sweep(self, symbol: str, price: float) -> List[TradeAction]:
+        if self.entries_disabled:
+            return []
+        side = "LONG"   # 스윕숏은 검증 기각(지수) — 롱 전용
+        p = self._sigma_params_for(symbol, side)
+        if p is None or int(getattr(p, "sweep_n", 0) or 0) <= 0:
+            return []
+        get_c = getattr(self.deps, "get_recent_candles", None)
+        if get_c is None:
+            return []
+        now_ms = int(time.time() * 1000)
+        if self.deps.get_last_entry_ts_ms is not None:
+            if not s1_cooldown_ok(self.deps.get_last_entry_ts_ms(symbol, side), now_ms, p):
+                return []
+        rows = self.deps.get_open_s1_positions(symbol, side) or []
+        if len(rows) >= self._sigma_maxc_for(symbol, side):
+            return []
+        candles = get_c(symbol) or []
+        N = int(p.sweep_n)
+        # candles[-1]=진행중 봉 → 판정 대상=마감봉 candles[-2], 저점 창=그 이전 N봉
+        if len(candles) < N + 2:
+            return []
+        bar = candles[-2]
+        window = candles[-2 - N:-2]
+        try:
+            prior_low = min(float(c["low"]) for c in window if c.get("low") is not None)
+            bar_low = float(bar["low"]); bar_close = float(bar["close"])
+            bar_start = int(bar.get("start") or 0)
+        except Exception:
+            return []
+        if not (bar_low < prior_low and bar_close > prior_low):   # 스윕(이탈 후 복귀) 아님
+            return []
+        # 같은 마감봉으로 중복 진입 방지: 마지막 진입이 이 봉 시작 이후면 스킵
+        last_ts = self.deps.get_last_entry_ts_ms(symbol, side) if self.deps.get_last_entry_ts_ms else None
+        if last_ts and bar_start and int(last_ts) >= bar_start:
+            return []
+        tp = price * 1e9   # 시간청산 전용(도달불가 레벨)
+        sl = price * 1e-9
+        payload = {
+            "kind": "ENTRY", "side": side, "strategy": "S15", "reasons": ["S15"],
+            "price": price, "sweep_n": N, "prior_low": prior_low,
+            "bar_low": bar_low, "bar_close": bar_close,
+            "tp_price": tp, "sl_price": sl,
+            "cooldown_sec": int(p.cooldown_sec),
+            "concurrent": len(rows) + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
+            "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n(symbol)),
+            "max_hold_sec": self._hold_sec_for(symbol, side) or None,
+        }
+        signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
+        if self.deps.set_last_entry_ts_ms:
+            self.deps.set_last_entry_ts_ms(symbol, side, int(ts_ms_out))
+        return [TradeAction(action="ENTRY", symbol=symbol, side=side, price=price,
+                            sig=payload, signal_id=signal_id)]
+
     def _decide_entry_ewz(self, symbol: str, price: float, side: str) -> List[TradeAction]:
         if self.entries_disabled:
             return []
@@ -430,12 +500,20 @@ class SignalProcessor:
         ez = ewz_indicators(closes[:-1], s, price)
         if ez is None:
             return []
-        if is_long:
-            if ez < p.k1:
-                return []
-        else:
-            if ez > -p.k1:
-                return []
+        if getattr(p, "ewz_rev", False):   # ✅ S22 확장판 역추세 방향
+            if is_long:
+                if ez > -p.k1:
+                    return []
+            else:
+                if ez < p.k1:
+                    return []
+        else:                              # 기본 = 추세 방향
+            if is_long:
+                if ez < p.k1:
+                    return []
+            else:
+                if ez > -p.k1:
+                    return []
         # 시간청산 전용: TP/SL 도달불가 레벨(청산 스캔은 TIME만 발동)
         if is_long:
             tp, sl = price * 1e9, price * 1e-9

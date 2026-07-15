@@ -71,3 +71,9 @@ services:
     network_mode: host
     environment:
       - FXD_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  # S22 확장판(4h) — executor-a2 접근 위해 host net (uvicorn 18037)
+  signal-s22m:
+    network_mode: host
+    environment:
+      - S22M_EXECUTOR_TARGETS=127.0.0.1:9010

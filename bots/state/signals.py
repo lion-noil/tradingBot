@@ -33,7 +33,7 @@ CRYPTO_NAMESPACES = {"s11", "s22", "bybit", "s1", "s2"}   # Bybit 쪽 네임스�
 UNIVERSE_NAMESPACES = {
     "crypto": ["s11", "s22", "bybit"],          # 1분책+4h책+일봉(cryptod)+레거시 드레인(ns 공유)
     "mt5":    ["s11m", "s22m", "mt5"],          # 1분 확장+4h 확장(예정)+레거시·일봉(ns 공유)
-    "fx":     ["fxd", "s11m", "mt5"],           # 일봉 FX + (s11m·mt5 안의 FX 심볼들)
+    "fx":     ["fxd", "s11m", "s22m", "mt5"],   # 일봉 FX + (s11m·s22m·mt5 안의 FX 심볼들)
 }
 
 

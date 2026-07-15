@@ -449,6 +449,20 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  # S22 확장판(4h MT5·FX) — executor-a2 접근은 wsl 오버레이(host net)가 지정
+  signal-s22m:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s22m
+      - S22M_EXECUTOR_TARGETS=host.docker.internal:9010
+    volumes:
+      - ./logs:/app/logs
+
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
   # 라벨 autoheal=true 인 컨테이너만 대상. 데몬측 restart라 행된 PID1도 확실히 종료.

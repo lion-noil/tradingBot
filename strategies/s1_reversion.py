@@ -39,6 +39,9 @@ class S1Params:
     retr_mult: float = 0.0      # >0이면 TP=진입가×(1+retr_mult×실낙폭), 0=시간청산만
     # ewz(S14, S22 4시간봉책) 전용 — ewz_s>0이면 ewz 셀
     ewz_s: int = 0              # EMA span(봉 수). resid=C−EMA_s(C), σ=EMA_s(|resid|), ez=resid/σ
+    ewz_rev: bool = False       # ✅ S22 확장판: True=역추세 방향(롱=ez≤−k1 / 숏=ez≥+k1). 기본=추세.
+    # 유동성스윕(S15, S22 확장판) 전용 — sweep_n>0이면 스윕 셀
+    sweep_n: int = 0            # 직전 N봉 저점 창. 저가<N봉저점 & 종가>N봉저점(복귀) → 롱. 청산=시간(hold_sec)
 
     def validate(self) -> None:
         # B<0 허용(v2): b<0이면 TP가 평균 위(오버슈팅까지). b<k1만 필수(TP가 진입가보다 위 보장은 levels에서 가드).

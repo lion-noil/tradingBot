@@ -720,7 +720,8 @@ def make_mt5_signal_config(
         entry_percent_by_strategy={
             **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉(드레인 중) 2%
             # S11 확장판(MT5·FX)은 데이터 3.5년(2022 미검증) → 마스터 권고 "보수 사이징" = 1%(0.02)
-            **{s: {"_default": 0.02} for s in ("s11", "s12", "s13", "s14")},
+            **{s: {"_default": 0.02} for s in ("s11", "s12", "s14", "s15")},
+            "s13": {"_default": 0.02, "WTI": 0.01},   # S22m WTI 페이드=이벤트 몰빵 → 절반
             **{s: {"_default": 0.1,  # 일봉 FX 5% 유지
                    "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
                    "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
@@ -805,3 +806,77 @@ def make_s22_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
                           avg_down=False, signal_only=signal_only,
                           s1_win=240, candle_interval="240", candles_num=700,
                           s1_max_hold_sec=10 * _D, **kw)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S22 확장판 「4시간봉책 MT5·FX」 — HANDOFF_S22 §6 (2026-07-15 확정, 13.5년 검증).
+#   namespace "s22m", candle_interval="240", 유니버스: 비FX=U2 / FX심볼=U3(분류는 심볼 기반).
+#   사이징: mt5 executor entry_percent_by_strategy s11~s15 = 0.02(=1%), WTI s13만 절반.
+#   z셀 SL: 롱=無(no_sl) / 역추숏=미러 SL 유지(백테스트 동일). 계획기대=이웃 중앙값(§6).
+# ─────────────────────────────────────────────────────────────────────────────
+def make_s22m_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22m z추세롱: JP225 w120봉 K3.0 B1 / HK50 w180봉 K3.0 B-2 (⚠️HK50 2022 데이터 공백 검증)."""
+    S22M_TREND = {
+        "JP225": {"long": {"win": 120, "k1": 3.0, "b": 1.0,  "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+        "HK50":  {"long": {"win": 180, "k1": 3.0, "b": -2.0, "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+    }
+    return make_s1_config(name="s22m", params_by_symbol=S22M_TREND, strategy="s11",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22m_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22m z역추세: US100·HK50·USDJPY 롱(SL無) + AUDUSD·NZDUSD 숏(미러SL 유지)."""
+    S22M_REV = {
+        "US100":  {"long": {"win": 180, "k1": 3.0, "b": 1.0,  "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+        "HK50":   {"long": {"win": 180, "k1": 3.0, "b": 1.0,  "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+        "USDJPY": {"long": {"win": 120, "k1": 2.5, "b": 1.0,  "cooldown_sec": 12 * _H, "max_concurrent": 200, "no_sl": True}},
+        "AUDUSD": {"short": {"win": 30, "k1": 3.0, "b": -2.0, "cooldown_sec": 12 * _H, "max_concurrent": 200}},
+        "NZDUSD": {"short": {"win": 60, "k1": 3.0, "b": -1.0, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+    }
+    return make_s1_config(name="s22m", params_by_symbol=S22M_REV, strategy="s12",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22m_ewz_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22m ewz(XAGUSD): 역추롱 s200 ez≤-2.5 T30봉(ewz_rev) + 추세숏 s50 ez≤-3.0 T18봉."""
+    S22M_EWZ = {
+        "XAGUSD": {"long":  {"ewz_s": 200, "k1": 2.5, "ewz_rev": True, "cooldown_sec": 24 * _H,
+                             "hold_sec": 30 * _H4, "max_concurrent": 200},
+                   "short": {"ewz_s": 50,  "k1": 3.0, "cooldown_sec": 24 * _H,
+                             "hold_sec": 18 * _H4, "max_concurrent": 200}},
+    }
+    return make_s1_config(name="s22m", params_by_symbol=S22M_EWZ, strategy="s14",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=15 * _D, **kw)
+
+
+def make_s22m_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22m 급락페이드 5셀. m_min=4h봉 수. US100만 되돌림×1.5, 나머지 시간청산. WTI=절반 사이징(executor)."""
+    S22M_FADE = {
+        "JP225":  {"long": {"m_min": 18, "drop_pct": 0.05, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "US100":  {"long": {"m_min": 30, "drop_pct": 0.07, "retr_mult": 1.5, "hold_sec": 30 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "UK100":  {"long": {"m_min": 12, "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "XAUUSD": {"long": {"m_min": 6,  "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "WTI":    {"long": {"m_min": 6,  "drop_pct": 0.07, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="s22m", params_by_symbol=S22M_FADE, strategy="s13",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=10 * _D, **kw)
+
+
+def make_s22m_sweep_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
+    """S22m 유동성스윕(s15 신규): 직전봉 저가<N120봉 저점 & 종가 복귀 → 롱, T60봉(10d). JP225·USDCAD."""
+    S22M_SWEEP = {
+        "JP225":  {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "USDCAD": {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+    }
+    return make_s1_config(name="s22m", params_by_symbol=S22M_SWEEP, strategy="s15",
+                          avg_down=False, signal_only=signal_only,
+                          s1_win=240, candle_interval="240", candles_num=700,
+                          s1_max_hold_sec=10 * _D, **kw)
+

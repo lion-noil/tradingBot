@@ -149,7 +149,7 @@ class TradeBot:
                 x_store: dict[tuple[str, str], int] = {}
                 if _strat == "s1":
                     self._warmup_s1_last_exit(store=x_store)
-                if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):
+                if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14", "s15"):
                     self._warmup_s1_last_entry(cfg=sub, store=e_store)
                 sp = self._make_signal_processor(sub, e_store, x_store)
                 self._procs.append((sp, sub))
@@ -158,7 +158,7 @@ class TradeBot:
             _strat = (getattr(self.config, "strategy", "s1") or "s1").lower()
             if _strat == "s1":
                 self._warmup_s1_last_exit(store=self._last_exit_ts_ms)
-            if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):  # 1분/일봉/1분봉책/4h책 전 시그마계열
+            if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14", "s15"):  # 1분/일봉/책 전 시그마계열
                 self._warmup_s1_last_entry(cfg=self.config, store=self._last_entry_ts_ms)  # 진입 쿨다운 복원
             self.signal_processor = self._make_signal_processor(
                 self.config, self._last_entry_ts_ms, self._last_exit_ts_ms)
@@ -209,6 +209,10 @@ class TradeBot:
                 get_recent_closes=lambda s: [
                     c["close"] for c in self.candle.get_candles(s) if c.get("close") is not None
                 ],
+                # ✅ S15 유동성스윕용: OHLC 캔들(저가 필요)
+                get_recent_candles=lambda s: [
+                    c for c in self.candle.get_candles(s) if c.get("close") is not None
+                ],
                 get_open_s1_positions=lambda sym, side: self.open_signals_index.list_open_s1(
                     namespace=self.namespace, symbol=sym, side=(side or "").upper(),
                     tag=(getattr(cfg, "strategy", "") or "").upper()  # 전략 태그 분리
@@ -248,8 +252,10 @@ class TradeBot:
                         m_min=int(dd.get("m_min", 0) or 0),
                         drop_pct=float(dd.get("drop_pct", 0.0) or 0.0),
                         retr_mult=float(dd.get("retr_mult", 0.0) or 0.0),
-                        # ✅ S22(4시간봉책) ewz 셀
+                        # ✅ S22(4시간봉책) ewz 셀 + 확장판(역추세 ewz·유동성스윕)
                         ewz_s=int(dd.get("ewz_s", 0) or 0),
+                        ewz_rev=bool(dd.get("ewz_rev", False)),
+                        sweep_n=int(dd.get("sweep_n", 0) or 0),
                     )
                     for dr, dd in (dirs or {}).items()
                 }
