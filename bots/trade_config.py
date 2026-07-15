@@ -494,6 +494,12 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
         "XAGUSD": {"long": {"win": 1320, "k1": 4.75, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
         "WTI":    {"long": {"win": 720,  "k1": 4.5,  "b": -2.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "USDJPY": {"long": {"win": 1440, "k1": 4.5,  "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        # ── 크립토 CFD (2026-07-15 추가) — Bybit S11 검증 파라미터 그대로(교차검증 일치). ──
+        #   별도 계좌 유니버스 논리로 채택. HFM 실비용 실측: 스왑 연−8%(일−0.022%)+스프레드
+        #   BTC 0.096%/ETH 0.26% → 14d 보유 실질 +0.34~0.48%p 초과비용 반영해도 기대 +1.1~1.2% 생존.
+        #   BTC z역추롱(+1.01→+0.67%)은 마진 얇아 제외. ⚠️Bybit s11과 동일 신호 — 계좌 합산 노출 인지.
+        "BTCUSD": {"long": {"win": 1440, "k1": 6.0, "b": 0.0,  "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
+        "ETHUSD": {"long": {"win": 720,  "k1": 6.0, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
     }
     return make_s1_config(name="s11m", params_by_symbol=S11M_TREND, strategy="s11",
                           avg_down=False, signal_only=signal_only,
@@ -509,6 +515,11 @@ def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
         "HK50":   {"long": {"m_min": 120, "drop_pct": 0.02, "hold_sec": 72 * _H,
                             "cooldown_sec": 1800, "max_concurrent": 12}},
         "USDJPY": {"long": {"m_min": 120, "drop_pct": 0.01, "hold_sec": 48 * _H,
+                            "cooldown_sec": 1800, "max_concurrent": 12}},
+        # ── 크립토 CFD (2026-07-15 추가) — Bybit S11 페이드 그대로. 보유 짧아 스왑 영향 미미. ──
+        "BTCUSD": {"long": {"m_min": 60, "drop_pct": 0.04, "retr_mult": 1.5, "hold_sec": 48 * _H,
+                            "cooldown_sec": 1800, "max_concurrent": 12}},
+        "ETHUSD": {"long": {"m_min": 30, "drop_pct": 0.04, "hold_sec": 24 * _H,
                             "cooldown_sec": 1800, "max_concurrent": 12}},
     }
     return make_s1_config(name="s11m", params_by_symbol=S11M_FADE, strategy="s13",
