@@ -26,6 +26,27 @@ def _ns(namespace: str) -> str:
     return f"trading:{n}"
 
 
+# ---------- 유니버스 (2026-07-15 확정): 텔레그램 '전체 N'의 계좌·자산군 단위 ----------
+# 1=crypto(Bybit 크립토 전체) / 2=mt5(MT5 비환율 — 지수·금속·원유·크립토CFD) / 3=fx(환율 7종)
+FX_SYMBOLS = {"USDJPY", "EURUSD", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"}
+CRYPTO_NAMESPACES = {"s11", "s22", "bybit", "s1", "s2"}   # Bybit 쪽 네임스페이스
+UNIVERSE_NAMESPACES = {
+    "crypto": ["s11", "s22", "bybit"],          # 1분책+4h책+일봉(cryptod)+레거시 드레인(ns 공유)
+    "mt5":    ["s11m", "s22m", "mt5"],          # 1분 확장+4h 확장(예정)+레거시·일봉(ns 공유)
+    "fx":     ["fxd", "s11m", "mt5"],           # 일봉 FX + (s11m·mt5 안의 FX 심볼들)
+}
+
+
+def universe_of(namespace: str, symbol: str) -> str:
+    """(네임스페이스, 심볼) → 유니버스. ns가 계좌를 가르고, MT5 쪽은 심볼로 FX 분리."""
+    ns = (namespace or "").strip().lower()
+    if ns in CRYPTO_NAMESPACES:
+        return "crypto"
+    if (symbol or "").upper() in FX_SYMBOLS:
+        return "fx"
+    return "mt5"
+
+
 # ---------- keys ----------
 def stream_key(namespace: str) -> str:
     # 10일치 전체 로그(OPEN/CLOSE 전부)
@@ -365,6 +386,41 @@ class OpenSignalsIndex:
             gid = levels[2] if len(levels) > 2 and levels[2] else sid
             out.append((sid, int(ts), float(p), tp, sl, gid))
         return out
+
+    def count_open_universe_redis(self, *, universe: str) -> int:
+        """유니버스(계좌·자산군) 전체 열린 게임 수 — Redis 직접 조회(북/컨테이너 경계 넘어 합산).
+        유니버스 정의(2026-07-15 사용자 확정): crypto=Bybit 크립토 전체 / mt5=MT5 비환율 / fx=환율 7종.
+        게임=game_id 중복 제거(추매 다리 1게임), tp/sl 있는 시그마 포지션만."""
+        games: set = set()
+        for ns in UNIVERSE_NAMESPACES.get(universe, []):
+            pattern = f"{_ns(ns)}:signals:*:ENTRY"
+            for key in redis_client.scan_iter(pattern):
+                k = key.decode() if isinstance(key, (bytes, bytearray)) else str(key)
+                parts = k.split(":")
+                sym = parts[3] if len(parts) > 4 else ""
+                if universe_of(ns, sym) != universe:   # ns 공유 시 심볼 분류로 필터(예: s11m의 USDJPY→fx)
+                    continue
+                sids = [s.decode() if isinstance(s, (bytes, bytearray)) else str(s)
+                        for s in redis_client.zrange(k, 0, -1)]
+                if not sids:
+                    continue
+                pipe = redis_client.pipeline()
+                for sid in sids:
+                    pipe.hget(signal_hash_key(ns, sid), "payload_json")
+                for sid, raw in zip(sids, pipe.execute()):
+                    try:
+                        if isinstance(raw, (bytes, bytearray)):
+                            raw = raw.decode("utf-8", "ignore")
+                        if not raw:
+                            continue
+                        pd = json.loads(raw)
+                        if pd.get("tp_price") is None or pd.get("sl_price") is None:
+                            continue
+                        gid = pd.get("game_id") or sid
+                        games.add((ns, str(gid)))
+                    except Exception:
+                        continue
+        return len(games)
 
     def count_open_universe(self, *, namespace: str, tag: Optional[str] = None) -> int:
         """네임스페이스(유니버스) 전체에서 열린 '게임' 수 — 모든 심볼·방향 합산.

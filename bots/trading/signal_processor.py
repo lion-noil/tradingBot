@@ -35,8 +35,8 @@ class SignalProcessorDeps:
     # --- 시그마(S1=추세/S2=역추세/S3=일봉추세/S4=일봉역추세) 전용 ---
     get_recent_closes: Callable[[str], Optional[List[float]]]
     get_open_s1_positions: Callable[[str, str], List[tuple]]
-    # ✅ 유니버스(네임스페이스 전체) 열린 게임 수 — 텔레그램 '전체 N' 표기용(없으면 표기 생략)
-    get_open_universe_count: Optional[Callable[[], int]] = None
+    # ✅ 유니버스(crypto/mt5/fx 3분류, 심볼 기반) 열린 게임 수 — 텔레그램 '전체 N' 표기용(없으면 생략)
+    get_open_universe_count: Optional[Callable[[str], int]] = None
     get_last_exit_ts_ms: Optional[Callable[[str, str], Optional[int]]] = None
     set_last_exit_ts_ms: Optional[Callable[[str, str, int], None]] = None
     # ✅ 진입 기준 쿨다운용 (직전 진입 시각)
@@ -83,14 +83,14 @@ class SignalProcessor:
         d = self.s1_maxc_by_symbol.get((symbol or "").upper()) or {}
         return int(d.get((side or "").upper(), 1))
 
-    def _universe_n(self) -> Optional[int]:
-        """유니버스(네임스페이스 전체) 현재 열린 게임 수. 진입 직전 값(이 진입 제외).
+    def _universe_n(self, symbol: str) -> Optional[int]:
+        """유니버스(crypto/mt5/fx — 심볼로 분류) 현재 열린 게임 수. 진입 직전 값(이 진입 제외).
         dep 미배선/오류 시 None → 텔레그램 '전체 N' 생략."""
         fn = getattr(self.deps, "get_open_universe_count", None)
         if fn is None:
             return None
         try:
-            return int(fn())
+            return int(fn(symbol))
         except Exception:
             return None
 
@@ -172,7 +172,7 @@ class SignalProcessor:
             actions: List[TradeAction] = []
             hold = self._hold_sec_for(symbol, side)
             _sym_games = len(games)            # ✅ 청산 전 이 심볼·방향 게임 수(남은중첩 계산용)
-            _uni_now = self._universe_n()       # ✅ 청산 전 유니버스 게임 수
+            _uni_now = self._universe_n(symbol)  # ✅ 청산 전 유니버스 게임 수
             _closed = 0
             for gid, legs in games.items():
                 first_ts = int(legs[0][1] or 0)
@@ -213,7 +213,7 @@ class SignalProcessor:
         actions = []
         hold = self._hold_sec_for(symbol, side)
         _sym_games = len(rows)             # ✅ 청산 전 이 심볼·방향 게임 수
-        _uni_now = self._universe_n()       # ✅ 청산 전 유니버스 게임 수
+        _uni_now = self._universe_n(symbol)  # ✅ 청산 전 유니버스 게임 수
         _closed = 0
         for r in rows:
             sid, ts_ms, ep, tp, sl = r[0], r[1], r[2], r[3], r[4]
@@ -305,7 +305,7 @@ class SignalProcessor:
                     "game_id": gid,
                     # ✅ 텔레그램 표기용: 추매는 다리 수만 늘어남(게임 수 불변) → 현재중첩=n, 유니버스도 불변
                     "concurrent": n, "max_concurrent": self._sigma_maxc_for(symbol, side),
-                    "concurrent_universe": self._universe_n(),
+                    "concurrent_universe": self._universe_n(symbol),
                     "max_hold_sec": self._hold_sec_for(symbol, side) or None,
                 }
                 sigid, _ = self._record(symbol, side, "ENTRY", price, payload)
@@ -324,7 +324,7 @@ class SignalProcessor:
                 "cooldown_sec": int(p.cooldown_sec),
                 # ✅ 텔레그램 표기용: 이 진입 포함 현재중첩 / 최대중첩 / 최대보유 + 유니버스 전체(이 진입 포함)
                 "concurrent": n + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
-                "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n()),
+                "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n(symbol)),
                 "max_hold_sec": self._hold_sec_for(symbol, side) or None,
             }
             signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
@@ -380,7 +380,7 @@ class SignalProcessor:
             "cooldown_sec": int(p.cooldown_sec),
             # ✅ 텔레그램 표기용: 이 진입 포함 현재중첩 / 최대중첩 / 최대보유(페이드 셀별 24~72h) + 유니버스 전체
             "concurrent": len(rows) + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
-            "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n()),
+            "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n(symbol)),
             "max_hold_sec": self._hold_sec_for(symbol, side) or None,
         }
         signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)
@@ -447,7 +447,7 @@ class SignalProcessor:
             "tp_price": tp, "sl_price": sl,
             "cooldown_sec": int(p.cooldown_sec),
             "concurrent": n + 1, "max_concurrent": self._sigma_maxc_for(symbol, side),
-            "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n()),
+            "concurrent_universe": (lambda u: (u + 1) if u is not None else None)(self._universe_n(symbol)),
             "max_hold_sec": self._hold_sec_for(symbol, side) or None,
         }
         signal_id, ts_ms_out = self._record(symbol, side, "ENTRY", price, payload)

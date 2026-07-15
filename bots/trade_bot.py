@@ -2,7 +2,7 @@
 import asyncio
 import time
 from typing import List
-from bots.state.signals import OpenSignalsIndex, record_and_index_signal
+from bots.state.signals import OpenSignalsIndex, record_and_index_signal, universe_of
 from .trade_config import TradeConfig
 from strategies.s1_reversion import S1Params
 from core.engines import CandleEngine, IndicatorEngine, JumpDetector
@@ -151,7 +151,7 @@ class TradeBot:
                     self._warmup_s1_last_exit(store=x_store)
                 if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):
                     self._warmup_s1_last_entry(cfg=sub, store=e_store)
-                sp = self._make_signal_processor(sub, e_store, x_store, universe_tag=None)
+                sp = self._make_signal_processor(sub, e_store, x_store)
                 self._procs.append((sp, sub))
             self.signal_processor = self._procs[0][0]  # 하위호환(외부 참조 대비)
         else:
@@ -161,8 +161,7 @@ class TradeBot:
             if _strat in ("s1", "s2", "s3", "s4", "s11", "s12", "s13", "s14"):  # 1분/일봉/1분봉책/4h책 전 시그마계열
                 self._warmup_s1_last_entry(cfg=self.config, store=self._last_entry_ts_ms)  # 진입 쿨다운 복원
             self.signal_processor = self._make_signal_processor(
-                self.config, self._last_entry_ts_ms, self._last_exit_ts_ms,
-                universe_tag=(getattr(self.config, "strategy", "") or "").upper())
+                self.config, self._last_entry_ts_ms, self._last_exit_ts_ms)
             self._procs = [(self.signal_processor, self.config)]
 
         # reporter
@@ -187,12 +186,9 @@ class TradeBot:
             cfg: TradeConfig,
             entry_store: dict,
             exit_store: dict,
-            *,
-            universe_tag: str | None,
     ) -> SignalProcessor:
         """cfg(전략 태그·파라미터맵) 기준 SignalProcessor 생성.
-        entry/exit_store = 이 프로세서 전용 쿨다운 상태(책 모드에서 태그별 분리).
-        universe_tag = '전체 N' 카운트 범위 태그(None=네임스페이스 전체 = 책 유니버스)."""
+        entry/exit_store = 이 프로세서 전용 쿨다운 상태(책 모드에서 태그별 분리)."""
         return SignalProcessor(
             system_logger=self.system_logger,
             deps=SignalProcessorDeps(
@@ -217,10 +213,10 @@ class TradeBot:
                     namespace=self.namespace, symbol=sym, side=(side or "").upper(),
                     tag=(getattr(cfg, "strategy", "") or "").upper()  # 전략 태그 분리
                 ),
-                # ✅ 텔레그램 '전체 N' 표기용: 유니버스 열린 게임 수(책 모드=네임스페이스 전체)
-                get_open_universe_count=lambda: self.open_signals_index.count_open_universe(
-                    namespace=self.namespace,
-                    tag=universe_tag,
+                # ✅ 텔레그램 '전체 N' 표기용: 유니버스(2026-07-15 확정 3분류) 열린 게임 수.
+                #    crypto(Bybit 전체)/mt5(비환율)/fx(환율7종) — 북·컨테이너 경계 넘어 Redis 합산.
+                get_open_universe_count=lambda sym: self.open_signals_index.count_open_universe_redis(
+                    universe=universe_of(self.namespace, sym),
                 ),
                 get_last_exit_ts_ms=lambda sym, side: exit_store.get(
                     ((sym or "").upper(), (side or "").upper())),
