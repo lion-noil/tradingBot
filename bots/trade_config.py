@@ -552,33 +552,33 @@ def make_fx_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfi
     """일봉 FX 추세(S3). HANDOFF_MASTER v2(2026-07-09, 창 재배정): FX 추세는 USDJPY W120만 엣지.
     (EURUSD/USDCAD/NZDUSD 추세롱은 전 창 탐색 후 엣지 없음 확정 → 제외; 제외 시점 오픈 S3포지션 없음 확인)"""
     FXD_TREND = {
-        "USDJPY": {"long": {"win": 120, "k1": 2.6, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "USDJPY": {"long": {"win": 120, "k1": 2.9, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 8}},  # 13.5y 구제(bad4→worst-3)
     }
     return make_s1_config(name="fxd", params_by_symbol=FXD_TREND, strategy="s3",  # s3=일봉 추세
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
 def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 FX 역추세(S4). HANDOFF_MASTER v2 §3-B: 심볼×방향별 win(90~200). 추매 미사용."""
     FXD_REV = {
-        "EURUSD": {"long": {"win": 200, "k1": 2.2, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        # ✅ 13.5y(D13) 재검증 2026-07-15: 역롱 4종 파라미터 교체(구제), USDCAD·USDCHF 역숏 기각 제거.
+        "EURUSD": {"long": {"win": 120, "k1": 2.9, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 8}},  # ⚠️2020 편중
         "GBPUSD": {"long": {"win": 150, "k1": 2.4, "b": 1.6,  "cooldown_sec": 1 * _D, "max_concurrent": 12},
                    "short": {"win": 150, "k1": 2.1, "b": 0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
         "USDJPY": {"long": {"win": 150, "k1": 2.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "AUDUSD": {"long": {"win": 90,  "k1": 2.3, "b": -2.2, "cooldown_sec": 1 * _D, "max_concurrent": 12},
+        "AUDUSD": {"long": {"win": 200, "k1": 2.6, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 8},
                    "short": {"win": 90,  "k1": 1.8, "b": 0.2, "cooldown_sec": 3 * _D, "max_concurrent": 5}},
-        "USDCAD": {"long": {"win": 150, "k1": 1.9, "b": 1.2,  "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                   "short": {"win": 200, "k1": 2.4, "b": 0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "USDCAD": {"long": {"win": 200, "k1": 2.3, "b": 1.8,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},   # 역숏(15년 -71) 기각 제거
         "USDCHF": {"long": {"win": 200, "k1": 2.3, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                   "short": {"win": 200, "k1": 1.5, "b": -0.2, "cooldown_sec": 3 * _D, "max_concurrent": 5}},
-        "NZDUSD": {"long": {"win": 200, "k1": 2.2, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
+                   "short": {"win": 200, "k1": 99.0, "b": -0.2, "cooldown_sec": 3 * _D, "max_concurrent": 5}},  # 역숏 기각 — 오픈 2개 드레인(k1=99)
+        "NZDUSD": {"long": {"win": 250, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 8},
                    "short": {"win": 150, "k1": 1.4, "b": -1.2, "cooldown_sec": 2 * _D, "max_concurrent": 7}},
     }
     return make_s1_config(name="fxd", params_by_symbol=FXD_REV, strategy="s4",  # s4=일봉 역추세
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
@@ -602,7 +602,7 @@ def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeC
     }
     return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_TREND, strategy="s3",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
@@ -618,7 +618,7 @@ def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeCon
     }
     return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_REV, strategy="s4",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
@@ -634,16 +634,16 @@ def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConf
                    "short": {"win": 90, "k1": 2.4, "b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
         "ETHUSD": {"long": {"win": 60, "k1": 2.8, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 12},
                    "short": {"win": 60, "k1": 2.0, "b": 0.0,  "cooldown_sec": 2 * _D, "max_concurrent": 7}},
-        "XAGUSD": {"long": {"win": 200, "k1": 2.5, "b": 0.8,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "XAUUSD": {"long": {"win": 90, "k1": 2.2, "b": -1.4, "cooldown_sec": 3 * _D, "max_concurrent": 5}},
-        "WTI":    {"long": {"win": 90, "k1": 1.5, "b": -3.0, "cooldown_sec": 7 * _D, "max_concurrent": 3},
-                   "short": {"win": 90, "k1": 2.3, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
-        "US100":  {"long": {"win": 90, "k1": 1.2, "b": -1.8, "cooldown_sec": 10 * _D, "max_concurrent": 2}},
+        # ✅ 13.5y(D13) 재검증 2026-07-15: XAGUSD·XAUUSD 추롱 파라미터 교체(구제 스윕),
+        #   WTI 추롱(bad4)·US100 추롱(bad3) 기각 제거. WTI 추숏·JP225 추롱은 13.5y 통과 유지.
+        "XAGUSD": {"long": {"win": 250, "k1": 2.9, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 8}},
+        "XAUUSD": {"long": {"win": 150, "k1": 2.6, "b": 0.2,  "cooldown_sec": 3 * _D, "max_concurrent": 8}},
+        "WTI":    {"short": {"win": 90, "k1": 2.3, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
         "JP225":  {"long": {"win": 200, "k1": 2.7, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
     }
     return make_s1_config(name="mt5", params_by_symbol=MT5D_TREND, strategy="s3",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
@@ -652,21 +652,22 @@ def make_mt5_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig
     MT5D_REV = {
         "BTCUSD": {"long": {"win": 200, "k1": 1.0, "b": -3.0, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
         "ETHUSD": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 1 * _D, "max_concurrent": 15}},
-        "XAGUSD": {"long": {"win": 90, "k1": 2.0, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 12}},
-        "XAUUSD": {"long": {"win": 90, "k1": 2.1, "b": -2.2, "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                   "short": {"win": 200, "k1": 2.8, "b": 1.2,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "WTI":    {"long": {"win": 200, "k1": 1.4, "b": 0.8,  "cooldown_sec": 5 * _D, "max_concurrent": 3}},
+        # ✅ 13.5y 재검증: XAGUSD 역롱(18년 -74)·XAUUSD 역롱(bad3)·WTI 역롱(2014 -176, 구제 실패) 기각.
+        #   🟡 XAGUSD·WTI 역롱은 오픈 포지션 있어 k1=99 드레인(진입 불가·청산만) — ≤15d 소진 후 삭제.
+        "XAGUSD": {"long": {"win": 90, "k1": 99.0, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 12}},
+        "XAUUSD": {"short": {"win": 200, "k1": 2.8, "b": 1.2,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "WTI":    {"long": {"win": 200, "k1": 99.0, "b": 0.8,  "cooldown_sec": 5 * _D, "max_concurrent": 3}},
         "US100":  {"long": {"win": 150, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 11}},
         "JP225":  {"long": {"win": 200, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "GER40":  {"long": {"win": 200, "k1": 2.2, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "GER40":  {"long": {"win": 90, "k1": 2.6, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},  # 13.5y 구제(구 w200: 18년 -41)
         "UK100":  {"long": {"win": 90, "k1": 1.7, "b": -0.8, "cooldown_sec": 2 * _D, "max_concurrent": 7},
-                   "short": {"win": 200, "k1": 2.3, "b": 1.0,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+                   "short": {"win": 250, "k1": 2.3, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 8}},  # 13.5y 구제
         "HK50":   {"long": {"win": 200, "k1": 1.8, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 5},
                    "short": {"win": 150, "k1": 2.2, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
     }
     return make_s1_config(name="mt5", params_by_symbol=MT5D_REV, strategy="s4",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
-                          s1_win=200, candle_interval="D", candles_num=300,
+                          s1_win=250, candle_interval="D", candles_num=350,
                           s1_max_hold_sec=15 * _D, **kw)
 
 
