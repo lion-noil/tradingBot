@@ -60,3 +60,14 @@ services:
     network_mode: host
     environment:
       - MT5_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  # S33 일봉책 (MT5·FX) — executor-a2 접근 위해 host net (포트 18035/18036, 충돌 없음)
+  signal-s33m:
+    network_mode: host
+    environment:
+      - MT5D_EXECUTOR_TARGETS=127.0.0.1:9010
+
+  signal-s33f:
+    network_mode: host
+    environment:
+      - FXD_EXECUTOR_TARGETS=127.0.0.1:9010

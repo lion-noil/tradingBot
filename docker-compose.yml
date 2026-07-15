@@ -114,6 +114,7 @@ services:
 
   # ── 일봉(D1) FX 채널 (HANDOFF_DAILY_FX) — namespace fxd, executor-a2(9010) 공유 ──
   signal-fxd1:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -129,6 +130,7 @@ services:
       - ./logs:/app/logs
 
   signal-fxd2:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -146,6 +148,7 @@ services:
   # ── 일봉(D1) 크립토(Bybit) 채널 (HANDOFF_DAILY_MT5 §3b) — namespace cryptod, executor-a1(9009) ──
   #   📝 signal_only=True 페이퍼(app/main.py). 검증 후 라이브 승격.
   signal-cryptod1:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -161,6 +164,7 @@ services:
       - executor-a1
 
   signal-cryptod2:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -178,6 +182,7 @@ services:
   # ── 일봉(D1) MT5 비환율 채널 (HANDOFF_DAILY_MT5 §3) — namespace mt5d, executor-a2(9010) ──
   #   📝 signal_only=True 페이퍼. 사이징 2% 엄수.
   signal-mt5d1:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -193,6 +198,7 @@ services:
       - ./logs:/app/logs
 
   signal-mt5d2:
+    profiles: ["retired"]   # S33 일봉책 통합(signal-s33/s33m/s33f)으로 대체 — 롤백용 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -397,6 +403,49 @@ services:
     environment:
       - STRATEGY=s11m
       - S11M_EXECUTOR_TARGETS=host.docker.internal:9010
+    volumes:
+      - ./logs:/app/logs
+
+  # ── S33 「일봉책」 통합 채널 (2026-07-15) — S3+S4를 유니버스당 1프로세스로. ──
+  signal-s33:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s33
+      - CRYPTOD_EXECUTOR_TARGETS=executor-a1:9009
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - executor-a1
+
+  # MT5·FX 일봉책 — executor-a2 접근은 wsl 오버레이(host net)가 지정
+  signal-s33m:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s33m
+      - MT5D_EXECUTOR_TARGETS=host.docker.internal:9010
+    volumes:
+      - ./logs:/app/logs
+
+  signal-s33f:
+    build: .
+    restart: always
+    healthcheck: *signal-hc
+    labels: *autoheal-label
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - STRATEGY=s33f
+      - FXD_EXECUTOR_TARGETS=host.docker.internal:9010
     volumes:
       - ./logs:/app/logs
 

@@ -484,6 +484,57 @@ ENGINES = {
         "warmup_timeout": None,
         "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
     },
+    # ── S33 「일봉책」 (2026-07-15) — S3(추세)+S4(역추세) 통합, 유니버스당 1프로세스. ──
+    #   태그(s3/s4)·네임스페이스(bybit/mt5/fxd)는 유지 → 열린 포지션·쿨다운·사이징 무손실 승계.
+    #   구 cryptod1/2·mt5d1/2·fxd1/2는 compose retired 프로파일로 봉인.
+    "s33": {
+        "name": "S33-BOOK",
+        "make_configs": lambda: [make_crypto_daily_trend_config(signal_only=False),  # 첫 항목=primary
+                                 make_crypto_daily_rev_config(signal_only=False)],   # 🔴 LIVE (U1 일봉)
+        "make_controllers": _build_bybit_controllers_daily,
+        "targets_env": "CRYPTOD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "BYBIT_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9009",
+        "signals_file": "signals_s33_book.jsonl",
+        "tg_token_env": "Noil1_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil1_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'bybit' 네임스페이스 공유 → config는 signal-bybit이 소유
+        "port": 18034,
+        "warmup_timeout": None,
+        "burst": dict(threshold=5, window_sec=10.0, grace_sec=3, level=logging.WARNING, flush=True),
+    },
+    "s33m": {
+        "name": "S33M-BOOK",
+        "make_configs": lambda: [make_mt5_daily_trend_config(signal_only=False),
+                                 make_mt5_daily_rev_config(signal_only=False)],   # 🔴 LIVE (U2 일봉)
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "MT5D_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s33m_book.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": False,  # 'mt5' 네임스페이스 공유 → config는 signal-mt5가 소유
+        "port": 18035,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
+    "s33f": {
+        "name": "S33F-BOOK",
+        "make_configs": lambda: [make_fx_daily_trend_config(signal_only=False),
+                                 make_fx_daily_rev_config(signal_only=False)],    # 🔴 LIVE (U3 일봉)
+        "make_controllers": _build_mt5_controllers_daily,
+        "targets_env": "FXD_EXECUTOR_TARGETS",
+        "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
+        "targets_default": "127.0.0.1:9010",
+        "signals_file": "signals_s33f_book.jsonl",
+        "tg_token_env": "Noil2_TELEGRAM_BOT_TOKEN",
+        "tg_token_fallback_env": "Noil2_TELEGRAM_CHAT_ID",
+        "publish_config": True,  # 'fxd' 네임스페이스 config 소유(구 fxd1 승계)
+        "port": 18036,
+        "warmup_timeout": 120.0,
+        "burst": dict(threshold=10, window_sec=10.0, grace_sec=0.2, level=logging.ERROR, flush=False),
+    },
     "s11m": {
         "name": "S11M-BOOK",
         "make_configs": lambda: [make_s11_mt5_trend_config(signal_only=False),  # 첫 항목=primary
