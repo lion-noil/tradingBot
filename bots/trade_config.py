@@ -721,18 +721,25 @@ def make_mt5_signal_config(
         leverage=50,
         entry_percent=entry_percent,
         entry_percent_by_symbol=entry_percent_by_symbol,
-        # ✅ (전략,심볼)별 진입%:
-        #   1분봉(s1/s2) = 전부 2%(0.04) — 마스터 §5 저사이징(건당 1~2%). FX 포함.
-        #   일봉(s3/s4) = MT5 비환율 10종 2%(0.04) / FX는 _default 5%(0.1). (5%=0.1, 2%=0.04)
+        # ✅ (전략,심볼)별 진입% — 2026-07-16 사이징 상향(최저증거금 25% 기준, universe_scale.py 스윕):
+        #   U2(비환율) ×3.5: 책 1%→3.5%(0.07), 일봉 2%→7%(0.14), WTI 4h페이드 0.5%→1.75%(0.035)
+        #   U3(환율7종) ×2.3: 책 1%→2.3%(0.046), 일봉 5%→11.5%(0.23)
+        #   근거: U2 예상 낙폭 ~21%/증거금 ~25%, U3 낙폭 ~6.5%/증거금 ~25% (UNIVERSE_REPORT.md)
+        #   ⚠️ 두 유니버스 합산 계좌라 동시 최악(2025Q2형) 노출 ~770% = 실효레버 7.7배 < max_eff 10
+        #   (환산: 값 × 레버50 = notional% → 1%=0.02)
         entry_percent_by_strategy={
-            **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉(드레인 중) 2%
-            # S11 확장판(MT5·FX)은 데이터 3.5년(2022 미검증) → 마스터 권고 "보수 사이징" = 1%(0.02)
-            **{s: {"_default": 0.02} for s in ("s11", "s12", "s14", "s15")},
-            "s13": {"_default": 0.02, "WTI": 0.01},   # S22m WTI 페이드=이벤트 몰빵 → 절반
-            **{s: {"_default": 0.1,  # 일봉 FX 5% 유지
-                   "BTCUSD": 0.04, "ETHUSD": 0.04, "XAUUSD": 0.04, "XAGUSD": 0.04, "WTI": 0.04,
-                   "US100": 0.04, "JP225": 0.04, "GER40": 0.04, "UK100": 0.04, "HK50": 0.04}
-               for s in ("s3", "s4")},  # 일봉 추세/역추세. MT5 비환율 10종=2%
+            **{s: {"_default": 0.04} for s in ("s1", "s2")},  # 1분봉(드레인 중) 2% 유지
+            **{s: {"_default": 0.07,
+                   "USDJPY": 0.046, "EURUSD": 0.046, "GBPUSD": 0.046, "AUDUSD": 0.046,
+                   "USDCAD": 0.046, "USDCHF": 0.046, "NZDUSD": 0.046}
+               for s in ("s11", "s12", "s14", "s15")},
+            "s13": {"_default": 0.07, "WTI": 0.035,   # WTI 4h페이드=이벤트 몰빵 → 절반 규칙 유지
+                    "USDJPY": 0.046, "EURUSD": 0.046, "GBPUSD": 0.046, "AUDUSD": 0.046,
+                    "USDCAD": 0.046, "USDCHF": 0.046, "NZDUSD": 0.046},
+            **{s: {"_default": 0.23,  # 일봉 FX 11.5%
+                   "BTCUSD": 0.14, "ETHUSD": 0.14, "XAUUSD": 0.14, "XAGUSD": 0.14, "WTI": 0.14,
+                   "US100": 0.14, "JP225": 0.14, "GER40": 0.14, "UK100": 0.14, "HK50": 0.14}
+               for s in ("s3", "s4")},  # 일봉 비환율 7%
         },
 
         max_effective_leverage=10.0,
