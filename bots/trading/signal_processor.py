@@ -174,12 +174,15 @@ class SignalProcessor:
             # 트리거 시 그 게임의 전 다리만 동시청산(다른 게임은 유지).
             games = self._group_games(rows)
             actions: List[TradeAction] = []
-            hold = self._hold_sec_for(symbol, side)
+            _hold_default = self._hold_sec_for(symbol, side)
             _sym_games = len(games)            # ✅ 청산 전 이 심볼·방향 게임 수(남은중첩 계산용)
             _uni_now = self._universe_n(symbol)  # ✅ 청산 전 유니버스 게임 수
             _closed = 0
             for gid, legs in games.items():
                 first_ts = int(legs[0][1] or 0)
+                # ✅ 만기 = 진입 시그널에 박제된 값 우선(첫 다리 기준), 없으면(레거시) 봇 설정 폴백
+                #    → 청산이 시그널 자립: ns를 공유해도 남의 포지션에 내 만기를 적용하는 사고 차단
+                hold = int(legs[0][6]) if len(legs[0]) > 6 and legs[0][6] else _hold_default
                 last_tp, last_sl = float(legs[-1][3]), float(legs[-1][4])
                 pos = S1Position(0.0, last_tp, last_sl, first_ts)
                 reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
@@ -215,12 +218,14 @@ class SignalProcessor:
 
         # 비-추매(S1 추세 등): 다리별 독립 청산 (다리=게임)
         actions = []
-        hold = self._hold_sec_for(symbol, side)
+        _hold_default = self._hold_sec_for(symbol, side)
         _sym_games = len(rows)             # ✅ 청산 전 이 심볼·방향 게임 수
         _uni_now = self._universe_n(symbol)  # ✅ 청산 전 유니버스 게임 수
         _closed = 0
         for r in rows:
             sid, ts_ms, ep, tp, sl = r[0], r[1], r[2], r[3], r[4]
+            # ✅ 만기 = 시그널 박제값 우선, 없으면(레거시) 봇 설정 폴백 (시그널 자립 청산)
+            hold = int(r[6]) if len(r) > 6 and r[6] else _hold_default
             pos = S1Position(float(ep), float(tp), float(sl), int(ts_ms or 0))
             reason = sigma_exit_on_tick(pos, float(price), position_long=is_long)
             if not reason and hold and ts_ms and \

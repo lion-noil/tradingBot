@@ -257,10 +257,11 @@ class OpenSignalsIndex:
                             p = 0.0
                         prices.append(p)
 
-                        # tag from payload_json.reasons[0] (+ S1 tp/sl + game_id)
+                        # tag from payload_json.reasons[0] (+ S1 tp/sl + game_id + max_hold_sec)
                         tag = ""
                         tp = sl = None
                         gid_raw = None  # ✅ 추매 게임 그룹핑
+                        hold_raw = None  # ✅ 만기(시그널 자립 청산: 봇 설정 대신 진입 시점 값)
                         try:
                             if isinstance(rpayload, (bytes, bytearray)):
                                 rpayload = rpayload.decode("utf-8", "ignore")
@@ -273,10 +274,11 @@ class OpenSignalsIndex:
                                     tp = pd.get("tp_price")
                                     sl = pd.get("sl_price")
                                     gid_raw = pd.get("game_id")
+                                    hold_raw = pd.get("max_hold_sec")
                         except Exception:
                             tag = ""
                         tags.append(tag)
-                        levels_list.append((tp, sl, gid_raw))
+                        levels_list.append((tp, sl, gid_raw, hold_raw))
 
                 d: Deque[Item] = deque()
                 for sid, ts, p, tag in zip(sids, ts_list, prices, tags):
@@ -284,12 +286,13 @@ class OpenSignalsIndex:
 
                 self._dq[(namespace, sym, side)] = d
 
-                # ✅ S1: tp/sl 레벨 맵 (+ game_id: 추매 다리를 부모 게임에 묶음. 미지정=자기 sid)
+                # ✅ S1: tp/sl 레벨 맵 (+ game_id: 추매 다리를 부모 게임에 묶음. 미지정=자기 sid / max_hold_sec)
                 lv_map: Dict[str, tuple] = {}
                 for sid, lv in zip(sids, levels_list):
                     if lv[0] is not None or lv[1] is not None:
                         gid = str(lv[2]) if (len(lv) > 2 and lv[2]) else sid
-                        lv_map[sid] = (lv[0], lv[1], gid)
+                        hold = lv[3] if len(lv) > 3 else None
+                        lv_map[sid] = (lv[0], lv[1], gid, hold)
                 self._levels[(namespace, sym, side)] = lv_map
 
     def stats(self, *, namespace: str, symbol: str, side: str) -> OpenSignalStats:
@@ -311,12 +314,13 @@ class OpenSignalsIndex:
             tp_price: Optional[float] = None,  # ✅ S1
             sl_price: Optional[float] = None,  # ✅ S1
             game_id: Optional[str] = None,  # ✅ 추매 게임 그룹핑(미지정=자기 sid)
+            max_hold_sec: Optional[int] = None,  # ✅ 만기 박제(시그널 자립 청산)
     ) -> None:
         key = (namespace, symbol, side)
         self._dq.setdefault(key, deque()).append((signal_id, int(ts_ms), float(entry_price), str(tag or "")))
         if tp_price is not None or sl_price is not None:
             gid = str(game_id) if game_id else str(signal_id)
-            self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price, gid)
+            self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price, gid, max_hold_sec)
 
     def list_open(
             self,
@@ -366,10 +370,11 @@ class OpenSignalsIndex:
             side: str,
             tag: Optional[str] = None,
     ) -> List[tuple]:
-        """시그마(S1/S2) 오픈 포지션 [(sid, ts_ms, entry_price, tp_price, sl_price, game_id), ...].
+        """시그마(S1/S2) 오픈 포지션 [(sid, ts_ms, entry_price, tp_price, sl_price, game_id, max_hold_sec), ...].
         tp/sl 없는 건 제외. tag 지정 시 그 전략(reasons[0]) 포지션만 — 같은 namespace에
         S1·S2 공존(예: BTCUSD) 시 서로 남의 포지션을 관리하지 않게 분리.
-        game_id = 추매 다리를 부모 게임에 묶는 키(미지정 레그는 자기 sid)."""
+        game_id = 추매 다리를 부모 게임에 묶는 키(미지정 레그는 자기 sid).
+        max_hold_sec = 진입 시 박제된 만기(없으면 None → 소비자가 봇 설정 폴백)."""
         d = self._dq.get((namespace, symbol, side))
         if not d:
             return []
@@ -384,7 +389,8 @@ class OpenSignalsIndex:
                 continue
             tp, sl = levels[0], levels[1]
             gid = levels[2] if len(levels) > 2 and levels[2] else sid
-            out.append((sid, int(ts), float(p), tp, sl, gid))
+            hold = levels[3] if len(levels) > 3 else None
+            out.append((sid, int(ts), float(p), tp, sl, gid, hold))
         return out
 
     def count_open_universe_redis(self, *, universe: str) -> int:
@@ -505,6 +511,7 @@ def record_and_index_signal(
             tp_price=sig_dict.get("tp_price"),  # ✅ S1
             sl_price=sig_dict.get("sl_price"),  # ✅ S1
             game_id=sig_dict.get("game_id"),  # ✅ 추매 게임 그룹핑
+            max_hold_sec=sig_dict.get("max_hold_sec"),  # ✅ 만기 박제(시그널 자립 청산)
         )
     else:
         open_id = _extract_open_signal_id(sig_dict)  # record_signal_with_ts에서 이미 검증됨
