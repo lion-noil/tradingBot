@@ -94,6 +94,7 @@ class TelegramLogHandler(logging.Handler):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self._rl = _TelegramRateLimiter(cooldown_sec=1.0)  # ✅ 추가
+        self._dedupe = {}  # ✅ 동일 오류 폭탄 방지(2026-07-16): 내용 지문 → {first, n}
 
     def emit(self, record):
         try:
@@ -277,6 +278,25 @@ class TelegramLogHandler(logging.Handler):
                     return
                 except Exception as e:
                     print(f"[Telegram prettify failed] {e} | raw={msg}")
+
+            # ✅ 동일 오류 폭탄 방지(2026-07-16 Upstash 사고: 크래시루프로 3만건 발송):
+            #    (레벨+본문 앞 150자) 지문이 같으면 10분 창에서 1회만 발송, 창 만료 시 억제 건수 요약.
+            import time as _t
+            fp = f"{record.levelno}:{record.getMessage()[:150]}"
+            now = _t.time()
+            st = self._dedupe.get(fp)
+            if st and now - st["first"] < 600:
+                st["n"] += 1
+                return
+            if st and st.get("n", 0) > 0:
+                try:
+                    send_telegram_message(self.bot_token, self.chat_id,
+                                          f"(동일 메시지 {st['n']}건 억제됨)")
+                except Exception:
+                    pass
+            self._dedupe[fp] = {"first": now, "n": 0}
+            if len(self._dedupe) > 200:
+                self._dedupe = {k: v for k, v in self._dedupe.items() if now - v["first"] < 600}
 
             key = f"LOG:{record.levelname}"
             if not self._rl.allow(key):

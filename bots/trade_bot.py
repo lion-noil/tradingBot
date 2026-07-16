@@ -446,6 +446,9 @@ class TradeBot:
                 )
 
     async def run_once(self):
+        # ✅ 인프라(Redis 등) 장애 백오프 — 심볼별 반복 오류로 텔레그램 폭탄 만드는 것 방지
+        if time.monotonic() < getattr(self, "_infra_pause_until", 0.0):
+            return
         loop = asyncio.get_running_loop()
         # WS 링크 끊김 감지(전역, 1회/사이클). per-symbol 게이트와 별개로 동작.
         self._check_ws_link()
@@ -497,6 +500,15 @@ class TradeBot:
                             })
 
             except Exception as e:
+                emsg = str(e)
+                if ("max requests limit" in emsg) or ("redis" in emsg.lower()) or                         type(e).__name__ in ("ConnectionError", "ResponseError", "TimeoutError"):
+                    # ✅ 인프라 장애: 이번 패스 중단 + 60s 전체 백오프 (알림은 10분당 1회)
+                    self._infra_pause_until = time.monotonic() + 60.0
+                    if time.monotonic() > getattr(self, "_infra_alert_at", 0.0):
+                        self._infra_alert_at = time.monotonic() + 600.0
+                        if self.system_logger:
+                            self.system_logger.error(f"🧯 인프라 오류 — 60s 백오프 진입: {emsg[:140]}")
+                    break
                 if self.system_logger:
                     self.system_logger.exception(f"[{symbol}] run_once error: {e}")
                 continue

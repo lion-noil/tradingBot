@@ -26,6 +26,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=bybit
+      - REDIS_URL=redis://redis:6379/0
       - BYBIT_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -42,6 +43,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s1
+      - REDIS_URL=redis://redis:6379/0
       - S1_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -57,6 +59,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=mt5
+      - REDIS_URL=redis://127.0.0.1:6379/0
       # executor-a2는 로컬 Windows에서 실행 → host.docker.internal로 접근
       - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
     extra_hosts:
@@ -74,6 +77,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s1mt5
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -90,6 +94,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s2
+      - REDIS_URL=redis://redis:6379/0
       - S2_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -106,6 +111,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s2mt5
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - MT5_EXECUTOR_TARGETS=host.docker.internal:9010
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -371,6 +377,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s11
+      - REDIS_URL=redis://redis:6379/0
       - S11_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -386,6 +393,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s22
+      - REDIS_URL=redis://redis:6379/0
       - S22_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -402,6 +410,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s11m
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - S11M_EXECUTOR_TARGETS=host.docker.internal:9010
     volumes:
       - ./logs:/app/logs
@@ -416,6 +425,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s33
+      - REDIS_URL=redis://redis:6379/0
       - CRYPTOD_EXECUTOR_TARGETS=executor-a1:9009
     volumes:
       - ./logs:/app/logs
@@ -432,6 +442,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s33m
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - MT5D_EXECUTOR_TARGETS=host.docker.internal:9010
     volumes:
       - ./logs:/app/logs
@@ -445,6 +456,7 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s33f
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - FXD_EXECUTOR_TARGETS=host.docker.internal:9010
     volumes:
       - ./logs:/app/logs
@@ -459,9 +471,20 @@ services:
     env_file: .env
     environment:
       - STRATEGY=s22m
+      - REDIS_URL=redis://127.0.0.1:6379/0
       - S22M_EXECUTOR_TARGETS=host.docker.internal:9010
     volumes:
       - ./logs:/app/logs
+
+  # ── 로컬 Redis (2026-07-16) — Upstash 한도 사고 후 자체 호스팅. AOF 영속 + 로컬 전용 ──
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ./redis-data:/data
 
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
@@ -485,6 +508,7 @@ services:
     command: python -m app.local_executor
     env_file: .env
     environment:
+      - REDIS_URL=redis://redis:6379/0
       - EXEC_ACCOUNT_ID=${EXEC_A1_ACCOUNT_ID}
       - EXEC_LISTEN_HOST=0.0.0.0
     volumes:
