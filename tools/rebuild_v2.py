@@ -4,7 +4,7 @@
 ② MT5: 거래소 포지션(티켓·수량·진입가)과 매칭 — 매칭된 것만 채택 + lots 생성(ex_lot_id=티켓)
 ③ Bybit: (심볼,방향) 거래소 수량을 오픈 게임들에 균등 배분 → lots 생성
 ④ 신호 zset/hash/stream(쿨다운) + lots hash/zset/by_signal 기록
-입력: /app/tools/mt5_positions.json, /app/logs/bybit_positions.json
+입력: /app/tools/mt5_positions.json, /app/tools/bybit_positions.json (재실행 시 거래소 스냅샷 새로 뜰 것)
 실행: docker exec -i -e MIGRATE_DST=redis://redis:6379/0 tradingbot-signal-s11-1 python - < tools/rebuild_v2.py [-- --dry-run]"""
 import sys, os, json, glob, time, uuid
 import redis as redislib
@@ -92,7 +92,7 @@ for c in mt5_cands:
         print(f"  드롭(거래소 무): {c[0]} {c[1]} {c[2]} px={c[4].get('price')} tag={(c[4].get('reasons') or ['?'])[0]}")
 
 # ── ③ Bybit 배분 ──
-bypos = json.load(open("/app/logs/bybit_positions.json", encoding="utf-8"))
+bypos = json.load(open("/app/tools/bybit_positions.json", encoding="utf-8"))
 by_cands = {}
 for c in cands:
     if c[0] in BYBIT_NS:
