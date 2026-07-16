@@ -487,10 +487,13 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
     """S11 확장판 z추세롱 (MT5·FX, 2026-07-12). ⚠️데이터 3.5년(2022 미검증) → 보수 사이징 등급. 전셀 SL無."""
     S11M_TREND = {
         "JP225":  {"long": {"win": 1440, "k1": 4.0,  "b": -1.5, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
-        "US100":  {"long": {"win": 720,  "k1": 5.25, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        # US100: 1m 백필(6.3y) 재스크리닝 교체(2026-07-16) — 구 w720 K5.25 B-2.5 cd1h는 확장데이터 +0.28% 탈락.
+        #   신규 w1440 K5.5 B-3 cd3h: 이웃격자 중앙값 +0.34/+0.09 견고.
+        "US100":  {"long": {"win": 1440, "k1": 5.5,  "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "GER40":  {"long": {"win": 1440, "k1": 3.75, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "UK100":  {"long": {"win": 1440, "k1": 3.75, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
-        "HK50":   {"long": {"win": 360,  "k1": 5.75, "b": -3.0, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        # HK50 추세롱(구 w360 K5.75): 1m 백필 재스크리닝에서 -0.13% 기각 → 제거(2026-07-16, 오픈 없음 확인).
+        #   HK50은 역추롱(S11M_REV w2880)으로 대체.
         "XAGUSD": {"long": {"win": 1320, "k1": 4.75, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
         "WTI":    {"long": {"win": 720,  "k1": 4.5,  "b": -2.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "USDJPY": {"long": {"win": 1440, "k1": 4.5,  "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
@@ -503,19 +506,23 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
     }
     return make_s1_config(name="s11m", params_by_symbol=S11M_TREND, strategy="s11",
                           avg_down=False, signal_only=signal_only,
-                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          # ⚠️ candles_num: 책 모드 캔들 스토어는 primary(이 config)의 값 사용 —
+                          #    S11M_REV HK50 w2880 커버 위해 2000→3200 (trade_bot.py CandleEngine 참조)
+                          s1_win=1440, candle_interval="1", candles_num=3200,
                           s1_max_hold_sec=14 * _D, **kw)
 
 
 def make_s11_mt5_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
-    """S11 확장판 z역추세롱 (MT5 크립토 CFD, 2026-07-15 추가). Bybit S11 BTC 역추롱 그대로.
-    실보유 평균 5.0일(중앙 2.2일) → 스왑 실비용 반영 기대 +0.92% (14d 가정 +0.67%는 과대계상이었음)."""
+    """S11 확장판 z역추세롱 (MT5, 2026-07-15 추가). BTCUSD=Bybit S11 역추롱 그대로
+    (실보유 평균 5.0일(중앙 2.2일) → 스왑 실비용 반영 기대 +0.92%).
+    HK50=1m 백필(6.3y) 재스크리닝 신규(2026-07-16, 이웃 +0.26 견고) — 기각된 추세롱 대체."""
     S11M_REV = {
         "BTCUSD": {"long": {"win": 1320, "k1": 5.0, "b": -1.0, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        "HK50":   {"long": {"win": 2880, "k1": 3.5, "b": 2.0,  "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
     }
     return make_s1_config(name="s11m", params_by_symbol=S11M_REV, strategy="s12",
                           avg_down=False, signal_only=signal_only,
-                          s1_win=1440, candle_interval="1", candles_num=2000,
+                          s1_win=1440, candle_interval="1", candles_num=3200,  # HK50 w2880 커버
                           s1_max_hold_sec=14 * _D, **kw)
 
 
