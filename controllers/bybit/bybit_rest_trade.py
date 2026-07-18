@@ -153,6 +153,19 @@ class BybitRestTradeMixin:
                 self.system_logger.error(f"❌ open_market 수량 오류: {qty}")
             return None
 
+        # 1.5. 스텝 정규화(floor) — 청산(close_market)과 동일 기준.
+        #      비정규 수량이 주문되면 거래소 체결량과 장부 기록이 어긋나 더스트가 누적된다.
+        qty_n = self.normalize_qty(symbol, qty, mode="floor")
+        if qty_n <= 0:
+            if getattr(self, "system_logger", None):
+                self.system_logger.warning(f"❗ 진입 수량이 최소단위 미만입니다. 중단. (raw={qty})")
+            return None
+        if abs(qty_n - qty) > 1e-12 and getattr(self, "system_logger", None):
+            self.system_logger.warning(
+                f"⚠️ 진입 수량 스텝 보정 {qty} -> {qty_n} ({symbol}) — 상류 정규화 누락 의심"
+            )
+        qty = qty_n
+
         # 2. Side 매핑
         if side.lower() == "long":
             order_side, position_idx = "Buy", 1

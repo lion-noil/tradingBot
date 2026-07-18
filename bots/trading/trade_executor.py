@@ -732,12 +732,38 @@ class TradeExecutor:
             cancel_on_timeout=True,
         )
 
+        # ✅ 장부는 요청수량이 아니라 실체결 수량(포지션 델타)을 기록해야
+        #    거래소-장부 불일치(더스트)가 누적되지 않는다.
+        filled_info = res.get("filled") or {}
+        exec_qty = float(filled_info.get("cumExecQty") or 0.0)
+        step = float((self._get_rules(symbol) or {}).get("qtyStep") or 0.0)
+        eps = max(step * 0.5, 1e-12)
+
         if not res.get("ok"):
+            # 타임아웃이라도 부분체결(1스텝 이상)이 있으면 체결분만큼 lot을 기록해
+            # 고아 포지션(장부 없는 거래소 잔량) 생성을 막는다.
+            if exec_qty < max(step, 1e-12):
+                if self.system_logger:
+                    self.system_logger.warning(
+                        f"[OPEN] not filled -> skip lot (sym={symbol} status={res.get('status')})"
+                    )
+                return
             if self.system_logger:
                 self.system_logger.warning(
-                    f"[OPEN] not filled -> skip lot (sym={symbol} status={res.get('status')})"
+                    f"[OPEN] 부분체결 감지 — 체결분만 lot 기록 (sym={symbol} {side_u} "
+                    f"filled={exec_qty} req={qty} status={res.get('status')})"
                 )
-            return
+
+        if exec_qty > 0 and abs(exec_qty - float(qty)) > eps and self.system_logger:
+            self.system_logger.warning(
+                f"[OPEN] 요청/체결 수량 불일치 — 장부는 체결분 기록 (sym={symbol} {side_u} "
+                f"req={qty} filled={exec_qty})"
+            )
+        rec_qty = exec_qty if exec_qty > 0 else float(qty)
+        # 포지션 델타(뺄셈)의 float 노이즈 제거 — 비정규 수량이 장부에 기록되면
+        # 청산 floor에서 또 더스트가 생기므로 반드시 스텝에 반올림 정렬한다.
+        if step > 0:
+            rec_qty = self._round_step(rec_qty, step, mode="round")
 
         ex_lot_id = res.get("ex_lot_id")
         entry_ts_ms = int(time.time() * 1000)
@@ -749,7 +775,7 @@ class TradeExecutor:
                 side=side_u,
                 entry_ts_ms=entry_ts_ms,
                 entry_price=float(price),
-                qty_total=float(qty),
+                qty_total=float(rec_qty),
                 entry_signal_id=entry_signal_id,
                 ex_lot_id=ex_lot_id,
             )
@@ -763,7 +789,7 @@ class TradeExecutor:
                 "kind": "ENTRY",
                 "symbol": symbol,
                 "side": side_u,
-                "qty": float(qty),
+                "qty": float(rec_qty),
                 "price": float(price),
                 "entry_price": float(price),
                 "ts_ms": entry_ts_ms,
@@ -781,7 +807,7 @@ class TradeExecutor:
         # cache update
         try:
             self.deps.on_lot_open(
-                symbol, side_u, lot_id, entry_ts_ms, float(qty), float(price),
+                symbol, side_u, lot_id, entry_ts_ms, float(rec_qty), float(price),
                 entry_signal_id or "", ex_lot_id,
             )
         except Exception:
@@ -802,7 +828,7 @@ class TradeExecutor:
             action="OPEN",
             lot_id=lot_id,
             ex_lot_id=ex_lot_id,
-            qty=float(qty),
+            qty=float(rec_qty),
         )
 
     async def close_position(
@@ -984,6 +1010,14 @@ class TradeExecutor:
                 if self.system_logger:
                     self.system_logger.info(f"[lots_index] on_lot_close 실패 ({lot_id}) err={e}")
 
+        # ✅ 더스트 스윕: 이 (symbol, side)의 장부 lot이 전부 소진됐는데 거래소에 소량 잔량이
+        #    남아있으면(과거 요청/체결 불일치·비정규 수량의 잔재) 즉시 정리한다.
+        try:
+            self._sweep_residual_after_close(symbol, side_u)
+        except Exception as e:
+            if self.system_logger:
+                self.system_logger.warning(f"[dust-sweep] failed ({symbol} {side_u}) err={e}")
+
         new_asset = self._build_asset_snapshot(asset=self.deps.get_asset(), symbol=symbol)
         self.deps.set_asset(new_asset)
         try:
@@ -1001,6 +1035,65 @@ class TradeExecutor:
             ex_lot_id=ex_lot_id,
             qty=float(close_qty),
         )
+
+    def _sweep_residual_after_close(self, symbol: str, side_u: str) -> None:
+        """장부(lots) 합계와 거래소 실포지션을 대조해 잔량 더스트를 정리한다.
+
+        - lot이 하나라도 남아있으면 주문하지 않는다(진행 중 체결과의 경합 방지) — 경고만.
+        - lot 합계가 0인데 거래소 잔량이 있으면: 더스트 수준(최소주문 vs 3스텝 중 큰 쪽 이하)일 때만
+          reduce-only 시장가로 정리. 그 이상 크기의 고아 포지션은 자동 청산하지 않고 경고 로그.
+        """
+        lots_index = getattr(self.deps, "lots_index", None)
+        if lots_index is None:
+            return
+        try:
+            items = lots_index.list_open_items(symbol, side_u) or []
+            lots_sum = float(sum(float(getattr(x, "qty_total", 0.0) or 0.0) for x in items))
+        except Exception:
+            return
+
+        live = float(self._pos_qty_live(symbol, side_u) or 0.0)
+        residual = live - lots_sum
+
+        rules = self._get_rules(symbol) or {}
+        step = float(rules.get("qtyStep") or 0.0) or 0.0
+        if step <= 0 or residual < step - 1e-12:
+            return
+
+        min_qty = float(rules.get("minOrderQty") or 0.0) or step
+
+        if lots_sum > 0:
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[dust-sweep] 거래소 잔량 > 장부 lot 합 (sym={symbol} {side_u} "
+                    f"live={live} lots={lots_sum} residual={residual:.12f}) — lot 소진 시 정리 예정"
+                )
+            return
+
+        cap = max(min_qty, step * 3.0)
+        if residual > cap + 1e-12:
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[dust-sweep] 장부 lot 0인데 잔량 과다 — 자동정리 상한 초과, 수동 확인 필요 "
+                    f"(sym={symbol} {side_u} residual={residual:.12f} cap={cap})"
+                )
+            return
+
+        qn = self._normalize_qty(symbol, residual, mode="floor")
+        if qn <= 0 or qn < min_qty - 1e-12:
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[dust-sweep] 잔량이 최소주문 미만이라 정리 불가 "
+                    f"(sym={symbol} {side_u} residual={residual:.12f} min_qty={min_qty})"
+                )
+            return
+
+        res = self.rest.close_market(symbol, side_u, qn)
+        if self.system_logger:
+            self.system_logger.warning(
+                f"[dust-sweep] 장부 lot 소진 후 거래소 잔량 정리 주문 "
+                f"(sym={symbol} {side_u} qty={qn} ok={bool(res)})"
+            )
 
     def _short_id(self, v: Any) -> str:
         s = str(v).strip() if v is not None else ""
