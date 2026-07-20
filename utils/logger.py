@@ -1,5 +1,6 @@
 import logging, os, json, html, requests
 from pathlib import Path
+from typing import Optional
 
 import time
 from collections import defaultdict
@@ -66,6 +67,24 @@ _STRAT_KR = {
     "S1": "추세", "S2": "역추세", "S3": "일봉추세", "S4": "일봉역추세",
     "S11": "z추세", "S12": "z역추세", "S13": "급락페이드", "S14": "ewz추세",
 }
+
+# ✅ 유니버스('전체 N'의 집계 단위, 2026-07-15 확정 3분류) → 표시 라벨.
+#   분류 로직은 bots.state.universe.universe_of (crypto=Bybit 전체 / mt5=MT5 비환율 / fx=환율 7종).
+_UNIVERSE_KR = {"crypto": "크립토", "mt5": "MT5", "fx": "환율"}
+
+# ✅ 유니버스(계좌) 캡 표기값 (2026-07-20 사용자 확정: "200은 유니버스 캡").
+#   실제 강제는 executor의 max_effective_leverage(10배) — 1진입 5% notional 기준 200게임 상당.
+#   셀별 max_concurrent가 이 값 이상이면 비구속 센티널로 보고 분모를 유니버스 쪽에만 표기.
+_UNIVERSE_CAP = 200
+
+
+def _universe_label(namespace: str, symbol: str) -> Optional[str]:
+    """(ns, 심볼) → '크립토'/'MT5'/'환율'. 분류 실패 시 None → '전체'로 폴백."""
+    try:
+        from bots.state.universe import universe_of
+        return _UNIVERSE_KR.get(universe_of(namespace or "", symbol or ""))
+    except Exception:
+        return None
 
 
 def _strat_label(reason0: str) -> str:
@@ -221,20 +240,26 @@ class TelegramLogHandler(logging.Handler):
                             pass
                     line_stats = "  ".join(stats_parts)
 
-                    # ✅ 진입: 현재중첩/최대중첩 + 유니버스 + 최대보유 (예: 중첩 3/12 · 전체 27 · 보유≤14d)
-                    #    청산: 남은중첩/캡 + 유니버스 남은            (예: 남은 2/12 · 전체 26)
+                    # ✅ 진입: 심볼중첩 + 유니버스/캡 + 최대보유 (예: 중첩 1 · MT5전체 9/200 · 보유≤14d)
+                    #    청산: 남은중첩 + 유니버스/캡              (예: 남은 0/5 · MT5전체 8/200)
+                    #    셀 캡은 실구속(일봉 5 등)일 때만 분모 표기 — 200 센티널은 유니버스 캡으로 이관.
                     overlap_line = ""
                     try:
                         _cc = obj.get("concurrent")
                         _mc = obj.get("max_concurrent")
                         parts = []
-                        if _cc is not None and _mc is not None:
+                        if _cc is not None:
                             _lbl = "중첩" if kind == "ENTRY" else "남은"
-                            parts.append(f"{_lbl} {int(_cc)}/{int(_mc)}")
-                        # ✅ 유니버스(채널 전체 심볼·방향) 합산 게임 수
+                            if _mc is not None and int(_mc) < _UNIVERSE_CAP:
+                                parts.append(f"{_lbl} {int(_cc)}/{int(_mc)}")
+                            else:
+                                parts.append(f"{_lbl} {int(_cc)}")
+                        # ✅ 유니버스(crypto/mt5/fx) 합산 게임 수 / 유니버스 캡 — 라벨 병기
                         _cu = obj.get("concurrent_universe")
                         if _cu is not None:
-                            parts.append(f"전체 {int(_cu)}")
+                            _ulbl = _universe_label(obj.get("engine") or obj.get("namespace") or "", symbol or "")
+                            _ubase = f"{_ulbl}전체" if _ulbl else "전체"
+                            parts.append(f"{_ubase} {int(_cu)}/{_UNIVERSE_CAP}")
                         if kind == "ENTRY":   # 보유≤는 진입에만(청산은 line_stats에 '보유 X/Y')
                             _mh = _fmt_cd(obj.get("max_hold_sec"))
                             if _mh:

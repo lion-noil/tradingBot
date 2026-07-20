@@ -440,6 +440,11 @@ _H = 3600   # 1시간(초)
 
 def make_s11_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S11 z추세 (Bybit). 롱=z≥+K1(SL無), XRP만 숏(z≤−K1, SL유지)."""
+    # ✅ 개별캡(셀·심볼) 폐지 (2026-07-20 사용자 확정): 책 셀은 전부 maxc=200(비구속 센티널),
+    #   리스크는 사이징+executor max_eff_lev(유니버스캡 200게임 상당)로만 관리.
+    #   근거(universe_symbolcap.py 스윕): 깊은 중첩=폭락 클러스터 매수가 복리수익의 절반(캡12면 39배→21배),
+    #   임의 캡은 성과 훼손(구 페이드캡 12는 -27%였음 — cap_sim.py). 실측 참고치: z셀 최대 6~11,
+    #   페이드 최대 28(HK50)·24(SOL), 심볼합산 최대 SOL 27/HK50 40/JP225 34.
     S11_TREND = {
         "BTCUSDT": {"long": {"win": 1440, "k1": 6.0, "b": 0.0,  "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "ETHUSDT": {"long": {"win": 720,  "k1": 6.0, "b": -3.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
@@ -467,15 +472,17 @@ def make_s11_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 
 def make_s11_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S11 급락페이드 (Bybit). M분 수익률≤−X% 롱 / BTC=되돌림×1.5 익절+캡48h, 나머지=시간청산 24h. SL無."""
+    # ✅ 페이드 캡 12 폐지→200 (2026-07-20): 백테스트는 캡 없이 검증 — 캡 12는 폭락 클러스터에서
+    #   진입을 잘라 6.3y 최종자산 -27%였음(전부 SOL, 드롭 12건에 r합 +808%p — cap_sim.py).
     S11_FADE = {
         "BTCUSDT": {"long": {"m_min": 60, "drop_pct": 0.04, "retr_mult": 1.5, "hold_sec": 48 * _H,
-                             "cooldown_sec": 1800, "max_concurrent": 12}},
+                             "cooldown_sec": 1800, "max_concurrent": 200}},
         "ETHUSDT": {"long": {"m_min": 30, "drop_pct": 0.04, "hold_sec": 24 * _H,
-                             "cooldown_sec": 1800, "max_concurrent": 12}},
+                             "cooldown_sec": 1800, "max_concurrent": 200}},
         "SOLUSDT": {"long": {"m_min": 15, "drop_pct": 0.05, "hold_sec": 24 * _H,
-                             "cooldown_sec": 1800, "max_concurrent": 12}},  # ⚠️꼬리 -55% — 저사이징 전제
+                             "cooldown_sec": 1800, "max_concurrent": 200}},  # ⚠️꼬리 -55% — 저사이징 전제
         "XRPUSDT": {"long": {"m_min": 30, "drop_pct": 0.05, "hold_sec": 24 * _H,
-                             "cooldown_sec": 1800, "max_concurrent": 12}},
+                             "cooldown_sec": 1800, "max_concurrent": 200}},
     }
     return make_s1_config(name="s11", params_by_symbol=S11_FADE, strategy="s13",
                           avg_down=False, signal_only=signal_only,
@@ -528,18 +535,19 @@ def make_s11_mt5_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 
 def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S11 확장판 급락페이드 (MT5·FX). JP225 4h−3%(T48h)·HK50 2h−2%(T72h)·USDJPY 2h−1%(T48h). 시간청산·SL無."""
+    # ✅ 페이드 캡 12 폐지→200 (2026-07-20): 캡 12는 HK50×21+JP225×13 진입 드롭(-1.6%) — S11_FADE 참조.
     S11M_FADE = {
         "JP225":  {"long": {"m_min": 240, "drop_pct": 0.03, "hold_sec": 48 * _H,
-                            "cooldown_sec": 1800, "max_concurrent": 12}},
+                            "cooldown_sec": 1800, "max_concurrent": 200}},
         "HK50":   {"long": {"m_min": 120, "drop_pct": 0.02, "hold_sec": 72 * _H,
-                            "cooldown_sec": 1800, "max_concurrent": 12}},
+                            "cooldown_sec": 1800, "max_concurrent": 200}},
         "USDJPY": {"long": {"m_min": 120, "drop_pct": 0.01, "hold_sec": 48 * _H,
-                            "cooldown_sec": 1800, "max_concurrent": 12}},
+                            "cooldown_sec": 1800, "max_concurrent": 200}},
         # ── 크립토 CFD (2026-07-15 추가) — Bybit S11 페이드 그대로. 보유 짧아 스왑 영향 미미. ──
         "BTCUSD": {"long": {"m_min": 60, "drop_pct": 0.04, "retr_mult": 1.5, "hold_sec": 48 * _H,
-                            "cooldown_sec": 1800, "max_concurrent": 12}},
+                            "cooldown_sec": 1800, "max_concurrent": 200}},
         "ETHUSD": {"long": {"m_min": 30, "drop_pct": 0.04, "hold_sec": 24 * _H,
-                            "cooldown_sec": 1800, "max_concurrent": 12}},
+                            "cooldown_sec": 1800, "max_concurrent": 200}},
     }
     return make_s1_config(name="s11m", params_by_symbol=S11M_FADE, strategy="s13",
                           avg_down=False, signal_only=signal_only,
@@ -550,7 +558,9 @@ def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
 # ─────────────────────────────────────────────────────────────────────────────
 # 일봉(D1) FX 채널 — HANDOFF_DAILY_FX. namespace "fxd"(1분 mt5와 별개 채널),
 #   win=90일, 쿨다운 일(日), 최대보유 30일, candle_interval="D". executor-a2(MT5) 공유.
-#   §3 🟢(쓸만) 픽만. avg_down 미사용(일봉 핸드오프 무관). maxc=핸드오프 §3 값.
+#   §3 🟢(쓸만) 픽만. avg_down 미사용(일봉 핸드오프 무관).
+#   ✅ 일봉 maxc도 200 센티널 (2026-07-20 개별캡 전면 폐지): 핸드오프 §3 캡은 쿨다운×보유15일의
+#   이론상 천장 기록값이라 최근 5y 시뮬에서 캡 유/무 결과 완전 동일(1건도 미발동) — universe_symbolcap.py NOCAP33.
 # ─────────────────────────────────────────────────────────────────────────────
 _D = 86400  # 1일(초)
 
@@ -559,7 +569,7 @@ def make_fx_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfi
     """일봉 FX 추세(S3). HANDOFF_MASTER v2(2026-07-09, 창 재배정): FX 추세는 USDJPY W120만 엣지.
     (EURUSD/USDCAD/NZDUSD 추세롱은 전 창 탐색 후 엣지 없음 확정 → 제외; 제외 시점 오픈 S3포지션 없음 확인)"""
     FXD_TREND = {
-        "USDJPY": {"long": {"win": 120, "k1": 2.9, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 8}},  # 13.5y 구제(bad4→worst-3)
+        "USDJPY": {"long": {"win": 120, "k1": 2.9, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 200}},  # 13.5y 구제(bad4→worst-3)
     }
     return make_s1_config(name="fxd", params_by_symbol=FXD_TREND, strategy="s3",  # s3=일봉 추세
                           avg_down=False, signal_only=signal_only,
@@ -571,17 +581,17 @@ def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
     """일봉 FX 역추세(S4). HANDOFF_MASTER v2 §3-B: 심볼×방향별 win(90~200). 추매 미사용."""
     FXD_REV = {
         # ✅ 13.5y(D13) 재검증 2026-07-15: 역롱 4종 파라미터 교체(구제), USDCAD·USDCHF 역숏 기각 제거.
-        "EURUSD": {"long": {"win": 120, "k1": 2.9, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 8}},  # ⚠️2020 편중
-        "GBPUSD": {"long": {"win": 150, "k1": 2.4, "b": 1.6,  "cooldown_sec": 1 * _D, "max_concurrent": 12},
-                   "short": {"win": 150, "k1": 2.1, "b": 0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "USDJPY": {"long": {"win": 150, "k1": 2.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "AUDUSD": {"long": {"win": 200, "k1": 2.6, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 8},
-                   "short": {"win": 90,  "k1": 1.8, "b": 0.2, "cooldown_sec": 3 * _D, "max_concurrent": 5}},
-        "USDCAD": {"long": {"win": 200, "k1": 2.3, "b": 1.8,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},   # 역숏(15년 -71) 기각 제거
-        "USDCHF": {"long": {"win": 200, "k1": 2.3, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                   "short": {"win": 200, "k1": 99.0, "b": -0.2, "cooldown_sec": 3 * _D, "max_concurrent": 5}},  # 역숏 기각 — 오픈 2개 드레인(k1=99)
-        "NZDUSD": {"long": {"win": 250, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 8},
-                   "short": {"win": 150, "k1": 1.4, "b": -1.2, "cooldown_sec": 2 * _D, "max_concurrent": 7}},
+        "EURUSD": {"long": {"win": 120, "k1": 2.9, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200}},  # ⚠️2020 편중
+        "GBPUSD": {"long": {"win": 150, "k1": 2.4, "b": 1.6,  "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 150, "k1": 2.1, "b": 0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "USDJPY": {"long": {"win": 150, "k1": 2.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "AUDUSD": {"long": {"win": 200, "k1": 2.6, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 200},
+                   "short": {"win": 90,  "k1": 1.8, "b": 0.2, "cooldown_sec": 3 * _D, "max_concurrent": 200}},
+        "USDCAD": {"long": {"win": 200, "k1": 2.3, "b": 1.8,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},   # 역숏(15년 -71) 기각 제거
+        "USDCHF": {"long": {"win": 200, "k1": 2.3, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 200, "k1": 99.0, "b": -0.2, "cooldown_sec": 3 * _D, "max_concurrent": 200}},  # 역숏 기각 — 오픈 2개 드레인(k1=99)
+        "NZDUSD": {"long": {"win": 250, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 150, "k1": 1.4, "b": -1.2, "cooldown_sec": 2 * _D, "max_concurrent": 200}},
     }
     return make_s1_config(name="fxd", params_by_symbol=FXD_REV, strategy="s4",  # s4=일봉 역추세
                           avg_down=False, signal_only=signal_only,
@@ -598,14 +608,14 @@ def make_fx_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
 def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 크립토 추세(S3). HANDOFF_MASTER v2 §3-C: 창 재배정(ETHUSDT롱 W60, 나머지 W90)."""
     CRYPTOD_TREND = {
-        "BTCUSDT": {"long": {"win": 90, "k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 8},
-                    "short": {"win": 90, "k1": 2.4, "b": 0.2,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
-        "ETHUSDT": {"long": {"win": 60, "k1": 2.5, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 11},
-                    "short": {"win": 90, "k1": 1.6, "b": -0.8, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
-        "SOLUSDT": {"long": {"win": 90, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                    "short": {"win": 90, "k1": 1.7, "b": 0.2,  "cooldown_sec": 2 * _D, "max_concurrent": 8}},
-        "XRPUSDT": {"long": {"win": 90, "k1": 3.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13},
-                    "short": {"win": 90, "k1": 1.6, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
+        "BTCUSDT": {"long": {"win": 90, "k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 200},
+                    "short": {"win": 90, "k1": 2.4, "b": 0.2,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "ETHUSDT": {"long": {"win": 60, "k1": 2.5, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                    "short": {"win": 90, "k1": 1.6, "b": -0.8, "cooldown_sec": 5 * _D, "max_concurrent": 200}},
+        "SOLUSDT": {"long": {"win": 90, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                    "short": {"win": 90, "k1": 1.7, "b": 0.2,  "cooldown_sec": 2 * _D, "max_concurrent": 200}},
+        "XRPUSDT": {"long": {"win": 90, "k1": 3.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                    "short": {"win": 90, "k1": 1.6, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 200}},
     }
     return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_TREND, strategy="s3",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
@@ -616,12 +626,12 @@ def make_crypto_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeC
 def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 크립토 역추세(S4). HANDOFF_MASTER v2 §3-C: 창 150~200 상향, 🆕ETHUSDT 양방향 채택."""
     CRYPTOD_REV = {
-        "BTCUSDT": {"long": {"win": 150, "k1": 1.1, "b": 0.8,  "cooldown_sec": 10 * _D, "max_concurrent": 2}},
-        "ETHUSDT": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 2 * _D, "max_concurrent": 8},
-                    "short": {"win": 200, "k1": 2.6, "b": 2.2,  "cooldown_sec": 1 * _D, "max_concurrent": 10}},
-        "SOLUSDT": {"long": {"win": 200, "k1": 1.8, "b": 0.4,  "cooldown_sec": 1 * _D, "max_concurrent": 15}},
-        "XRPUSDT": {"long": {"win": 200, "k1": 1.6, "b": -1.4, "cooldown_sec": 2 * _D, "max_concurrent": 8},
-                    "short": {"win": 200, "k1": 1.1, "b": 0.2,  "cooldown_sec": 7 * _D, "max_concurrent": 3}},
+        "BTCUSDT": {"long": {"win": 150, "k1": 1.1, "b": 0.8,  "cooldown_sec": 10 * _D, "max_concurrent": 200}},
+        "ETHUSDT": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 2 * _D, "max_concurrent": 200},
+                    "short": {"win": 200, "k1": 2.6, "b": 2.2,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "SOLUSDT": {"long": {"win": 200, "k1": 1.8, "b": 0.4,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "XRPUSDT": {"long": {"win": 200, "k1": 1.6, "b": -1.4, "cooldown_sec": 2 * _D, "max_concurrent": 200},
+                    "short": {"win": 200, "k1": 1.1, "b": 0.2,  "cooldown_sec": 7 * _D, "max_concurrent": 200}},
     }
     return make_s1_config(name="bybit", params_by_symbol=CRYPTOD_REV, strategy="s4",  # bybit 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
@@ -637,16 +647,16 @@ def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeCon
 def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 MT5 비환율 추세(S3). HANDOFF_MASTER v2 §3-A: 창 재배정(ETHUSD W60, XAGUSD·JP225 W200)."""
     MT5D_TREND = {
-        "BTCUSD": {"long": {"win": 90, "k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 8},
-                   "short": {"win": 90, "k1": 2.4, "b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "ETHUSD": {"long": {"win": 60, "k1": 2.8, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 12},
-                   "short": {"win": 60, "k1": 2.0, "b": 0.0,  "cooldown_sec": 2 * _D, "max_concurrent": 7}},
+        "BTCUSD": {"long": {"win": 90, "k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 200},
+                   "short": {"win": 90, "k1": 2.4, "b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "ETHUSD": {"long": {"win": 60, "k1": 2.8, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 60, "k1": 2.0, "b": 0.0,  "cooldown_sec": 2 * _D, "max_concurrent": 200}},
         # ✅ 13.5y(D13) 재검증 2026-07-15: XAGUSD·XAUUSD 추롱 파라미터 교체(구제 스윕),
         #   WTI 추롱(bad4)·US100 추롱(bad3) 기각 제거. WTI 추숏·JP225 추롱은 13.5y 통과 유지.
-        "XAGUSD": {"long": {"win": 250, "k1": 2.9, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 8}},
-        "XAUUSD": {"long": {"win": 150, "k1": 2.6, "b": 0.2,  "cooldown_sec": 3 * _D, "max_concurrent": 8}},
-        "WTI":    {"short": {"win": 90, "k1": 2.3, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
-        "JP225":  {"long": {"win": 200, "k1": 2.7, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
+        "XAGUSD": {"long": {"win": 250, "k1": 2.9, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 200}},
+        "XAUUSD": {"long": {"win": 150, "k1": 2.6, "b": 0.2,  "cooldown_sec": 3 * _D, "max_concurrent": 200}},
+        "WTI":    {"short": {"win": 90, "k1": 2.3, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "JP225":  {"long": {"win": 200, "k1": 2.7, "b": 1.4,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
     }
     return make_s1_config(name="mt5", params_by_symbol=MT5D_TREND, strategy="s3",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s3로 구분
                           avg_down=False, signal_only=signal_only,
@@ -657,20 +667,20 @@ def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConf
 def make_mt5_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 MT5 비환율 역추세(S4). HANDOFF_MASTER v2 §3-A: 창 150~200 상향, 🆕XAUUSD·UK100·HK50 숏 채택."""
     MT5D_REV = {
-        "BTCUSD": {"long": {"win": 200, "k1": 1.0, "b": -3.0, "cooldown_sec": 5 * _D, "max_concurrent": 3}},
-        "ETHUSD": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 1 * _D, "max_concurrent": 15}},
+        "BTCUSD": {"long": {"win": 200, "k1": 1.0, "b": -3.0, "cooldown_sec": 5 * _D, "max_concurrent": 200}},
+        "ETHUSD": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
         # ✅ 13.5y 재검증: XAGUSD 역롱(18년 -74)·XAUUSD 역롱(bad3)·WTI 역롱(2014 -176, 구제 실패) 기각.
         #   🟡 XAGUSD·WTI 역롱은 오픈 포지션 있어 k1=99 드레인(진입 불가·청산만) — ≤15d 소진 후 삭제.
-        "XAGUSD": {"long": {"win": 90, "k1": 99.0, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 12}},
-        "XAUUSD": {"short": {"win": 200, "k1": 2.8, "b": 1.2,  "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "WTI":    {"long": {"win": 200, "k1": 99.0, "b": 0.8,  "cooldown_sec": 5 * _D, "max_concurrent": 3}},
-        "US100":  {"long": {"win": 150, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 11}},
-        "JP225":  {"long": {"win": 200, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},
-        "GER40":  {"long": {"win": 90, "k1": 2.6, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 13}},  # 13.5y 구제(구 w200: 18년 -41)
-        "UK100":  {"long": {"win": 90, "k1": 1.7, "b": -0.8, "cooldown_sec": 2 * _D, "max_concurrent": 7},
-                   "short": {"win": 250, "k1": 2.3, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 8}},  # 13.5y 구제
-        "HK50":   {"long": {"win": 200, "k1": 1.8, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 5},
-                   "short": {"win": 150, "k1": 2.2, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 8}},
+        "XAGUSD": {"long": {"win": 90, "k1": 99.0, "b": -1.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "XAUUSD": {"short": {"win": 200, "k1": 2.8, "b": 1.2,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "WTI":    {"long": {"win": 200, "k1": 99.0, "b": 0.8,  "cooldown_sec": 5 * _D, "max_concurrent": 200}},
+        "US100":  {"long": {"win": 150, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "JP225":  {"long": {"win": 200, "k1": 2.0, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "GER40":  {"long": {"win": 90, "k1": 2.6, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},  # 13.5y 구제(구 w200: 18년 -41)
+        "UK100":  {"long": {"win": 90, "k1": 1.7, "b": -0.8, "cooldown_sec": 2 * _D, "max_concurrent": 200},
+                   "short": {"win": 250, "k1": 2.3, "b": 1.0,  "cooldown_sec": 5 * _D, "max_concurrent": 200}},  # 13.5y 구제
+        "HK50":   {"long": {"win": 200, "k1": 1.8, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 200},
+                   "short": {"win": 150, "k1": 2.2, "b": 2.0,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},
     }
     return make_s1_config(name="mt5", params_by_symbol=MT5D_REV, strategy="s4",  # mt5 네임스페이스 공유(basic 퇴출로 충돌 없음), 태그 s4로 구분
                           avg_down=False, signal_only=signal_only,
@@ -814,7 +824,7 @@ def make_s22_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     ⚠️ m_min은 '봉 수'(엔진이 closes 인덱스로 사용) — 4h 채널에서 12=48h."""
     S22_FADE = {
         "XRPUSDT": {"long": {"m_min": 12, "drop_pct": 0.15, "retr_mult": 1.5, "hold_sec": 60 * _H4,
-                             "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+                             "cooldown_sec": 24 * _H, "max_concurrent": 200}},
     }
     return make_s1_config(name="s22", params_by_symbol=S22_FADE, strategy="s13",
                           avg_down=False, signal_only=signal_only,
@@ -871,11 +881,11 @@ def make_s22m_ewz_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 def make_s22m_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S22m 급락페이드 5셀. m_min=4h봉 수. US100만 되돌림×1.5, 나머지 시간청산. WTI=절반 사이징(executor)."""
     S22M_FADE = {
-        "JP225":  {"long": {"m_min": 18, "drop_pct": 0.05, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
-        "US100":  {"long": {"m_min": 30, "drop_pct": 0.07, "retr_mult": 1.5, "hold_sec": 30 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
-        "UK100":  {"long": {"m_min": 12, "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
-        "XAUUSD": {"long": {"m_min": 6,  "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
-        "WTI":    {"long": {"m_min": 6,  "drop_pct": 0.07, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "JP225":  {"long": {"m_min": 18, "drop_pct": 0.05, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+        "US100":  {"long": {"m_min": 30, "drop_pct": 0.07, "retr_mult": 1.5, "hold_sec": 30 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+        "UK100":  {"long": {"m_min": 12, "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+        "XAUUSD": {"long": {"m_min": 6,  "drop_pct": 0.03, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+        "WTI":    {"long": {"m_min": 6,  "drop_pct": 0.07, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
     }
     return make_s1_config(name="s22m", params_by_symbol=S22M_FADE, strategy="s13",
                           avg_down=False, signal_only=signal_only,
@@ -886,8 +896,8 @@ def make_s22m_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
 def make_s22m_sweep_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """S22m 유동성스윕(s15 신규): 직전봉 저가<N120봉 저점 & 종가 복귀 → 롱, T60봉(10d). JP225·USDCAD."""
     S22M_SWEEP = {
-        "JP225":  {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
-        "USDCAD": {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 12}},
+        "JP225":  {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
+        "USDCAD": {"long": {"sweep_n": 120, "hold_sec": 60 * _H4, "cooldown_sec": 24 * _H, "max_concurrent": 200}},
     }
     return make_s1_config(name="s22m", params_by_symbol=S22M_SWEEP, strategy="s15",
                           avg_down=False, signal_only=signal_only,
