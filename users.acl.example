@@ -1,0 +1,8 @@
+# tradingBot 로컬 Redis ACL 예시 (redis-server --aclfile). 실제 파일은 users.acl (gitignore).
+#   cp users.acl.example users.acl  후 REPLACE_WITH_STRONG_PASSWORD 를 .env REDIS_RO_PASSWORD 와 동일 값으로.
+#
+# default: 기존과 동일 무인증 전권 — 로컬 봇/executor(REDIS_URL=redis://redis:6379/0) 그대로.
+user default on nopass ~* &* +@all
+# frontend: 프론트(Vercel)가 SRH로 접속하는 읽기전용 유저.
+#   ~trading:* + (+@all -@write -@dangerous +info) → trading:* 키 읽기만, 쓰기/위험명령 전부 차단.
+user frontend on >REPLACE_WITH_STRONG_PASSWORD ~trading:* resetchannels +@all -@write -@dangerous +info

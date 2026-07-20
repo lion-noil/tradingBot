@@ -30,6 +30,9 @@ logs/
 # 로컬 Redis 데이터(AOF) — 2026-07-16 Upstash→로컬 전환
 redis-data/
 
+# Redis ACL (실비번 포함) — users.acl.example만 커밋
+users.acl
+
 # OS 관련
 .DS_Store
 Thumbs.db

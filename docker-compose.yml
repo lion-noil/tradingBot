@@ -480,11 +480,27 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction --aclfile /etc/redis/users.acl
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - ./redis-data:/data
+      - ./users.acl:/etc/redis/users.acl:ro
+
+  # ── SRH (2026-07-20) — 프론트(Vercel)가 로컬 트레이딩 Redis를 읽도록 Upstash-REST 호환 게이트웨이 ──
+  #   읽기전용 ACL 유저(frontend)로 접속. cloudflared(mt5_server)가 host.docker.internal:8079 로 프록시
+  #   → https://trdb.hyeongeonnoil.com. 뉴스/차트는 그대로 클라우드 Upstash 사용.
+  srh:
+    image: hiett/serverless-redis-http:latest
+    restart: always
+    ports:
+      - "0.0.0.0:8079:80"
+    environment:
+      - SRH_MODE=env
+      - SRH_TOKEN=${SRH_TOKEN}
+      - SRH_CONNECTION_STRING=redis://frontend:${REDIS_RO_PASSWORD}@redis:6379/0
+    depends_on:
+      - redis
 
   # ─── Watchdog ───────────────────────────────────────────────────────────────
   # unhealthy(=하트비트 stale=메인루프 행) 컨테이너를 docker restart로 자동 복구.
