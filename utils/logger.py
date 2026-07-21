@@ -91,8 +91,9 @@ def _universe_label(namespace: str, symbol: str) -> Optional[str]:
 #   기존엔 ns 그대로([MT5] 등)라 일봉이 [S33M]이 아닌 [MT5]로 보였음 — 일봉이 ns 통합(cryptod→bybit,
 #   mt5d→mt5)으로 구 채널 ns를 공유하기 때문. ns만으로 못 가르는 bybit/mt5는 전략(S3/S4=일봉)으로 분기.
 #   구 s1/s2 드레인은 기존 ns 표기 유지(≤7/26 소진 예정).
+#   fxd→S33M: 2026-07-21 FX 일봉이 S33M(ns mt5)으로 통합 — fxd 드레인 청산도 같은 책으로 표기.
 _BOOK_BY_NS = {"s11": "S11", "s11m": "S11M", "s22": "S22", "s22m": "S22M",
-               "fxd": "S33F", "mt5d": "S33M", "cryptod": "S33"}
+               "fxd": "S33M", "mt5d": "S33M", "cryptod": "S33"}
 
 
 def _book_tag(ns: str, reason0: str) -> str:

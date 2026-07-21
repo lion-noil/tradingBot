@@ -527,7 +527,7 @@ ENGINES = {
     "s33m": {
         "name": "S33M-BOOK",
         "make_configs": lambda: [make_mt5_daily_trend_config(signal_only=False),
-                                 make_mt5_daily_rev_config(signal_only=False)],   # 🔴 LIVE (U2 일봉)
+                                 make_mt5_daily_rev_config(signal_only=False)],   # 🔴 LIVE (U2+U3 일봉 — 2026-07-21 FX(구 fxd) 통합)
         "make_controllers": _build_mt5_controllers_daily,
         "targets_env": "MT5D_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",
@@ -542,8 +542,10 @@ ENGINES = {
     },
     "s33f": {
         "name": "S33F-BOOK",
-        "make_configs": lambda: [make_fx_daily_trend_config(signal_only=False),
-                                 make_fx_daily_rev_config(signal_only=False)],    # 🔴 LIVE (U3 일봉)
+        # 🟡 드레인 (2026-07-21 S33M 통합): 활성 FX 셀은 s33m(ns mt5)로 이동 — 여긴 fxd ns의
+        #   오픈 포지션(USDCHF 역숏 2건, ≤7/28 만기) 청산만. 소진 후 compose에서 컨테이너 제거.
+        "make_configs": lambda: [make_fx_daily_trend_config(signal_only=False, entries_disabled=True),
+                                 make_fx_daily_rev_config(signal_only=False, entries_disabled=True)],
         "make_controllers": _build_mt5_controllers_daily,
         "targets_env": "FXD_EXECUTOR_TARGETS",
         "targets_fallback_env": "MT5_EXECUTOR_TARGETS",

@@ -556,9 +556,9 @@ def make_s11_mt5_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 일봉(D1) FX 채널 — HANDOFF_DAILY_FX. namespace "fxd"(1분 mt5와 별개 채널),
-#   win=90일, 쿨다운 일(日), 최대보유 30일, candle_interval="D". executor-a2(MT5) 공유.
-#   §3 🟢(쓸만) 픽만. avg_down 미사용(일봉 핸드오프 무관).
+# 일봉(D1) FX 채널 — 🟡 드레인 (2026-07-21 S33M 통합, 사용자 확정 "통일성 측면 합치는 게 맞음").
+#   활성 FX 셀은 전부 MT5D_TREND/REV(ns "mt5")로 이동 — 유니버스(환율 11.5%)·사이징은 심볼 기반이라 불변.
+#   이 fxd 채널은 오픈 포지션(USDCHF 역숏 2건, ≤7/28 만기) 청산 관리만 남김 → 소진 후 s33f 컨테이너 제거.
 #   ✅ 일봉 maxc도 200 센티널 (2026-07-20 개별캡 전면 폐지): 핸드오프 §3 캡은 쿨다운×보유15일의
 #   이론상 천장 기록값이라 최근 5y 시뮬에서 캡 유/무 결과 완전 동일(1건도 미발동) — universe_symbolcap.py NOCAP33.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -640,13 +640,16 @@ def make_crypto_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeCon
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 일봉(D1) MT5 비환율 채널 — HANDOFF_DAILY_MT5 §3. namespace "mt5" 공유(1분 s1/s2와 동일, 태그 s3/s4로만 구분).
-#   basic 퇴출로 충돌 없음. win=90일, 쿨다운 일(日), 최대보유 15일, candle_interval="D".
-#   거래는 executor-a2(MT5)가 s3/s4 태그로 비환율 2% 사이징. ⚠️ 2% 엄수(5%는 청산).
+# 일봉(D1) MT5 채널 — HANDOFF_DAILY_MT5 §3 + FX(구 fxd, 2026-07-21 통합). namespace "mt5" 공유
+#   (1분 s1/s2와 동일, 태그 s3/s4로만 구분). basic 퇴출로 충돌 없음. 쿨다운 일(日), 최대보유 15일,
+#   candle_interval="D". 사이징은 executor entry_percent_by_strategy 심볼 기반(비환율 7%·FX 11.5%) —
+#   ns 무관이라 통합해도 불변. 유니버스 분류도 심볼 기반(universe_of)이라 환율 회계 유지.
 # ─────────────────────────────────────────────────────────────────────────────
 def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 MT5 비환율 추세(S3). HANDOFF_MASTER v2 §3-A: 창 재배정(ETHUSD W60, XAGUSD·JP225 W200)."""
     MT5D_TREND = {
+        # ── FX (2026-07-21 fxd 채널 통합 — 구 FXD_TREND 그대로, 유니버스=환율·일봉 11.5% 사이징) ──
+        "USDJPY": {"long": {"win": 120, "k1": 2.9, "b": -1.4, "cooldown_sec": 5 * _D, "max_concurrent": 200}},  # 13.5y 구제
         "BTCUSD": {"long": {"win": 90, "k1": 2.5, "b": -2.0, "cooldown_sec": 2 * _D, "max_concurrent": 200},
                    "short": {"win": 90, "k1": 2.4, "b": -0.2, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
         "ETHUSD": {"long": {"win": 60, "k1": 2.8, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
@@ -667,6 +670,18 @@ def make_mt5_daily_trend_config(*, signal_only: bool = True, **kw) -> "TradeConf
 def make_mt5_daily_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     """일봉 MT5 비환율 역추세(S4). HANDOFF_MASTER v2 §3-A: 창 150~200 상향, 🆕XAUUSD·UK100·HK50 숏 채택."""
     MT5D_REV = {
+        # ── FX (2026-07-21 fxd 채널 통합 — 구 FXD_REV 활성 셀 그대로. 기각·드레인 셀(USDCHF 역숏 k1=99)은
+        #    fxd 채널에 남겨 오픈 소진만 관리) ──
+        "EURUSD": {"long": {"win": 120, "k1": 2.9, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200}},  # ⚠️2020 편중
+        "GBPUSD": {"long": {"win": 150, "k1": 2.4, "b": 1.6,  "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 150, "k1": 2.1, "b": 0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "USDJPY": {"long": {"win": 150, "k1": 2.1, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
+        "AUDUSD": {"long": {"win": 200, "k1": 2.6, "b": -3.0, "cooldown_sec": 3 * _D, "max_concurrent": 200},
+                   "short": {"win": 90,  "k1": 1.8, "b": 0.2, "cooldown_sec": 3 * _D, "max_concurrent": 200}},
+        "USDCAD": {"long": {"win": 200, "k1": 2.3, "b": 1.8,  "cooldown_sec": 1 * _D, "max_concurrent": 200}},   # 역숏(15년 -71) 기각
+        "USDCHF": {"long": {"win": 200, "k1": 2.3, "b": -0.6, "cooldown_sec": 1 * _D, "max_concurrent": 200}},   # 역숏 기각(fxd 드레인)
+        "NZDUSD": {"long": {"win": 250, "k1": 2.9, "b": -3.0, "cooldown_sec": 1 * _D, "max_concurrent": 200},
+                   "short": {"win": 150, "k1": 1.4, "b": -1.2, "cooldown_sec": 2 * _D, "max_concurrent": 200}},
         "BTCUSD": {"long": {"win": 200, "k1": 1.0, "b": -3.0, "cooldown_sec": 5 * _D, "max_concurrent": 200}},
         "ETHUSD": {"long": {"win": 200, "k1": 1.9, "b": -0.4, "cooldown_sec": 1 * _D, "max_concurrent": 200}},
         # ✅ 13.5y 재검증: XAGUSD 역롱(18년 -74)·XAUUSD 역롱(bad3)·WTI 역롱(2014 -176, 구제 실패) 기각.
