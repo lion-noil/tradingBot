@@ -87,6 +87,26 @@ def _universe_label(namespace: str, symbol: str) -> Optional[str]:
         return None
 
 
+# ✅ 헤더 태그 = 소속 책(S11/S22/S33 계열) 표기 (2026-07-21 사용자 요청).
+#   기존엔 ns 그대로([MT5] 등)라 일봉이 [S33M]이 아닌 [MT5]로 보였음 — 일봉이 ns 통합(cryptod→bybit,
+#   mt5d→mt5)으로 구 채널 ns를 공유하기 때문. ns만으로 못 가르는 bybit/mt5는 전략(S3/S4=일봉)으로 분기.
+#   구 s1/s2 드레인은 기존 ns 표기 유지(≤7/26 소진 예정).
+_BOOK_BY_NS = {"s11": "S11", "s11m": "S11M", "s22": "S22", "s22m": "S22M",
+               "fxd": "S33F", "mt5d": "S33M", "cryptod": "S33"}
+
+
+def _book_tag(ns: str, reason0: str) -> str:
+    n = (ns or "").strip().lower()
+    if n in _BOOK_BY_NS:
+        return _BOOK_BY_NS[n]
+    base = (reason0 or "").partition("_")[0].upper()
+    if n == "bybit" and base in ("S3", "S4"):
+        return "S33"
+    if n == "mt5" and base in ("S3", "S4"):
+        return "S33M"
+    return n.upper()
+
+
 def _strat_label(reason0: str) -> str:
     """reasons[0] → 표시 라벨. 'S12'→'S12 z역추세', 'S12_TP'→'S12 z역추세·TP' (모르는 태그는 그대로)."""
     base, _, suffix = (reason0 or "").partition("_")
@@ -176,8 +196,9 @@ class TelegramLogHandler(logging.Handler):
                     elif isinstance(reasons, str) and reasons:
                         reason0 = reasons.split(",")[0].strip()
 
-                    # ✅ 플랫폼/엔진(네임스페이스) 표시
-                    engine = (obj.get("engine") or obj.get("namespace") or obj.get("source") or "").upper()
+                    # ✅ 헤더 태그 = 소속 책(S11/S22/S33 계열) — ns 공유 채널은 전략으로 분기(_book_tag)
+                    _ns_raw = obj.get("engine") or obj.get("namespace") or obj.get("source") or ""
+                    engine = _book_tag(_ns_raw, reason0)
                     engine_tag = f"[{engine}]" if engine else ""
 
                     badge = "🟢" if side == "LONG" else "🔴"
