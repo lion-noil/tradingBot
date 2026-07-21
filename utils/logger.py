@@ -61,11 +61,12 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
         timeout=10,
     ).raise_for_status()
 
-# ✅ 전략 태그 → 사람 읽는 셀(패밀리) 라벨. 같은 네임스페이스(s11/s11m)에 여러 패밀리가
-#   공존하므로 텔레그램에서 어떤 셀의 신호인지 코드만으론 구분 불가 → 라벨 병기.
+# ✅ 전략 태그 → 패밀리 라벨 (2026-07-21 코드 제거 — 책은 헤더 [유니버스·책]이 이미 표기).
+#   책 내부 패밀리: S11/S12/S13(z추세·z역추세·급락페이드), S14/S15(4h 신규: ewz추세·유동성스윕),
+#   S3/S4(일봉 추세·역추세 — '일봉'은 헤더 S33이 함의). S1/S2=구 드레인 채널이라 (구) 병기.
 _STRAT_KR = {
-    "S1": "추세", "S2": "역추세", "S3": "일봉추세", "S4": "일봉역추세",
-    "S11": "z추세", "S12": "z역추세", "S13": "급락페이드", "S14": "ewz추세",
+    "S1": "추세(구)", "S2": "역추세(구)", "S3": "추세", "S4": "역추세",
+    "S11": "추세", "S12": "역추세", "S13": "급락페이드", "S14": "ewz추세", "S15": "유동성스윕",
 }
 
 # ✅ 유니버스('전체 N'의 집계 단위, 2026-07-15 확정 3분류) → 표시 라벨.
@@ -106,10 +107,9 @@ def _book_tag(ns: str, reason0: str) -> str:
 
 
 def _strat_label(reason0: str) -> str:
-    """reasons[0] → 표시 라벨. 'S12'→'S12 z역추세', 'S12_TP'→'S12 z역추세·TP' (모르는 태그는 그대로)."""
+    """reasons[0] → 표시 라벨. 'S12'→'역추세', 'S12_TP'→'역추세·TP' (모르는 태그는 코드 그대로)."""
     base, _, suffix = (reason0 or "").partition("_")
-    kr = _STRAT_KR.get(base.upper())
-    disp = f"{base} {kr}" if kr else base
+    disp = _STRAT_KR.get(base.upper()) or base
     if suffix:
         disp += f"·{suffix}"
     return disp
