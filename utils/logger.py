@@ -196,10 +196,16 @@ class TelegramLogHandler(logging.Handler):
                     elif isinstance(reasons, str) and reasons:
                         reason0 = reasons.split(",")[0].strip()
 
-                    # ✅ 헤더 태그 = 소속 책(S11/S22/S33 계열) — ns 공유 채널은 전략으로 분기(_book_tag)
+                    # ✅ 헤더 태그 = [유니버스·책] (2026-07-21) — 푸시 알림 미리보기가 첫 줄만 보여주므로
+                    #   유니버스(크립토/MT5/환율)를 헤더에 병기. 책(S11M 등)만으론 유니버스 구분 불가
+                    #   (s11m에 MT5·FX 심볼 공존). ns 공유 채널은 전략으로 분기(_book_tag).
                     _ns_raw = obj.get("engine") or obj.get("namespace") or obj.get("source") or ""
                     engine = _book_tag(_ns_raw, reason0)
-                    engine_tag = f"[{engine}]" if engine else ""
+                    _uni_hdr = _universe_label(_ns_raw, symbol or "")
+                    if engine and _uni_hdr and _uni_hdr.upper() != engine.upper():
+                        engine_tag = f"[{_uni_hdr}·{engine}]"
+                    else:  # 구 mt5 드레인 등 유니버스==태그 중복([MT5·MT5]) 방지
+                        engine_tag = f"[{engine}]" if engine else ""
 
                     badge = "🟢" if side == "LONG" else "🔴"
                     title = "진입" if kind == "ENTRY" else "청산"
