@@ -87,13 +87,12 @@ def _universe_label(namespace: str, symbol: str) -> Optional[str]:
         return None
 
 
-# ✅ 헤더 태그 = 소속 책(S11/S22/S33 계열) 표기 (2026-07-21 사용자 요청).
-#   기존엔 ns 그대로([MT5] 등)라 일봉이 [S33M]이 아닌 [MT5]로 보였음 — 일봉이 ns 통합(cryptod→bybit,
-#   mt5d→mt5)으로 구 채널 ns를 공유하기 때문. ns만으로 못 가르는 bybit/mt5는 전략(S3/S4=일봉)으로 분기.
-#   구 s1/s2 드레인은 기존 ns 표기 유지(≤7/26 소진 예정).
-#   fxd→S33M: 2026-07-21 FX 일봉이 S33M(ns mt5)으로 통합 — fxd 드레인 청산도 같은 책으로 표기.
-_BOOK_BY_NS = {"s11": "S11", "s11m": "S11M", "s22": "S22", "s22m": "S22M",
-               "fxd": "S33M", "mt5d": "S33M", "cryptod": "S33"}
+# ✅ 헤더 태그 = 소속 책(S11/S22/S33) 표기 (2026-07-21 사용자 요청).
+#   책 이름은 3개뿐 — 계좌·자산군은 앞의 유니버스 라벨(크립토=Bybit / MT5·환율=MT5 계좌)이 말해주므로
+#   M/F 접미는 표기에서 제거(내부 ns 분리는 유지 — 거래소·executor·장부가 물리적으로 다름).
+#   ns만으로 못 가르는 bybit/mt5는 전략(S3/S4=일봉)으로 분기. 구 s1/s2 드레인은 ns 표기 유지(≤7/26 소진).
+_BOOK_BY_NS = {"s11": "S11", "s11m": "S11", "s22": "S22", "s22m": "S22",
+               "fxd": "S33", "mt5d": "S33", "cryptod": "S33"}
 
 
 def _book_tag(ns: str, reason0: str) -> str:
@@ -101,10 +100,8 @@ def _book_tag(ns: str, reason0: str) -> str:
     if n in _BOOK_BY_NS:
         return _BOOK_BY_NS[n]
     base = (reason0 or "").partition("_")[0].upper()
-    if n == "bybit" and base in ("S3", "S4"):
+    if n in ("bybit", "mt5") and base in ("S3", "S4"):
         return "S33"
-    if n == "mt5" and base in ("S3", "S4"):
-        return "S33M"
     return n.upper()
 
 
