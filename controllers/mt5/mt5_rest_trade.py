@@ -393,6 +393,13 @@ class Mt5RestTradeMixin:
 
             if not do_retry:
                 # ??理쒖쥌 ?ㅽ뙣??寃쎌슦?먮쭔 ?먮윭 濡쒓렇
+                if is_market_closed and not reduce_only:
+                    # ✅ 개장대기 마킹 — trade_executor.open_position이 읽어 락 밖에서 지연 재시도
+                    #    (주초 개장 갭: 월 07:0x KST WTI 등. 여기(_sync_lock 안)선 길게 못 기다림)
+                    self.last_market_closed_reject = {
+                        "symbol": (symbol or "").upper().strip(),
+                        "ts": time.time(),
+                    }
                 if getattr(self, "system_logger", None):
                     if is_market_closed:
                         # 마감은 '에러'가 아니라 정상적인 거절 → 신호측 게이트가 정상이면 거의 안 옴.

@@ -691,7 +691,16 @@ async def handle_action(msg: Dict[str, Any]) -> None:
             str(close_open_signal_id),
         )
         if not lot_id:
-            log.warning(f"[skip] EXIT lot not found {engine} {symbol} open_signal_id={close_open_signal_id}")
+            # 개장대기 진입 재시도가 걸려있으면 취소 — 미체결 진입의 EXIT가 먼저 온 케이스(고아 포지션 방지)
+            cancelled = False
+            try:
+                cancelled = bool(ctx.trade_executor.cancel_pending_open_retry(str(close_open_signal_id)))
+            except Exception:
+                pass
+            log.warning(
+                f"[skip] EXIT lot not found {engine} {symbol} open_signal_id={close_open_signal_id}"
+                + (" — 개장대기 진입 재시도 취소" if cancelled else "")
+            )
             return
 
         await ctx.trade_executor.close_position(

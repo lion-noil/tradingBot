@@ -63,6 +63,8 @@ class TradeExecutor:
         self.TAKER_FEE_RATE = float(taker_fee_rate or 0.0)
         self._sync_lock = asyncio.Lock()  # ✅ 추가
         self._just_traded_until = 0.0
+        # ✅ 장닫힘(10018) 개장대기 진입 재시도 — entry_signal_id -> asyncio.Task
+        self._pending_open_retries: Dict[str, asyncio.Task] = {}
 
     @classmethod
     def build(
@@ -122,7 +124,7 @@ class TradeExecutor:
         for mult in range(1, int(self.ENTRY_MAX_MULT) + 1):
             pct = base_pct * mult
             raw_m = (bal * (pct / 100.0) * lev) / n
-            q = self._normalize_qty(sym, raw_m, mode="floor")
+            q = self._normalize_qty(sym, raw_m, mode="floor", log_below_min=False)
             if q > 0 and (min_qty <= 0 or q + 1e-12 >= min_qty):
                 qty, used_pct, raw = q, pct, raw_m
                 break
@@ -249,7 +251,7 @@ class TradeExecutor:
             n1 = float(per.get("notionalPerLotAccount") or 0.0)
             if n1 > 0:
                 raw_qty = entry_notional / n1
-                norm_qty = self._normalize_qty(sym, raw_qty, mode="floor")
+                norm_qty = self._normalize_qty(sym, raw_qty, mode="floor", log_below_min=False)
                 return float(norm_qty), {
                     "method": "mt5_notionalPerLot",
                     "ccy": ccy,
@@ -268,7 +270,7 @@ class TradeExecutor:
         cs = float(rules.get("contractSize") or 1.0) or 1.0
         denom = px * cs
         raw_qty = (entry_notional / denom) if denom > 0 else 0.0
-        norm_qty = self._normalize_qty(sym, raw_qty, mode="floor")
+        norm_qty = self._normalize_qty(sym, raw_qty, mode="floor", log_below_min=False)
         return float(norm_qty), {
             "method": "price_contractSize",
             "ccy": ccy,
@@ -571,7 +573,8 @@ class TradeExecutor:
             n = math.floor(n + 1e-12)
         return float(f"{n * step:.12f}")
 
-    def _normalize_qty(self, symbol: str, qty: float, mode: str = "floor") -> float:
+    def _normalize_qty(self, symbol: str, qty: float, mode: str = "floor",
+                       log_below_min: bool = True) -> float:
         rules = self._get_rules(symbol)
         q = max(0.0, float(qty or 0.0))
 
@@ -590,7 +593,9 @@ class TradeExecutor:
         qn = self._round_step(q, step, mode=mode)
 
         if qn < min_qty:
-            if self.system_logger:
+            # log_below_min=False: 워밍업 기준수량 계산·스케일업 래더의 중간 단계 등
+            # '실패가 아닌' 호출 — 로그 오탐 방지(진짜 스킵은 [OPEN] qty=0/[entry-scaleup]가 남김)
+            if log_below_min and self.system_logger:
                 self.system_logger.info(
                     f"[normalize_qty] below min_qty (sym={symbol} raw={q:.6f} step={step} qn={qn:.6f} min={min_qty:.6f}) -> 0"
                 )
@@ -685,6 +690,69 @@ class TradeExecutor:
         asset["positions"] = positions
         return asset
 
+    # 장닫힘(10018) 개장대기 재시도 — 주초 개장 갭(월 07:0x KST WTI 등)에서 1회성 진입 신호 유실 방지.
+    #   submit_market_order(_sync_lock 안)는 15s×1만 재시도하므로, 락 밖 asyncio 태스크로 길게 커버.
+    MC_RETRY_DELAY_SEC = 180
+    MC_RETRY_MAX = 10          # 3분×10회 = 개장까지 최대 ~30분 대기
+
+    def _maybe_schedule_open_retry(
+            self,
+            symbol: str,
+            side_u: str,
+            price: float,
+            entry_signal_id: Optional[str],
+            strategy: Optional[str],
+            attempt: int,
+    ) -> None:
+        """미체결 진입이 '방금 장닫힘(10018) 거절' 때문이면 개장대기 재시도 예약.
+        rest(MT5)가 last_market_closed_reject를 마킹한 경우에만 동작 — Bybit 등은 no-op."""
+        if not entry_signal_id:
+            return
+        sym_u = (symbol or "").upper().strip()
+        rej = getattr(self.rest, "last_market_closed_reject", None) or {}
+        if rej.get("symbol") != sym_u or (time.time() - float(rej.get("ts") or 0)) > 60:
+            return
+        if attempt >= self.MC_RETRY_MAX:
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[OPEN] 개장대기 재시도 소진 — 진입 포기 (sym={sym_u} {side_u} attempts={attempt})"
+                )
+            return
+        key = str(entry_signal_id)
+        old = self._pending_open_retries.pop(key, None)
+        if old and not old.done():
+            old.cancel()
+        self._pending_open_retries[key] = asyncio.create_task(
+            self._mc_retry_open(sym_u, side_u, float(price), key, strategy, attempt + 1)
+        )
+        if self.system_logger:
+            self.system_logger.warning(
+                f"[OPEN] {sym_u} 장닫힘(10018) — {self.MC_RETRY_DELAY_SEC}s 후 개장대기 재시도 "
+                f"({attempt + 1}/{self.MC_RETRY_MAX})"
+            )
+
+    async def _mc_retry_open(
+            self, symbol: str, side_u: str, price: float,
+            entry_signal_id: str, strategy: Optional[str], attempt: int,
+    ) -> None:
+        try:
+            await asyncio.sleep(self.MC_RETRY_DELAY_SEC)
+        except asyncio.CancelledError:
+            return
+        self._pending_open_retries.pop(entry_signal_id, None)
+        await self.open_position(
+            symbol, side_u, price,
+            entry_signal_id=entry_signal_id, strategy=strategy, _mc_retry=attempt,
+        )
+
+    def cancel_pending_open_retry(self, entry_signal_id: Optional[str]) -> bool:
+        """해당 진입 시그널의 EXIT가 먼저 도착한 경우 대기중 재시도 취소 — 고아 포지션 방지."""
+        t = self._pending_open_retries.pop(str(entry_signal_id or ""), None)
+        if t and not t.done():
+            t.cancel()
+            return True
+        return False
+
     async def open_position(
             self,
             symbol: str,
@@ -693,6 +761,7 @@ class TradeExecutor:
             *,
             entry_signal_id: Optional[str] = None,
             strategy: Optional[str] = None,  # ✅ (전략,심볼)별 진입% 조회용
+            _mc_retry: int = 0,   # 내부용: 개장대기 재시도 회차
     ) -> None:
         side_u = (side or "").upper().strip()
         if side_u not in ("LONG", "SHORT"):
@@ -747,6 +816,7 @@ class TradeExecutor:
                     self.system_logger.warning(
                         f"[OPEN] not filled -> skip lot (sym={symbol} status={res.get('status')})"
                     )
+                self._maybe_schedule_open_retry(symbol, side_u, float(price), entry_signal_id, strategy, _mc_retry)
                 return
             if self.system_logger:
                 self.system_logger.warning(
@@ -758,6 +828,10 @@ class TradeExecutor:
             self.system_logger.warning(
                 f"[OPEN] 요청/체결 수량 불일치 — 장부는 체결분 기록 (sym={symbol} {side_u} "
                 f"req={qty} filled={exec_qty})"
+            )
+        if _mc_retry > 0 and self.system_logger:
+            self.system_logger.warning(
+                f"[OPEN] 개장대기 재시도 성공 (sym={symbol} {side_u} attempt={_mc_retry})"
             )
         rec_qty = exec_qty if exec_qty > 0 else float(qty)
         # 포지션 델타(뺄셈)의 float 노이즈 제거 — 비정규 수량이 장부에 기록되면
