@@ -65,6 +65,10 @@ class TradeExecutor:
         self._just_traded_until = 0.0
         # ✅ 장닫힘(10018) 개장대기 진입 재시도 — entry_signal_id -> asyncio.Task
         self._pending_open_retries: Dict[str, asyncio.Task] = {}
+        # ✅ 장닫힘(10018) 개장대기 청산 재시도 — lot_id -> asyncio.Task (2026-07-27)
+        #   시그널 측은 EXIT '기록' 시점에 오픈 장부에서 제거(재발행 없음) → 휴장 중 EXIT가
+        #   미체결이면 고아 랏 발생(7/27 USDCHF·USDCAD 실사례). 청산 재시도는 executor가 책임진다.
+        self._pending_close_retries: Dict[str, asyncio.Task] = {}
 
     @classmethod
     def build(
@@ -753,6 +757,58 @@ class TradeExecutor:
             return True
         return False
 
+    def _maybe_schedule_close_retry(
+            self,
+            symbol: str,
+            side_u: str,
+            lot_id: str,
+            exit_signal_id: Optional[str],
+            exit_price: Optional[float],
+            close_open_signal_id: Optional[str],
+            attempt: int,
+    ) -> None:
+        """미체결 청산이 '방금 장닫힘(10018) 거절' 때문이면 개장대기 재시도 예약(진입과 대칭).
+        시그널 측은 EXIT를 재발행하지 않으므로(기록 즉시 오픈 장부 제거) 여기서 끝까지 책임진다."""
+        sym_u = (symbol or "").upper().strip()
+        rej = getattr(self.rest, "last_market_closed_reject", None) or {}
+        if rej.get("symbol") != sym_u or (time.time() - float(rej.get("ts") or 0)) > 60:
+            return
+        if attempt >= self.MC_RETRY_MAX:
+            if self.system_logger:
+                self.system_logger.warning(
+                    f"[CLOSE] 개장대기 재시도 소진 — 랏 유지 (sym={sym_u} {side_u} lot_id={lot_id} attempts={attempt})"
+                )
+            return
+        key = str(lot_id)
+        old = self._pending_close_retries.pop(key, None)
+        if old and not old.done():
+            old.cancel()
+        self._pending_close_retries[key] = asyncio.create_task(
+            self._mc_retry_close(sym_u, side_u, key, exit_signal_id, exit_price,
+                                 close_open_signal_id, attempt + 1)
+        )
+        if self.system_logger:
+            self.system_logger.warning(
+                f"[CLOSE] {sym_u} 장닫힘(10018) — {self.MC_RETRY_DELAY_SEC}s 후 개장대기 청산 재시도 "
+                f"({attempt + 1}/{self.MC_RETRY_MAX}) lot_id={lot_id}"
+            )
+
+    async def _mc_retry_close(
+            self, symbol: str, side_u: str, lot_id: str,
+            exit_signal_id: Optional[str], exit_price: Optional[float],
+            close_open_signal_id: Optional[str], attempt: int,
+    ) -> None:
+        try:
+            await asyncio.sleep(self.MC_RETRY_DELAY_SEC)
+        except asyncio.CancelledError:
+            return
+        self._pending_close_retries.pop(lot_id, None)
+        await self.close_position(
+            symbol, side_u, lot_id,
+            exit_signal_id=exit_signal_id, exit_price=exit_price,
+            close_open_signal_id=close_open_signal_id, _mc_retry=attempt,
+        )
+
     async def open_position(
             self,
             symbol: str,
@@ -914,6 +970,7 @@ class TradeExecutor:
             exit_signal_id: Optional[str] = None,
             exit_price: Optional[float] = None,
             close_open_signal_id: Optional[str] = None,
+            _mc_retry: int = 0,   # 내부용: 개장대기 청산 재시도 회차
     ) -> None:
         if not lot_id:
             raise ValueError("lot_id is required")
@@ -1010,7 +1067,17 @@ class TradeExecutor:
                 self.system_logger.warning(
                     f"[CLOSE] not filled -> keep lot (lot_id={lot_id} status={res.get('status')})"
                 )
+            # ✅ 장닫힘(10018)이면 개장대기 재시도 — 시그널 측 재발행이 없으므로 여기서 완결
+            self._maybe_schedule_close_retry(
+                symbol, side_u, lot_id, exit_signal_id, exit_price,
+                close_open_signal_id, attempt=_mc_retry,
+            )
             return
+
+        if _mc_retry and self.system_logger:
+            self.system_logger.warning(
+                f"[CLOSE] 개장대기 청산 재시도 성공 (sym={symbol} {side_u} lot_id={lot_id} attempt={_mc_retry})"
+            )
 
         # ✅ trade_records: EXIT 기록 저장
         try:
