@@ -35,6 +35,7 @@ services:
 
   # S1(σ-복귀) 전략 — 큰틀 동일, strategy=s1. namespace "s1"로 장부 분리, executor-a1 공유.
   signal-s1:
+    profiles: ["retired"]   # S11/S12/S13 책으로 대체(29bdfbd) — 드레인 완료(2026-07-26 redis 잔여 0 확인) 후 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -69,6 +70,7 @@ services:
 
   # S1(σ-복귀) v2 — MT5. strategy=s1, namespace "mt5"(signal-mt5와 장부 공유, tag=S1 구분), executor-a2(9010) 공유.
   signal-s1-mt5:
+    profiles: ["retired"]   # S11M으로 대체 — 드레인 완료(2026-07-26) 후 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -86,6 +88,7 @@ services:
 
   # S2(추세 숏) — Bybit. strategy=s2, namespace "bybit" 공유, executor-a1.
   signal-s2:
+    profiles: ["retired"]   # S11/S12/S13 책으로 대체 — 드레인 완료(2026-07-26) 후 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
@@ -103,6 +106,7 @@ services:
 
   # S2(추세 숏) — MT5. strategy=s2, namespace "mt5" 공유, executor-a2(9010).
   signal-s2-mt5:
+    profiles: ["retired"]   # S11M으로 대체 — 드레인 완료(2026-07-26) 후 봉인
     build: .
     restart: always
     healthcheck: *signal-hc
