@@ -237,6 +237,7 @@ class TradeBot:
                 k1=float(getattr(cfg, "s1_k1", 2.5)),
                 b=float(getattr(cfg, "s1_b", 2.0)),
                 cooldown_sec=int(getattr(cfg, "s1_cooldown_sec", 12 * 3600)),
+                min_tp_pct=float(getattr(cfg, "s1_min_tp_pct", 0.0) or 0.0),
             ),
             # ✅ 시그마 v3: 심볼별·방향별 파라미터/캡 (중첩맵 {SYM:{LONG/SHORT:{...}}})
             s1_params_by_symbol={
@@ -249,6 +250,9 @@ class TradeBot:
                         # ✅ S11(1분봉책 v4): SL無 셀·셀별 보유·급락페이드 파라미터
                         no_sl=bool(dd.get("no_sl", False)),
                         hold_sec=int(dd.get("hold_sec", 0) or 0),
+                        # ✅ σ붕괴 게이트: 셀별 min_tp_pct > 채널 기본 s1_min_tp_pct
+                        min_tp_pct=float(dd.get("min_tp_pct",
+                                                getattr(cfg, "s1_min_tp_pct", 0.0)) or 0.0),
                         m_min=int(dd.get("m_min", 0) or 0),
                         drop_pct=float(dd.get("drop_pct", 0.0) or 0.0),
                         retr_mult=float(dd.get("retr_mult", 0.0) or 0.0),

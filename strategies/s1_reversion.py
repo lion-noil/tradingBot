@@ -30,6 +30,10 @@ class S1Params:
     b: float = 2.0              # TP 복귀 밴드 (z=-b). b < k1 필수
     cooldown_sec: int = 12 * 3600
     fee_roundtrip: float = 0.0011  # 리포팅용(체결가엔 미반영)
+    # ✅ 최소 TP거리 게이트(2026-07-27): TP거리%(=(z−b)·σ/가격)가 이 값 미만이면 진입 스킵.
+    #   저변동 레짐(주말 XAUT σ붕괴 실사례: TP 0.104% < 왕복수수료 0.11% → TP 도달해도 순손실)에서
+    #   구조적으로 못 이기는 진입 차단. 0=게이트 없음(기존 동작).
+    min_tp_pct: float = 0.0
     # ✅ S11(1분봉책, HANDOFF_MASTER v4) 확장 필드
     no_sl: bool = False         # True=SL 없음(크립토 롱 SL유해) — SL을 도달불가 레벨로 기록
     hold_sec: int = 0           # 셀별 최대보유 오버라이드(0=채널 기본 s1_max_hold_sec)
@@ -184,6 +188,8 @@ def sigma_entry_levels(z, ma, sd, price: float, p: S1Params, *,
         pct = (ma - p.b * sd) / price - 1.0
     if pct <= 0:                   # 거리 가드
         return None
+    if p.min_tp_pct > 0 and pct < p.min_tp_pct:   # 수수료 대비 TP거리 부족 → 진입 무의미
+        return None
     if position_long:
         return price * (1.0 + pct), price * (1.0 - pct)   # tp 위, sl 아래
     return price * (1.0 - pct), price * (1.0 + pct)        # tp 아래, sl 위 (숏)
@@ -213,12 +219,12 @@ def avgdown_levels(ma, sd, avg_price: float, p: S1Params, *, position_long: bool
     band = (ma - p.b * sd) if position_long else (ma + p.b * sd)  # TP 밴드
     if position_long:
         pct = band / avg_price - 1.0           # TP가 평단 위
-        if pct <= 0:
+        if pct <= 0 or (p.min_tp_pct > 0 and pct < p.min_tp_pct):
             return None
         return band, avg_price * (1.0 - pct)   # TP=밴드, SL=평단 아래
     else:
         pct = 1.0 - band / avg_price           # TP가 평단 아래
-        if pct <= 0:
+        if pct <= 0 or (p.min_tp_pct > 0 and pct < p.min_tp_pct):
             return None
         return band, avg_price * (1.0 + pct)   # TP=밴드, SL=평단 위
 

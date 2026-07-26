@@ -106,6 +106,7 @@ class TradeConfig:
     entries_disabled: bool = False
     # S1(σ-복귀) 파라미터 — strategy="s1"일 때만 사용. 백테스트 검증값.
     s1_win: int = 10080          # MA/σ 창(1분봉 7일). 고정(검증값)
+    s1_min_tp_pct: float = 0.0   # ✅ 채널 기본 최소 TP거리(σ붕괴 게이트). 셀별 min_tp_pct로 오버라이드.
     s1_k1: float = 2.5           # 진입 z 임계 (z <= -k1)
     s1_b: float = 2.0            # TP 복귀밴드 (b < k1 필수)
     s1_cooldown_sec: int = 12 * 3600
@@ -277,6 +278,7 @@ def make_s1_config(
     s1_win: int = 10080,        # ✅ MA/σ 창. 1분봉=10080(7일). 일봉채널=90(90일).
     candle_interval: str = "1",  # ✅ "1"(분) | "D"(일봉채널)
     s1_max_hold_sec: int = 14 * 24 * 3600,  # ✅ 최대보유. 1분=14일, 일봉=30일.
+    s1_min_tp_pct: float = 0.0,  # ✅ 최소 TP거리 게이트(0=없음). Bybit 크립토=0.0022(왕복수수료 0.11%×2)
     entries_disabled: bool = False,  # ✅ 드레인 모드(신규진입 중지, 청산만)
 ) -> "TradeConfig":
     """S1(σ-복귀 롱) / S2(추세 숏) 신호 설정. namespace=name, strategy 분기.
@@ -361,6 +363,7 @@ def make_s1_config(
         s1_cooldown_sec=s1_cooldown_sec,
         s1_params_by_symbol=pbs,           # ✅ v2 심볼별 파라미터
         s1_max_hold_sec=s1_max_hold_sec,   # ✅ 최대보유(1분=14일/일봉=30일)
+        s1_min_tp_pct=s1_min_tp_pct,       # ✅ 최소 TP거리 게이트
         avg_down=avg_down,                 # ✅ 추매(S2 전용)
         candle_interval=candle_interval,   # ✅ 캔들 타임프레임("1"/"D")
         entries_disabled=entries_disabled,  # ✅ 드레인 모드
@@ -455,7 +458,10 @@ def make_s11_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     return make_s1_config(name="s11", params_by_symbol=S11_TREND, strategy="s11",
                           avg_down=False, signal_only=signal_only,
                           s1_win=1440, candle_interval="1", candles_num=2000,
-                          s1_max_hold_sec=14 * _D, **kw)
+                          s1_max_hold_sec=14 * _D,
+                          # ✅ σ붕괴 게이트(2026-07-27): 주말 XAUT TP 0.104%<수수료 실사례.
+                          #   백테스트(XAUT 15.5개월)상 걸러지는 정상거래 0건 — 순수 보험.
+                          s1_min_tp_pct=0.0022, **kw)
 
 
 def make_s11_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
@@ -467,7 +473,8 @@ def make_s11_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     return make_s1_config(name="s11", params_by_symbol=S11_REV, strategy="s12",
                           avg_down=False, signal_only=signal_only,
                           s1_win=1440, candle_interval="1", candles_num=2000,
-                          s1_max_hold_sec=14 * _D, **kw)
+                          s1_max_hold_sec=14 * _D,
+                          s1_min_tp_pct=0.0022, **kw)  # ✅ σ붕괴 게이트(추세와 동일)
 
 
 def make_s11_fade_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
@@ -502,6 +509,10 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
         # HK50 추세롱(구 w360 K5.75): 1m 백필 재스크리닝에서 -0.13% 기각 → 제거(2026-07-16, 오픈 없음 확인).
         #   HK50은 역추롱(S11M_REV w2880)으로 대체.
         "XAGUSD": {"long": {"win": 1320, "k1": 4.75, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
+        # 금(2026-07-22 추가): Bybit XAUT s11 미러(win1440·k4·b-2.5·SL유지, cd1h). 22심볼 감사서 견고
+        #   (라이브창 exp+0.15~0.23%, 2023·24·25 전부 +, n219) — 라이브 XAUT(2025만·2026음수)보다 검증 탄탄.
+        #   ⚠️ Bybit s11 XAUT와 동일 전략 — U1·U2 금 합산 노출 인지. 금은 SL 무해→유지(no_sl 미설정).
+        "XAUUSD": {"long": {"win": 1440, "k1": 4.0, "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200}},
         "WTI":    {"long": {"win": 720,  "k1": 4.5,  "b": -2.0, "cooldown_sec": 3 * _H, "max_concurrent": 200, "no_sl": True}},
         "USDJPY": {"long": {"win": 1440, "k1": 4.5,  "b": -2.5, "cooldown_sec": 1 * _H, "max_concurrent": 200, "no_sl": True}},
         # ── 크립토 CFD (2026-07-15 추가) — Bybit S11 검증 파라미터 그대로(교차검증 일치). ──
