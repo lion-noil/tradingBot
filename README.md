@@ -1,173 +1,68 @@
-# Trading Bot
+# tradingBot
 
-Redis 기반 시그널(신호) 스트림을 생성하고, 별도 클라이언트(주문 실행기)들이 이를 구독해서 각자 주문을 수행하는 구조의 트레이딩 봇 프로젝트입니다.
+Redis 기반 시그널 생성기와 주문 실행기를 분리한 자동매매 시스템.
+시그널 봇(도커 컨테이너)들이 전략 신호를 만들어 실행기로 보내면, 계좌별 실행기가 주문·장부를 책임진다.
 
-## 구성
-- **Signal Generator (TradingBot)**: 시장 데이터/지표를 기반으로 매수/매도 신호를 생성해 Redis Stream에 기록
-- **Clients (Executors)**: Redis Stream을 구독(XREAD/XGROUP)하여 신호를 받아 각자 거래소/브로커(MT5 등)에 주문 실행
-- **State/Index**: 시그널, 랏(lot), 포지션 상태를 Redis 등에 저장/조회
+## 전략 체계 — 책 3개 × 유니버스 3개
 
-## 주요 폴더(예시)
-- `bots/` : 봇 실행 로직 및 전략
-- `core/` : 캔들/지표/실행 엔진, Redis 클라이언트 등
-- `controllers/` : MT5 등 외부 주문 실행 연동
-- `strategies/` : 매매 전략/시그널 판단 로직
+| 책 | 주기 | 전략 패밀리 |
+|---|---|---|
+| **S11** | 1분봉 | z추세(S11) / z역추세(S12) / 급락페이드(S13) |
+| **S22** | 4시간봉 | ewz추세(S14) / 역추세·유동성스윕(S15) 확장 |
+| **S33** | 일봉 | 추세(S3) / 역추세(S4) |
 
-## 빠른 시작
-1. (필수) Redis 실행
-2. 봇 실행(신호 생성)
-3. 클라이언트 실행(신호 구독 후 주문)
+유니버스: **크립토**(Bybit USDT 무기한) / **MT5**(지수·귀금속·에너지·크립토 CFD) / **환율**(FX 메이저).
+셀(심볼×방향×파라미터) 정본은 `FINAL_PARAMS.md`(비공개 리서치 레포) — `bots/trade_config.py`가 라이브 반영본.
 
-## 개발 메모
-- 신호는 Redis Stream에 시간순으로 쌓이며, 클라이언트는 `XREAD` 또는 `XGROUP` 기반으로 구독할 수 있습니다.
-- 재시작/재접속 시 “과거 신호 재처리” 여부는 **컨슈머 그룹/ACK 정책**으로 제어합니다.
+핵심 방법론: 무게이트 베이스 자립 + 상장 전기간 연도균형 검증, 수수료 포함 백테스트, 개별 캡 없음(유니버스 캡 200게임 + 사이징·유효레버리지 가드로 리스크 관리).
 
-## 📈 Strategy Summary (Trading View)
+## 런타임 구성
 
----
+```
+[신호] signal-s11/s22/s33(+m)  ← 도커(WSL2 docker-ce), 심볼 틱/캔들 구독
+   │      MT5 시세: mt5_server(별도 프로젝트, :9000 REST/WS)
+   ▼ raw JSON-TCP
+[실행] executor-a1  ← Bybit, 도커 (bridge, :9009)
+       executor-a2  ← MT5, Windows 네이티브 (:9010, 터미널 IPC 직결)
+   ▼
+[장부] redis (로컬 자체호스팅, AOF, NTFS 볼륨)
+       trading:{ns}:signal(스트림/해시) + signals(오픈 zset) + agent 랏 장부
+```
 
-## 🟢 ENTRY
+- 감시: `infra/watchdog.py`(executor-a2 포트·도커 이상패턴 텔레그램 경보) + autoheal(하트비트 stale 컨테이너 자동재시작)
+- 프론트: SRH(Upstash-REST 호환 게이트웨이, 읽기전용 ACL) → Vercel 대시보드
 
-### INIT (첫 진입)
+## 주요 방어 장치
 
-| 방향 | 조건 |
-|------|------|
-| LONG | (1) 가격 ≤ MA100 × (1 - ma_thr_eff) AND (2) 3분 하락 모멘텀 ≥ momentum_threshold |
-| SHORT | (1) 가격 ≥ MA100 × (1 + ma_thr_eff) AND (2) 3분 상승 모멘텀 ≥ momentum_threshold |
+- **개장대기 재시도**: 장닫힘(10018) 거절 시 진입·청산 모두 3분×10회 재시도(주초 개장갭·휴장 중 신호 유실 방지). EXIT 선도착 시 진입 재시도 취소.
+- **최소 TP거리 게이트**(`min_tp_pct`): 저변동 레짐(주말 σ붕괴)에서 TP거리 < 왕복수수료 수준이면 진입 스킵 — Bybit 크립토 책 0.22%.
+- **filling 모드 폴백**: 10030만 다음 모드 순회, 그 외 거절(10018/10006 등)은 진짜 사유 보존·중단.
+- **피드 게이트**: 틱 stale 시 신호 처리 보류(휴장 오탐 방지), 최소주문 스케일업(mult≤16), 체결수량 기반 랏 기록 + 더스트 스윕.
+- **시그널 자립 청산**: 만기(max_hold_sec)·TP/SL을 진입 시그널에 박제 — ns를 공유해도 남의 포지션에 내 설정이 적용되지 않음.
 
-→ MA100 기준 충분한 이탈 + 3분 모멘텀 동시 충족 시 진입
+## 폴더
 
----
+- `app/` — 채널(컨테이너) 엔트리포인트(`main.py`)와 로컬 실행기(`local_executor.py`)
+- `bots/` — 봇 코어: `trade_config.py`(셀 설정), `trade_bot.py`, `trading/`(신호판정·주문실행), `state/`(시그널·랏 장부), `market/`(캔들·WS 동기화)
+- `strategies/` — `s1_reversion.py`(σ/z 레벨 계산, ewz, 페이드 등 공용 산식)
+- `controllers/` — Bybit REST/WS, MT5(가격=REST, 주문=터미널 API)
+- `tools/` — 장부 복구 도구(`rebuild_v2.py` 로그 리플레이 재구성, `restore_orphan_signals.py` 고아 시그널 복원 등)
+- `utils/`, `core/` — 로거(텔레그램 지문억제), redis 클라이언트, 심볼 매퍼
 
-### INIT2 / INIT3 (INIT 이후 15분 이내)
+## 실행/배포
 
-| 방향 | 조건 |
-|------|------|
-| LONG | INIT 이후 15분 이내 <br> INIT2: 가격 ≤ INIT_price × (1 - ma_thr_eff × 1) <br> INIT3: 가격 ≤ INIT_price × (1 - ma_thr_eff × 2) |
-| SHORT | INIT 이후 15분 이내 <br> INIT2: 가격 ≥ INIT_price × (1 + ma_thr_eff × 1) <br> INIT3: 가격 ≥ INIT_price × (1 + ma_thr_eff × 2) |
+```bash
+# 신호+실행 전체 (WSL2 docker-ce, compose 2개 파일 필수)
+docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
 
-→ INIT 기준 추가 이탈 시 빠른 확장 진입
+# executor-a2 (Windows 네이티브)
+powershell ../infra/manage.ps1 restart executor-a2
+```
 
----
-
-### SCALE IN (최대 6회)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | (1) 직전 진입가보다 낮음 AND (2) 3분 하락 모멘텀 ≥ momentum_threshold AND (3) 가격 ≤ MA100 × (1 - ma_thr_eff / 2) |
-| SHORT | (1) 직전 진입가보다 높음 AND (2) 3분 상승 모멘텀 ≥ momentum_threshold AND (3) 가격 ≥ MA100 × (1 + ma_thr_eff / 2) |
-
-→ 불리한 방향으로 더 이탈 시 계단식 진입 (30분 쿨다운)
-
----
-
-## 🔴 EXIT
-
----
-
-### 1️⃣ STOP LOSS (oldest 1개 기준)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | 가격 ≤ 진입가 × (1 - sl_pct) |
-| SHORT | 가격 ≥ 진입가 × (1 + sl_pct) |
-
-- sl_pct = ma_thr_eff × age_factor
-- 보유 시간이 길수록 age_factor 감소 → 손절폭 축소
-
-
-### 2️⃣ TAKE PROFIT (oldest 1개 기준)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | 가격 ≥ 진입가 × (1 + tp_pct) |
-| SHORT | 가격 ≤ 진입가 × (1 - tp_pct) |
-
-- tp_pct = ma_thr_eff × age_factor
-- 진입 당시 MA 이탈폭만큼 되돌리면 익절
-
----
-
-### 3️⃣ RISK CONTROL (구조 정리)
-
-| 조건                              | 청산                               |
-|---------------------------------|----------------------------------|
-| 3~6개 랏 보유 AND 평균진입가 대비 ±0.3% 유리 | 3~5개 → oldest 1개 <br> 6개 → 전체 청산 |
-
-→ 다중 랏 위험 구간에서 빠른 리스크 축소
-
----
-
-### 4️⃣ NORMAL (전량 청산)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | 가격 ≥ MA100 × (1 + ma_thr_eff) |
-| SHORT | 가격 ≤ MA100 × (1 - ma_thr_eff) |
-
-→ MA100 완전 복귀 시 전체 청산
-
----
-
-### 5️⃣ SCALE OUT (부분 익절, newest 1개 청산)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | (1) 가격 ≥ 직전 랏 진입가 AND (2) 가격 ≥ MA100 × (1 + ma_thr_eff / 2) |
-| SHORT | (1) 가격 ≤ 직전 랏 진입가 AND (2) 가격 ≤ MA100 × (1 - ma_thr_eff / 2) |
-
-- 직전 랏(prev entry) 기준 회귀 확인
-- 모멘텀 조건 없음
-- scaleout_cooldown 적용
-
-→ 최근 진입 물량부터 점진적 감량
-
----
-
-### 6️⃣ INIT OUT (1개 보유 시 빠른 탈출)
-
-| 방향 | 조건 |
-|------|------|
-| LONG | 가격 ≥ MA100 × (1 + ma_thr_eff / 2) AND 3분 상승 모멘텀 ≥ momentum_threshold |
-| SHORT | 가격 ≤ MA100 × (1 - ma_thr_eff / 2) AND 3분 하락 모멘텀 ≥ momentum_threshold |
-
-→ 단일 포지션일 때 빠른 정리
-
----
-
-### 7️⃣ NEAR TOUCH (근접 청산)
-
-| 조건 | 청산 |
-|------|------|
-| newest 보유시간 ≤ near_touch_window_sec AND MA100 근접 도달 | newest 1개 |
-
-→ 최근 진입 물량의 빠른 경량화
-
----
-
-## ⚙ 핵심 구조 요약
-
-- 기준선: MA100
-- 모멘텀: 3분 봉 변화율
-- 최대 진입: 4회
-- oldest 우선 청산 구조
-- SL/TP = MA 이탈폭 기반 동적 조정
-- 다중 랏 시 0.3% 회복 시 구조 정리
-- 부분청산 + 전량청산 병행
-- 평균회귀 기반 다단계 포지션 관리 전략
-
-## 진입 요약
-- init 1,2,3 : 진입가,진입가+1.0, 진입가 +2.0
-- scale_in : 직전진입가, ma+ma_thr, MMT
-- 
-## 청산 요약(short 기준)
-- NEAR_TOUCH : 최신것, 30분내, ma로 회귀또는 진입가대비 0.7*ma_thr
-- INIT_OUT :최신것, 포지션 1개, 수익/2, momentum	
-- scale_out : 최신것, 2개이상, 직전가터치
-- normal : all청산, ma아랫쪽선
-- risk_controll : 평균가기준, 3~6개, 포지션평균기준 0.3
-- SL : 옛날것, 1일,3일 7일, 손해 5배,4,3
-- TP: 옛날것, 1일,3일,7일, 이익 3,2,1
+- 코드 변경 배포는 반드시 `--build` + **컨테이너 내 grep으로 반영 확인**(BuildKit 캐시가 구코드를 굽는 사례 있음).
+- 폐기 채널은 삭제 대신 `profiles: ["retired"]` 봉인(롤백용). 봉인 서비스의 기존 컨테이너는 `docker rm`으로 직접 제거.
+- 시크릿: `.env`(API 키·토큰)와 `users.acl`(redis ACL 실비번)은 gitignore — `users.acl.example` 참고.
 
 ## License
+
 Private / Internal
