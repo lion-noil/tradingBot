@@ -74,6 +74,9 @@ class TradeConfig:
     # 피드 게이트(장 마감 판정) 임계 — ws_stale_sec보다 길게 둬서 저유동성 심볼
     # (예: ETHUSD)의 간헐적 틱공백으로 stale↔fresh 플래핑하는 걸 방지.
     feed_gate_stale_sec: float = 120.0
+    # ✅ 피드 재개 안정화(2026-08-01): stale→fresh 전환 후 이 시간 연속 fresh여야 신호 재개.
+    #   feed_gate_stale_sec보다 커야 고아 틱 1개(120s 창)가 걸러짐. 0=비활성(구 동작).
+    feed_resume_stable_sec: float = 300.0
 
     # 레버리지/진입
     leverage: int = 50

@@ -125,6 +125,10 @@ class TradeBot:
         self._last_entry_ts_ms: dict[tuple[str, str], int] = {}  # ✅ S1 v2 진입기준 쿨다운용
         # 심볼별 피드 stale 상태(장 마감 추정). 전이 시 1회만 로그하기 위한 플래그.
         self._feed_stale: dict[str, bool] = {}
+        # ✅ 피드 재개 안정화(2026-08-01): stale→fresh 전환 시 이 시각까지 연속 fresh여야 재개.
+        #   주말 고아 틱 1개가 recv를 갱신해 120s 창이 열리면, 박제된 캔들(금요 급락 등)로
+        #   휴장 중 신호가 발행되던 문제(8/1 USDJPY S13 ×3, 7/27 휴장 EXIT) 차단.
+        self._feed_resume_at: dict[str, float] = {}
         # WS 링크(전역 heartbeat) 끊김 알림용. 끊김은 전 종목 동시 발생이라 심볼별이 아니라
         # 링크 단위로 디바운스 후 텔레그램 1회만 경보한다. 정상 장 마감(특정 심볼만 조용)은
         # 전역 heartbeat가 살아있어 여기 안 걸린다.
@@ -471,6 +475,7 @@ class TradeBot:
                 #    마지막 캐시 가격을 그대로 반환하므로, 이 게이트가 없으면 죽은
                 #    가격으로 ENTRY/EXIT가 발생해 거래소가 10018(Market closed)로 거절한다.
                 if not self._feed_is_fresh(symbol):
+                    self._feed_resume_at.pop(symbol, None)  # 안정화 대기 중 재-stale → 대기 리셋
                     if not self._feed_stale.get(symbol):
                         self._feed_stale[symbol] = True
                         if self.system_logger:
@@ -479,7 +484,24 @@ class TradeBot:
                             )
                     continue
                 if self._feed_stale.get(symbol):
+                    # ✅ 재개 안정화: 연속 fresh가 stable초 유지돼야 재개. 고아 틱 1개는
+                    #   feed_gate_stale_sec(120s) 뒤 다시 stale로 떨어져 여길 통과 못 함.
+                    #   진짜 개장은 틱이 계속 오므로 stable초 뒤 자동 재개.
+                    _stable = float(getattr(self.config, "feed_resume_stable_sec", 300.0) or 0.0)
+                    if _stable > 0:
+                        _at = self._feed_resume_at.get(symbol)
+                        _mono = time.monotonic()
+                        if _at is None:
+                            self._feed_resume_at[symbol] = _mono + _stable
+                            if self.system_logger:
+                                self.system_logger.debug(
+                                    f"[{symbol}] ⏳ 피드 복구 감지 — {int(_stable)}s 안정화 대기(고아 틱 방어)"
+                                )
+                            continue
+                        if _mono < _at:
+                            continue
                     self._feed_stale[symbol] = False
+                    self._feed_resume_at.pop(symbol, None)
                     if self.system_logger:
                         self.system_logger.debug(f"[{symbol}] ▶️ 시세 피드 복구 → 신호 처리 재개")  # 텔레그램 안 보냄
 
