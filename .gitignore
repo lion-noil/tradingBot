@@ -47,3 +47,5 @@ build/
 
 __pycache__/
 *.pyc
+# 전략 파라미터 정본(알파) ? 레포엔 params_local.example.py만 (2026-08-02)
+bots/params_local.py
