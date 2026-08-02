@@ -47,24 +47,7 @@ def open_zset_key(namespace: str, symbol: str, side: str) -> str:
     return f"{_ns(namespace)}:signals:{symbol}:{side}:ENTRY"
 
 
-# ---------- models ----------
-@dataclass(frozen=True)
-class SignalInfo:
-    signal_id: str
-    ts_ms: int
-    symbol: str
-    side: str
-    kind: str  # "ENTRY" | "EXIT"
-    price: Optional[float]
-    payload: Optional[Dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class OpenSignalStats:
-    count: int
-    oldest_ts_ms: Optional[int]
-    newest_ts_ms: Optional[int]
-
+# (SignalInfo/OpenSignalStats 모델 제거 — 2026-08-02: 정의만 있고 참조 0건)
 
 # ---------- json ----------
 def _json_dumps(payload: Any) -> str:
@@ -280,12 +263,6 @@ class OpenSignalsIndex:
                         lv_map[sid] = (lv[0], lv[1], gid, hold)
                 self._levels[(namespace, sym, side)] = lv_map
 
-    def stats(self, *, namespace: str, symbol: str, side: str) -> OpenSignalStats:
-        d = self._dq.get((namespace, symbol, side))
-        if not d:
-            return OpenSignalStats(count=0, oldest_ts_ms=None, newest_ts_ms=None)
-        return OpenSignalStats(count=len(d), oldest_ts_ms=d[0][1], newest_ts_ms=d[-1][1])
-
     def on_open(
             self,
             *,
@@ -307,24 +284,7 @@ class OpenSignalsIndex:
             gid = str(game_id) if game_id else str(signal_id)
             self._levels.setdefault(key, {})[signal_id] = (tp_price, sl_price, gid, max_hold_sec)
 
-    def list_open(
-            self,
-            *,
-            namespace: str,
-            symbol: str,
-            side: str,
-            newest_first: bool = True,
-            limit: Optional[int] = None,
-    ) -> List[Item]:
-        d = self._dq.get((namespace, symbol, side))
-        if not d:
-            return []
-        rows = list(d)
-        if newest_first:
-            rows = list(reversed(rows))
-        if limit is not None:
-            rows = rows[: max(0, int(limit))]
-        return rows
+    # (stats/list_open 제거 — 2026-08-02: 호출처 0건. 실사용은 list_open_s1)
 
     def on_close_by_id(
             self,
@@ -413,25 +373,7 @@ class OpenSignalsIndex:
                         continue
         return len(games)
 
-    def count_open_universe(self, *, namespace: str, tag: Optional[str] = None) -> int:
-        """네임스페이스(유니버스) 전체에서 열린 '게임' 수 — 모든 심볼·방향 합산.
-        게임=game_id로 묶음(추매 다리는 같은 게임 1개). tag 지정 시 그 전략만.
-        텔레그램 '전체 N' 표기용 — list_open_s1과 동일 모집단(tp/sl 있는 시그마 포지션)."""
-        tagu = (tag or "").upper()
-        games: set = set()
-        for (ns, sym, side), d in self._dq.items():
-            if ns != namespace or not d:
-                continue
-            lv = self._levels.get((ns, sym, side), {})
-            for (sid, ts, p, _tag) in d:
-                levels = lv.get(sid)
-                if not levels:                       # tp/sl 없으면 시그마 포지션 아님
-                    continue
-                if tagu and (_tag or "").upper() != tagu:
-                    continue
-                gid = levels[2] if len(levels) > 2 and levels[2] else sid
-                games.add(gid)
-        return len(games)
+    # (count_open_universe 인메모리판 제거 — 2026-08-02: 호출처 0건. 실사용은 count_open_universe_redis)
 
 
 def record_and_index_signal(

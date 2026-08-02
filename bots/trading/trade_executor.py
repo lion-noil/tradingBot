@@ -8,19 +8,6 @@ import math
 import asyncio
 
 
-@dataclass
-class MinEntryResult:
-    ok: bool
-    symbol: str
-    wallet_ccy: str
-    wallet_balance: float
-    price: float
-    leverage: float
-    min_qty: float
-    required_notional: float
-    required_balance: float
-    reasons: List[str]
-    extra: Dict[str, Any]
 
 
 @dataclass
@@ -287,87 +274,7 @@ class TradeExecutor:
             "raw_qty": raw_qty,
         }
 
-    def preflight_min_entry(self, symbol: str) -> MinEntryResult:
-        sym = (symbol or "").upper().strip()
-        reasons: List[str] = []
-
-        # rules
-        rules = self._get_rules(sym) or {}
-        step = float(rules.get("qtyStep") or 0.0) or 0.0
-        min_qty = float(rules.get("minOrderQty") or 0.0) or 0.0
-        max_qty = float(rules.get("maxOrderQty") or 0.0) or 0.0
-
-        if step <= 0:
-            reasons.append("rules_step_missing")
-            step = 0.0
-
-        if min_qty <= 0:
-            # 최소수량이 없으면 step을 최소수량으로 간주
-            min_qty = step
-
-        if min_qty <= 0:
-            reasons.append("min_qty_missing")
-
-        # price: rules의 bid/ask/last(mid)
-        px = float(self._price_from_rules(sym) or 0.0)
-        if px <= 0:
-            reasons.append("price_missing")
-
-        # leverage
-        lev = float(getattr(self.rest, "leverage", 1.0) or 1.0)
-        if lev <= 0:
-            reasons.append("leverage_invalid")
-            lev = 0.0
-
-        # wallet balance
-        asset = self.deps.get_asset() or {}
-        wallet = asset.get("wallet") or {}
-        wallet_ccy = "USDT" if (wallet.get("USDT") is not None) else ("USD" if (wallet.get("USD") is not None) else "")
-        bal = float(wallet.get(wallet_ccy) or 0.0) if wallet_ccy else 0.0
-        if bal <= 0:
-            reasons.append(f"wallet_empty:{wallet_ccy or 'UNKNOWN'}")
-
-        # required
-        required_notional = 0.0
-        required_balance = 0.0
-
-        if px > 0 and min_qty > 0 and lev > 0:
-            # 1) 최소 주문 수량 * 현재가(대충 mid) = 최소 명목
-            required_notional = float(min_qty) * float(px)
-
-            # 2) 네 시스템 qty 공식이 balance*leverage/price 기반이니까:
-            #    required_balance = required_notional / leverage
-            required_balance = required_notional / lev
-
-            # (선택) 수수료/슬리피지 버퍼 조금
-            required_balance *= (1.0 + float(self.TAKER_FEE_RATE or 0.0))
-
-            # max_qty 체크(의미는 없지만 룰 깨졌을 때 표시)
-            if max_qty > 0 and min_qty > max_qty:
-                reasons.append("min_qty_gt_max_qty")
-
-        else:
-            # 이미 reasons에 다 들어감
-            pass
-
-        ok = (len(reasons) == 0) and (bal >= required_balance) and (required_balance > 0)
-
-        if (len(reasons) == 0) and (required_balance > 0) and (bal < required_balance):
-            reasons.append(f"insufficient_balance need={required_balance:.6f} have={bal:.6f}")
-
-        return MinEntryResult(
-            ok=ok,
-            symbol=sym,
-            wallet_ccy=wallet_ccy or "UNKNOWN",
-            wallet_balance=float(bal),
-            price=float(px),
-            leverage=float(lev),
-            min_qty=float(min_qty),
-            required_notional=float(required_notional),
-            required_balance=float(required_balance),
-            reasons=reasons,
-            extra={"rules": rules},
-        )
+    # (preflight_min_entry/MinEntryResult 제거 — 2026-08-02: 호출처 0건, 실사용은 assert_min_entry_notional_ok)
 
     @staticmethod
     def _get_pos_qty(asset: Dict[str, Any], symbol: str, side: str) -> float:

@@ -129,51 +129,9 @@ def s1_cooldown_ok(last_exit_ts_ms: Optional[int], now_ms: int, p: S1Params) -> 
     return (now_ms - int(last_exit_ts_ms)) >= p.cooldown_sec * 1000
 
 
-def s1_exit_on_tick(pos: S1Position, price: float) -> Optional[str]:
-    """라이브 틱 가격으로 청산 판단. 'SL' / 'TP' / None. 손절 우선."""
-    if price <= pos.sl_price:
-        return "SL"
-    if price >= pos.tp_price:
-        return "TP"
-    return None
+# (s1_exit_on_tick/s2_exit_on_tick 제거 — 2026-08-02: 호출처 0건, 통합판 sigma_exit_on_tick 사용)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# S2 (추세추종 숏) — 진입 신호는 S1과 동일(z ≤ -K1)이나 방향만 숏. TP/SL 미러.
-#   pct = (MA - B·σ)/진입가 - 1 (pct>0 필수). TP=진입가×(1-pct)[아래], SL=진입가×(1+pct)[위].
-# ─────────────────────────────────────────────────────────────────────────────
-def s2_entry_levels(z: Optional[float], ma: Optional[float], sd: Optional[float],
-                    price: float, p: S1Params) -> Optional[Tuple[float, float]]:
-    """S2 추세숏 진입 레벨. 충족 시 (tp_price, sl_price) 반환(tp<진입가<sl), 아니면 None."""
-    if z is None or ma is None or sd is None or sd <= 0:
-        return None
-    if z > -p.k1:
-        return None
-    ref = ma - p.b * sd
-    pct = ref / price - 1.0
-    if pct <= 0:                 # 가드: 거리 pct>0 (S1과 동일 산식)
-        return None
-    tp_price = price * (1.0 - pct)   # 아래(숏 익절)
-    sl_price = price * (1.0 + pct)   # 위(숏 손절)
-    return tp_price, sl_price
-
-
-def s2_exit_on_tick(pos: S1Position, price: float) -> Optional[str]:
-    """S2 숏 청산: 위(sl) 닿으면 손절(우선), 아래(tp) 닿으면 익절."""
-    if price >= pos.sl_price:
-        return "SL"
-    if price <= pos.tp_price:
-        return "TP"
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 일반화 (추세/역추세 × 롱/숏 = 4모드). entry_high·position_long 두 축으로 결정.
-#   진입: entry_high → z≥+K1(과열), else z≤-K1(급락/과매도)
-#   pct:  entry_high → 1-(MA+Bσ)/price,  else (MA-Bσ)/price-1   (둘 다 >0 가드)
-#   TP/SL: position_long → TP=price×(1+pct) 위 / SL=price×(1-pct) 아래, 숏은 미러
-#   매핑: 추세=(entry_high == long), 역추세=(entry_high != long)
-# ─────────────────────────────────────────────────────────────────────────────
 def sigma_entry_levels(z, ma, sd, price: float, p: S1Params, *,
                        entry_high: bool, position_long: bool) -> Optional[Tuple[float, float]]:
     if z is None or ma is None or sd is None or sd <= 0:

@@ -31,67 +31,7 @@ def fmt_pct(v: Optional[float]) -> str:
     return "—" if v is None else f"{float(v) * 100:.3f}%"
 
 
-# ── Redis 스트림 로깅(xadd) ────────────────────────
-def xadd_pct_log(
-    redis_client,
-    symbol: str,
-    name: str,
-    prev: Optional[float],
-    new: Optional[float],
-    arrow_mark: str,
-    msg: str,
-    *,
-    namespace: Optional[str] = None,
-    stream_key: Optional[str] = None,
-    cross_times: Optional[List[Tuple[str, str, float, float, float]]] = None,
-    cross_times_max: int = 20,  # 너무 크면 최근 N개만
-) -> None:
-    """
-    - 기본 키: "OpenPctLog"
-    - namespace가 있으면 기본 키: "trading:{namespace}:OpenPctLog"
-    - stream_key를 직접 넘기면 그 값을 그대로 사용
-    """
-    if redis_client is None:
-        return
-
-    # 최종 스트림 키 결정
-    if stream_key is None:
-        if namespace:
-            stream_key = f"trading:{namespace}:OpenPctLog"
-        else:
-            stream_key = "OpenPctLog"
-
-    def _fmt(x):
-        return "" if x is None else f"{float(x):.10f}"
-
-    # 필요시 최근 N개만 유지
-    if cross_times:
-        trimmed = cross_times[-cross_times_max:]
-        ct_dicts = [
-            {
-                "dir": d,
-                "time": t,
-                "price": float(p),
-                "bid": float(b),
-                "ask": float(a),
-            }
-            for (d, t, p, b, a) in trimmed
-        ]
-        ct_json = json.dumps(ct_dicts, ensure_ascii=False)
-    else:
-        ct_json = ""
-
-    fields = {
-        "ts": kst_now_str(),
-        "sym": symbol,
-        "name": name,
-        "prev": _fmt(prev),
-        "new": _fmt(new),
-        "arrow": arrow_mark,
-        "msg": msg,
-        "cross_times": ct_json,
-    }
-    redis_client.xadd(stream_key, fields, maxlen=300, approximate=False)
+# (xadd_pct_log 제거 — 2026-08-02: basic/MA100 은퇴·프론트 위젯 제거로 호출처 0건)
 
 # 2-1) 지표 계산 (순수)
 def compute_indicators_for_symbol(candle_engine, indicator_engine, symbol: str):
@@ -151,7 +91,6 @@ def refresh_indicators_for_symbol(
     한 심볼에 대해:
     - 인디케이터 계산
     - MA threshold / momentum threshold / prev_close_3 반영
-    - MA threshold 변경시 xadd_pct_log 로 로그 남김 (네임스페이스 포함 가능)
     """
     res = compute_indicators_for_symbol(candle_engine, indicator_engine, symbol)
 

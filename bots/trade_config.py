@@ -46,24 +46,7 @@ def _optional(name: str, default=None):
     v = os.getenv(name)
     return v if (v is not None and v != "") else default
 
-@dataclass(frozen=True)
-class RedisConfig:
-    url: Optional[str] = None
-    host: Optional[str] = None
-    port: int = 6379
-    password: Optional[str] = None
-
-    @staticmethod
-    def from_env() -> "RedisConfig":
-        _load_dotenv_once()
-
-
-        return RedisConfig(
-            url=_optional("REDIS_URL"),
-            host=_optional("REDIS_HOST"),
-            port=int(_optional("REDIS_PORT", "6379")),
-            password=_optional("REDIS_PASSWORD"),
-        )
+# (RedisConfig 제거 — 2026-08-02: 사용처 0건, redis 접속은 core/redis_client.py 전담)
 
 @dataclass
 class TradeConfig:
