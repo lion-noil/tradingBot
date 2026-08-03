@@ -324,10 +324,30 @@ class TelegramLogHandler(logging.Handler):
                     if not self._rl.allow(key):
                         return
 
-                    send_telegram_message(self.bot_token, self.chat_id, text)
+                    # ✅ 전송 실패(타임아웃 등)를 포맷 실패와 분리(2026-08-03) — 종전엔 한 try라
+                    #   api.telegram.org read timeout이 일반 경로 폴백을 타서 SIG 원문 JSON이
+                    #   그대로 발송됐음(read timeout은 실제론 전달됐을 수 있어 이중 수신도 가능).
+                    #   전송 실패는 예쁜 텍스트 그대로 1회 재시도, 그래도 실패면 포기(원문 재전송 금지).
+                    try:
+                        send_telegram_message(self.bot_token, self.chat_id, text)
+                    except Exception as se:
+                        print(f"[Telegram send failed] {se} — 3s 후 1회 재시도")
+                        import time as _t2
+                        _t2.sleep(3)
+                        try:
+                            send_telegram_message(self.bot_token, self.chat_id, text)
+                        except Exception as se2:
+                            print(f"[Telegram send retry failed] {se2} | 헤드라인={headline}")
                     return
                 except Exception as e:
-                    print(f"[Telegram prettify failed] {e} | raw={msg}")
+                    # 진짜 포맷/파싱 실패 — 원문 전문 대신 앞부분만 잘라 안내 전송(스팸·JSON 노출 방지)
+                    print(f"[Telegram prettify failed] {e} | raw={msg[:300]}")
+                    try:
+                        send_telegram_message(self.bot_token, self.chat_id,
+                                              f"⚠️ 신호 포맷 실패(내용 축약)\n{msg[:300]}")
+                    except Exception:
+                        pass
+                    return
 
             # ✅ 동일 오류 폭탄 방지(2026-07-16 Upstash 사고: 크래시루프로 3만건 발송):
             #    (레벨+본문 앞 150자) 지문이 같으면 10분 창에서 1회만 발송, 창 만료 시 억제 건수 요약.
