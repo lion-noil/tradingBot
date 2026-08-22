@@ -1,4 +1,4 @@
-import logging, os, json, html, requests
+import logging, os, json, html, re, time, requests
 from pathlib import Path
 from typing import Optional
 
@@ -60,6 +60,30 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
         data={"chat_id": chat_id, "text": message},   # ✅ parse_mode 제거
         timeout=10,
     ).raise_for_status()
+
+
+# ✅ FCM 앱 알림용(2026-08-22): 경고(WARNING+)를 Redis 스트림에도 기록.
+#   신호/체결은 이미 스트림에 남지만 경고는 텔레그램 전용이라 앱 푸시가 못 받던 공백 메움.
+#   키를 trading:warn:signals 로 두어 기존 /api/signals?name=warn 로도 조회 가능(앱 알림함).
+#   dedupe(30분 억제) 통과분만 기록됨 · 완전 best-effort — 실패해도 텔레그램 경로 무영향.
+_warn_redis = None
+
+
+def _publish_warning_stream(level: str, logger_name: str, text: str):
+    global _warn_redis
+    try:
+        import redis as _redis
+        if _warn_redis is None:
+            url = os.getenv("REDIS_URL") or "redis://127.0.0.1:6379/0"
+            _warn_redis = _redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+        _warn_redis.xadd(
+            "trading:warn:signals",
+            {"kind": "WARN", "level": str(level), "logger": str(logger_name or ""),
+             "text": (text or "")[:900], "ts_ms": str(int(time.time() * 1000))},
+            maxlen=1000, approximate=True,
+        )
+    except Exception:
+        _warn_redis = None  # 다음 호출에서 재연결 시도
 
 # ✅ 전략 태그 → 패밀리 라벨 (2026-07-21 코드 제거 — 책은 헤더 [유니버스·책]이 이미 표기).
 #   책 내부 패밀리: S11/S12/S13(z추세·z역추세·급락페이드), S14/S15(4h 신규: ewz추세·유동성스윕),
@@ -126,6 +150,9 @@ def _guess_dp_from_price(px, min_dp=1, max_dp=4):
         return min_dp
 
 class TelegramLogHandler(logging.Handler):
+    # 동일(숫자 정규화) 메시지 억제창 — 장애 지속 시 이 창 동안 최초 1회만 발송, 만료 시 억제건수 요약.
+    _DEDUPE_WINDOW_SEC = 1800  # 30분
+
     def __init__(self, bot_token: str, chat_id: str, level=logging.WARNING):
         super().__init__(level)
         self.bot_token = bot_token
@@ -350,12 +377,17 @@ class TelegramLogHandler(logging.Handler):
                     return
 
             # ✅ 동일 오류 폭탄 방지(2026-07-16 Upstash 사고: 크래시루프로 3만건 발송):
-            #    (레벨+본문 앞 150자) 지문이 같으면 10분 창에서 1회만 발송, 창 만료 시 억제 건수 요약.
+            #    ① 지문에서 숫자를 '#'로 정규화 — "가격 API 실패 300초째/301초째/3600초째"처럼
+            #       매초 바뀌는 카운터가 지문을 매번 달라지게 해 dedup을 무력화하던 문제 차단
+            #       (2026-08-10 MT5 피드 장애 시 텔레그램 폭주의 직접 원인).
+            #    ② 억제창 30분(_DEDUPE_WINDOW_SEC) — 장애 지속 동안 최초 1회만 발송, 이후 30분마다
+            #       "(동일 메시지 N건 억제됨)" 요약만.
             import time as _t
-            fp = f"{record.levelno}:{record.getMessage()[:150]}"
+            _norm = re.sub(r"\d+", "#", record.getMessage())
+            fp = f"{record.levelno}:{_norm[:150]}"
             now = _t.time()
             st = self._dedupe.get(fp)
-            if st and now - st["first"] < 600:
+            if st and now - st["first"] < self._DEDUPE_WINDOW_SEC:
                 st["n"] += 1
                 return
             if st and st.get("n", 0) > 0:
@@ -366,11 +398,16 @@ class TelegramLogHandler(logging.Handler):
                     pass
             self._dedupe[fp] = {"first": now, "n": 0}
             if len(self._dedupe) > 200:
-                self._dedupe = {k: v for k, v in self._dedupe.items() if now - v["first"] < 600}
+                self._dedupe = {k: v for k, v in self._dedupe.items()
+                                if now - v["first"] < self._DEDUPE_WINDOW_SEC}
 
             key = f"LOG:{record.levelname}"
             if not self._rl.allow(key):
                 return
+
+            # ✅ 경고(WARNING+)만 FCM 스트림에도 기록 (체결 INFO는 trade_records 스트림이 이미 커버)
+            if record.levelno >= logging.WARNING:
+                _publish_warning_stream(record.levelname, record.name, record.getMessage())
 
             send_telegram_message(self.bot_token, self.chat_id, self.format(record))
         except Exception as e:
