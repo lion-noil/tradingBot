@@ -393,8 +393,8 @@ class Mt5RestTradeMixin:
 
             if not do_retry:
                 # ??理쒖쥌 ?ㅽ뙣??寃쎌슦?먮쭔 ?먮윭 濡쒓렇
-                if is_market_closed and not reduce_only:
-                    # ✅ 개장대기 마킹 — trade_executor.open_position이 읽어 락 밖에서 지연 재시도
+                if is_market_closed:  # ✅ 2026-08-12: open+close(reduce_only) 모두 마킹 — 청산 재시도도 이 마커 사용(기존 조건이 close를 빠뜨려 주말/휴장 EXIT 고아 발생)
+                    # ✅ 개장대기 마킹 — trade_executor.open/close_position이 읽어 락 밖에서 지연 재시도
                     #    (주초 개장 갭: 월 07:0x KST WTI 등. 여기(_sync_lock 안)선 길게 못 기다림)
                     self.last_market_closed_reject = {
                         "symbol": (symbol or "").upper().strip(),

@@ -278,12 +278,7 @@ class MarketSync:
         라이브 가격=ticker(WS), 캔들=해당 인터벌 REST 주기 백필.
         분 단위 확정봉/갭백필 로직 안 씀 → 1분 서비스 무영향."""
         self.ensure_symbol(symbol)
-        price = self.get_price(symbol, now_ts)
-        if price is not None and self.on_price:
-            try:
-                self.on_price(symbol, float(price), self.ws.get_last_exchange_ts(symbol))
-            except Exception:
-                pass
+        price = self.get_price(symbol, now_ts)  # ✅ get_price가 내부에서 on_price 1회 발화 → 여기 중복 호출 제거(2026-08-12: 4h/D 채널 가격 이중기록·None ts 미보정 버그)
         itv = self.cfg.candle_interval
         cd = self.cfg.daily_backfill_cooldown_sec if itv == "D" \
             else self.cfg.interval_backfill_cooldown_sec
