@@ -16,6 +16,9 @@ def _now_ms() -> int:
 
 
 def _ns(namespace: str) -> str:
+    # ⚠️ lowercase 금지: lot 장부는 원본 대소문자 ns(agent:CopyZannaviMT5:...:MT5)로 저장돼 있음.
+    #   2026-08-12 .lower() 추가 → 기존 대문자 키의 open lot 17개를 못 찾아 전 심볼 flat(포지션 방치) 사고.
+    #   signals.py._ns는 lowercase지만 그쪽 ns는 원래 소문자(s11m 등)라 무관 — 통일하려면 데이터 이관이 선행돼야 함.
     n = (namespace or "bybit").strip()
     return f"trading:{n}"
 
@@ -66,7 +69,9 @@ def open_lot(
     entry_price: float,
     qty_total: float,
     entry_signal_id: Optional[str] = None,
-    ex_lot_id: Optional[str] = None
+    ex_lot_id: Optional[str] = None,
+    strategy_tag: Optional[str] = None,   # ✅ 셀 태그(S3/S4/S11~S15) — 신호 스트림 만료(35d) 후에도 귀속 유지
+    signal_ns: Optional[str] = None,      # ✅ 신호 네임스페이스(s11/s22/bybit/...)
 ) -> str:
     """
     ✅ 체결 확정 후에만 호출해야 함.
@@ -88,6 +93,8 @@ def open_lot(
         "qty_total": _safe_num_str(qty_total, max_decimals=12),
         "entry_signal_id": entry_signal_id or "",
         "ex_lot_id": ex_lot_id or "",     # ✅ 추가
+        "strategy_tag": strategy_tag or "",
+        "signal_ns": signal_ns or "",
         "created_ts_ms": str(_now_ms()),
     }
 
@@ -186,6 +193,15 @@ def get_lot_ex_lot_id(*, namespace: str = "bybit", lot_id: str) -> Optional[str]
     return s or None
 
 
+def get_lot_strategy_meta(*, namespace: str = "bybit", lot_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """(strategy_tag, signal_ns) — EXIT trade_record에 진입 전략을 귀속시키기 위한 조회.
+    태그 없는 구lot(도입 이전 진입)은 (None, None)."""
+    tag_b, ns_b = redis_client.hmget(_lot_key(namespace, lot_id), ["strategy_tag", "signal_ns"])
+    tag = tag_b.decode().strip() if tag_b else ""
+    ns = ns_b.decode().strip() if ns_b else ""
+    return (tag or None, ns or None)
+
+
 
 # ----------------------------- LotsIndex (in-memory cache) -----------------------------
 
@@ -197,6 +213,8 @@ class LotCacheItem:
     entry_price: float
     entry_signal_id: str = ""
     ex_lot_id: str = ""
+    strategy_tag: str = ""   # ✅ 셀 태그(S3/S11 등) — asset entries로 노출해 프론트 '기타' fallback에 사용
+    signal_ns: str = ""
 
 
 class LotsIndex:
@@ -255,6 +273,8 @@ class LotsIndex:
                         entry_price = float(_get("entry_price") or "0")
                         entry_signal_id = _get("entry_signal_id") or ""
                         ex_lot_id = _get("ex_lot_id") or ""
+                        strategy_tag = _get("strategy_tag") or ""
+                        signal_ns = _get("signal_ns") or ""
                     except Exception:
                         continue
 
@@ -264,7 +284,9 @@ class LotsIndex:
                         qty_total=qty_total,
                         entry_price=entry_price,
                         entry_signal_id=entry_signal_id,
-                        ex_lot_id=ex_lot_id
+                        ex_lot_id=ex_lot_id,
+                        strategy_tag=strategy_tag,
+                        signal_ns=signal_ns,
                     )
                     arr.append(item)
                     self._rev[lot_id] = (sym, side)
@@ -292,7 +314,9 @@ class LotsIndex:
         qty_total: float,
         entry_price: float,
         entry_signal_id: str = "",
-        ex_lot_id: str = ""
+        ex_lot_id: str = "",
+        strategy_tag: str = "",
+        signal_ns: str = "",
     ) -> None:
         k = (symbol, side)
         arr = list(self._items.get(k) or [])
@@ -305,7 +329,9 @@ class LotsIndex:
             qty_total=float(qty_total),
             entry_price=float(entry_price),
             entry_signal_id=entry_signal_id or "",
-            ex_lot_id=ex_lot_id
+            ex_lot_id=ex_lot_id,
+            strategy_tag=strategy_tag or "",
+            signal_ns=signal_ns or "",
         )
         arr.insert(0, item)
 
@@ -357,6 +383,8 @@ class LotsIndex:
                 "price": float(it.entry_price),
                 "entry_signal_id": it.entry_signal_id or "",
                 "ex_lot_id": it.ex_lot_id or "",
+                "strategy_tag": it.strategy_tag or "",
+                "signal_ns": it.signal_ns or "",
             })
         if sort_asc:
             out.sort(key=lambda x: x["ts"])

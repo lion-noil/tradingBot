@@ -523,6 +523,11 @@ class TradeBot:
                                 # ✅ executor 실행 게이트용: 전략명 + signal_only(미검증 전략은 신호만, 실주문 X)
                                 "strategy": (getattr(_subcfg, "strategy", "s1") or "s1"),
                                 "signal_only": bool(getattr(_subcfg, "signal_only", False)),
+                                # ✅ 장기 아카이브용 전략 박제: 셀 태그(S3/S4/S11~S15) + 신호 ns —
+                                #    executor가 lot hash·trade_record에 저장 (신호 스트림 35일 소멸과 무관한 영구 귀속)
+                                "strategy_tag": (act.sig or {}).get("strategy")
+                                                or (((act.sig or {}).get("reasons") or [None])[0]),
+                                "signal_ns": self.namespace,
                             })
 
             except Exception as e:

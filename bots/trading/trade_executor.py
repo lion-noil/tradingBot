@@ -23,11 +23,13 @@ class TradeExecutorDeps:
     close_lot_full: Callable[..., bool]
     get_lot_qty_total: Callable[[str], Optional[float]]
 
-    on_lot_open: Callable[[str, str, str, int, float, float, str, Optional[str]], None]
+    on_lot_open: Callable[..., None]  # (sym, side, lot_id, ts, qty, price, entry_signal_id, ex_lot_id, strategy_tag, signal_ns)
     on_lot_close: Callable[[str, str, str], None]
 
     get_lot_ex_lot_id: Callable[[str], Optional[str]]
     lots_index: Any = None
+    # ✅ (strategy_tag, signal_ns) 조회 — EXIT 기록에 진입 전략 귀속 (없으면 (None, None))
+    get_lot_strategy_meta: Optional[Callable[[str], tuple]] = None
 
 
 class TradeExecutor:
@@ -614,6 +616,8 @@ class TradeExecutor:
             entry_signal_id: Optional[str],
             strategy: Optional[str],
             attempt: int,
+            strategy_tag: Optional[str] = None,
+            signal_ns: Optional[str] = None,
     ) -> None:
         """미체결 진입이 '방금 장닫힘(10018) 거절' 때문이면 개장대기 재시도 예약.
         rest(MT5)가 last_market_closed_reject를 마킹한 경우에만 동작 — Bybit 등은 no-op."""
@@ -634,7 +638,8 @@ class TradeExecutor:
         if old and not old.done():
             old.cancel()
         self._pending_open_retries[key] = asyncio.create_task(
-            self._mc_retry_open(sym_u, side_u, float(price), key, strategy, attempt + 1)
+            self._mc_retry_open(sym_u, side_u, float(price), key, strategy, attempt + 1,
+                                strategy_tag=strategy_tag, signal_ns=signal_ns)
         )
         if self.system_logger:
             self.system_logger.warning(
@@ -645,6 +650,7 @@ class TradeExecutor:
     async def _mc_retry_open(
             self, symbol: str, side_u: str, price: float,
             entry_signal_id: str, strategy: Optional[str], attempt: int,
+            strategy_tag: Optional[str] = None, signal_ns: Optional[str] = None,
     ) -> None:
         try:
             await asyncio.sleep(self.MC_RETRY_DELAY_SEC)
@@ -653,7 +659,8 @@ class TradeExecutor:
         self._pending_open_retries.pop(entry_signal_id, None)
         await self.open_position(
             symbol, side_u, price,
-            entry_signal_id=entry_signal_id, strategy=strategy, _mc_retry=attempt,
+            entry_signal_id=entry_signal_id, strategy=strategy,
+            strategy_tag=strategy_tag, signal_ns=signal_ns, _mc_retry=attempt,
         )
 
     def cancel_pending_open_retry(self, entry_signal_id: Optional[str]) -> bool:
@@ -724,6 +731,8 @@ class TradeExecutor:
             *,
             entry_signal_id: Optional[str] = None,
             strategy: Optional[str] = None,  # ✅ (전략,심볼)별 진입% 조회용
+            strategy_tag: Optional[str] = None,  # ✅ 셀 태그(S3/S4/S11~S15) — lot·trade_record 박제용
+            signal_ns: Optional[str] = None,     # ✅ 신호 네임스페이스(s11/s22/...) — 〃
             _mc_retry: int = 0,   # 내부용: 개장대기 재시도 회차
     ) -> None:
         side_u = (side or "").upper().strip()
@@ -779,7 +788,10 @@ class TradeExecutor:
                     self.system_logger.warning(
                         f"[OPEN] not filled -> skip lot (sym={symbol} status={res.get('status')})"
                     )
-                self._maybe_schedule_open_retry(symbol, side_u, float(price), entry_signal_id, strategy, _mc_retry)
+                self._maybe_schedule_open_retry(
+                    symbol, side_u, float(price), entry_signal_id, strategy, _mc_retry,
+                    strategy_tag=strategy_tag, signal_ns=signal_ns,
+                )
                 return
             if self.system_logger:
                 self.system_logger.warning(
@@ -815,6 +827,8 @@ class TradeExecutor:
                 qty_total=float(rec_qty),
                 entry_signal_id=entry_signal_id,
                 ex_lot_id=ex_lot_id,
+                strategy_tag=strategy_tag,
+                signal_ns=signal_ns,
             )
         except Exception as e:
             if self.system_logger:
@@ -836,6 +850,8 @@ class TradeExecutor:
                 "ex_lot_id": ex_lot_id,
                 "engine": self.engine_tag,
                 "fee_rate": self.TAKER_FEE_RATE,
+                "strategy_tag": strategy_tag or None,
+                "signal_ns": signal_ns or None,
             })
         except Exception as e:
             if self.system_logger:
@@ -845,7 +861,7 @@ class TradeExecutor:
         try:
             self.deps.on_lot_open(
                 symbol, side_u, lot_id, entry_ts_ms, float(rec_qty), float(price),
-                entry_signal_id or "", ex_lot_id,
+                entry_signal_id or "", ex_lot_id, strategy_tag or "", signal_ns or "",
             )
         except Exception:
             pass
@@ -991,6 +1007,14 @@ class TradeExecutor:
             exit_price_f = float(exit_price or 0.0)
             entry_price_f = 0.0
 
+            # ✅ 진입 전략 귀속 (lot hash에 박제된 값 — 태그 없는 구lot은 None)
+            lot_strategy_tag = lot_signal_ns = None
+            try:
+                if self.deps.get_lot_strategy_meta:
+                    lot_strategy_tag, lot_signal_ns = self.deps.get_lot_strategy_meta(lot_id)
+            except Exception:
+                lot_strategy_tag = lot_signal_ns = None
+
             # asset snapshot의 entries에서 lot_id로 entry_price 찾기
             try:
                 asset_now = self.deps.get_asset() or {}
@@ -1038,6 +1062,8 @@ class TradeExecutor:
                 "lot_id": lot_id,
                 "ex_lot_id": ex_lot_id,
                 "engine": self.engine_tag,
+                "strategy_tag": lot_strategy_tag,
+                "signal_ns": lot_signal_ns,
             })
         except Exception as e:
             if self.system_logger:

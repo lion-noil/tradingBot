@@ -16,6 +16,7 @@ from bots.state.lots import (
     get_lot_qty_total,
     LotsIndex,
     get_lot_ex_lot_id,
+    get_lot_strategy_meta,
 )
 from bots.trade_config import TradeConfig, make_mt5_signal_config, make_bybit_config
 from utils.logger import setup_logger
@@ -522,7 +523,7 @@ def build_ctx(engine: str) -> ExecContext:
         save_trade_record=lambda data: save_trade_record(state_ns_engine, data),
 
         open_lot=lambda *, symbol, side, entry_ts_ms, entry_price, qty_total, entry_signal_id=None,
-                        ex_lot_id=None: open_lot(
+                        ex_lot_id=None, strategy_tag=None, signal_ns=None: open_lot(
             namespace=state_ns_engine,
             symbol=symbol,
             side=side,
@@ -531,21 +532,27 @@ def build_ctx(engine: str) -> ExecContext:
             qty_total=qty_total,
             entry_signal_id=entry_signal_id,
             ex_lot_id=ex_lot_id,
+            strategy_tag=strategy_tag,
+            signal_ns=signal_ns,
         ),
         close_lot_full=lambda *, lot_id: close_lot_full(namespace=state_ns_engine, lot_id=lot_id),
 
         # ✅ 캐시 우선
         get_lot_qty_total=lambda lot_id: _lot_qty(lot_id),
         get_lot_ex_lot_id=lambda lot_id: _lot_ex(lot_id),
+        # ✅ EXIT 기록의 전략 귀속용 (lot hash 박제값)
+        get_lot_strategy_meta=lambda lot_id: get_lot_strategy_meta(namespace=state_ns_engine, lot_id=lot_id),
 
         on_lot_open=lambda sym, side, lot_id, entry_ts_ms, qty_total, entry_price, entry_signal_id,
-                           ex_lot_id: lots_index.on_open(
+                           ex_lot_id, strategy_tag="", signal_ns="": lots_index.on_open(
             sym, side, lot_id,
             entry_ts_ms=entry_ts_ms,
             qty_total=qty_total,
             entry_price=entry_price,
             entry_signal_id=entry_signal_id,
             ex_lot_id=ex_lot_id or "",
+            strategy_tag=strategy_tag or "",
+            signal_ns=signal_ns or "",
         ),
         on_lot_close=lambda sym, side, lot_id: lots_index.on_close(sym, side, lot_id),
 
@@ -670,6 +677,9 @@ async def handle_action(msg: Dict[str, Any]) -> None:
             float(price),
             entry_signal_id=str(signal_id),
             strategy=strat,  # ✅ (전략,심볼)별 진입% — 일봉(s3/s4)=2% 등
+            # ✅ 장기 아카이브용 전략 박제 (구버전 봇 msg엔 없음 → None 허용)
+            strategy_tag=(str(msg.get("strategy_tag") or "").upper().strip() or None),
+            signal_ns=(str(msg.get("signal_ns") or "").lower().strip() or None),
         )
         system_logger.debug(
             build_asset_log_with_lots(
