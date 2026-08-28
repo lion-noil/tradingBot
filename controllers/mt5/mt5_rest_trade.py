@@ -393,7 +393,12 @@ class Mt5RestTradeMixin:
 
             if not do_retry:
                 # ??理쒖쥌 ?ㅽ뙣??寃쎌슦?먮쭔 ?먮윭 濡쒓렇
-                if is_market_closed:  # ✅ 2026-08-12: open+close(reduce_only) 모두 마킹 — 청산 재시도도 이 마커 사용(기존 조건이 close를 빠뜨려 주말/휴장 EXIT 고아 발생)
+                # ✅ 2026-08-12: open+close(reduce_only) 모두 마킹 — 청산 재시도도 이 마커 사용.
+                # ✅ 2026-08-28: 청산은 일시 체결거부(10021 'No prices' 등)도 마킹 — 실사고:
+                #    08-18 06:09 USDJPY 만기청산이 롤오버 호가공백(10021)에 2s×3회 재시도 후 포기
+                #    → 신호봇 장부는 이미 정리돼 재발행 없음 → 고아 10일 방치. 청산은 가격 이탈보다
+                #    완결이 우선이므로 지연 재시도로 반드시 잇는다. 진입은 기존대로 10018만(가격 이탈 위험).
+                if is_market_closed or (reduce_only and is_fill_reject):
                     # ✅ 개장대기 마킹 — trade_executor.open/close_position이 읽어 락 밖에서 지연 재시도
                     #    (주초 개장 갭: 월 07:0x KST WTI 등. 여기(_sync_lock 안)선 길게 못 기다림)
                     self.last_market_closed_reject = {
