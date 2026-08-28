@@ -441,8 +441,8 @@ def make_s11_mt5_trend_config(*, signal_only: bool = True, **kw) -> "TradeConfig
     return make_s1_config(name="s11m", params_by_symbol=S11M_TREND, strategy="s11",
                           avg_down=False, signal_only=signal_only,
                           # ⚠️ candles_num: 책 모드 캔들 스토어는 primary(이 config)의 값 사용 —
-                          #    S11M_REV HK50 w2880 커버 위해 2000→3200 (trade_bot.py CandleEngine 참조)
-                          s1_win=1440, candle_interval="1", candles_num=3200,
+                          #    S11M_REV US500 w4320 커버 위해 3200→5000 (2026-08-27, 구 3200=HK50 w2880)
+                          s1_win=1440, candle_interval="1", candles_num=5000,
                           s1_max_hold_sec=14 * _D, **kw)
 
 
@@ -453,7 +453,7 @@ def make_s11_mt5_rev_config(*, signal_only: bool = True, **kw) -> "TradeConfig":
     S11M_REV = _PL.S11M_REV  # → params_local.py (전략 파라미터 비공개 분리)
     return make_s1_config(name="s11m", params_by_symbol=S11M_REV, strategy="s12",
                           avg_down=False, signal_only=signal_only,
-                          s1_win=1440, candle_interval="1", candles_num=3200,  # HK50 w2880 커버
+                          s1_win=1440, candle_interval="1", candles_num=5000,  # US500 w4320 커버(구 3200=HK50 w2880)
                           s1_max_hold_sec=14 * _D, **kw)
 
 
