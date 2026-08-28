@@ -154,6 +154,18 @@ def record_signal_with_ts(
         if pp is not None:
             stream_fields["pnl_pct"] = "" if pp == "" else str(float(pp))
 
+    # ✅ ENTRY일 때 tp/sl·z 컨텍스트를 stream에 노출 (2026-08-24 — 앱/프론트 차트 표시용.
+    #    종전엔 payload_json(hash)에만 있어 스트림 소비자가 TP/SL 가격을 못 봤음)
+    if kind_u == "ENTRY" and isinstance(payload, dict):
+        for _k in ("tp_price", "sl_price", "z", "k1", "b"):
+            _v = payload.get(_k)
+            if _v is None or _v == "":
+                continue
+            try:
+                stream_fields[_k] = str(float(_v))
+            except (TypeError, ValueError):
+                pass
+
     pipe = redis_client.pipeline()
 
     # 1) hash 저장 + TTL
