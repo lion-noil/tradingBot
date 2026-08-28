@@ -864,6 +864,59 @@ def _warmup_all_symbols(ctx: ExecContext) -> None:
         system_logger.debug(f"[warmup] 전 심볼 1진입 ≥ 최소주문 OK ({len(ok_syms)}개)")
 
 
+# ── 고아 포지션 대사(reconcile) — 2026-08-28 ──────────────────────────────────
+#   배경: 신호봇은 EXIT '발행'과 동시에 자기 오픈 장부(zset)에서 제거하고 재시도하지 않음 →
+#   그 순간 체결 실패(휴장 등)하면 포지션만 남는 구조적 공백 (실사례 2건: BTCUSD 07-28·
+#   USDJPY 08-03, 만기 후 10~16일 방치 → 08-28 수동 청산). 자동청산은 하지 않고 감지+경고만
+#   (경고는 텔레그램+앱 푸시 경로로 전달) — 처분은 tools/manual_exit.py로 수동.
+#   판정: 계좌 lot의 entry_signal_id가 어느 신호 오픈 zset에도 없으면 고아(봇이 청산 안 함).
+ORPHAN_CHECK_SEC = int(os.getenv("ORPHAN_CHECK_SEC", "21600"))               # 6시간 주기
+ORPHAN_MIN_AGE_MS = int(os.getenv("ORPHAN_MIN_AGE_H", "24")) * 3600 * 1000   # 정상 청산 지연 오탐 방지
+ORPHAN_REWARN_MS = 24 * 3600 * 1000                                          # lot당 24h마다 재경고
+_orphan_warned: Dict[str, int] = {}   # lot_id -> 마지막 경고 ms
+
+
+def _find_orphan_lots(ctx) -> list:
+    """[(sym, side, LotCacheItem, age_ms)] — 신호측 오픈 zset 어디에도 없는 성숙 lot."""
+    from core.redis_client import redis_client as _r
+    out = []
+    now = now_ms()
+    for (sym, side), items in list(getattr(ctx.lots_index, "_items", {}).items()):
+        for it in list(items):
+            sid = getattr(it, "entry_signal_id", "") or ""
+            age = now - int(getattr(it, "entry_ts_ms", 0) or 0)
+            if not sid or age < ORPHAN_MIN_AGE_MS:
+                continue
+            ns = (getattr(it, "signal_ns", "") or "").strip().lower()
+            if ns:  # 태그 박제분(2026-08-20+)은 정확히 그 채널만
+                keys = [f"trading:{ns}:signals:{sym}:{side}:ENTRY"]
+            else:   # 구lot은 전 채널 스캔
+                keys = [k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+                        for k in _r.scan_iter(f"trading:*:signals:{sym}:{side}:ENTRY")]
+            if not any(_r.zscore(k, sid) is not None for k in keys):
+                out.append((sym, side, it, age))
+    return out
+
+
+async def orphan_reconcile_loop():
+    while True:
+        try:
+            for eng, ctx in list(CTX_MAP.items()):
+                now = now_ms()
+                for sym, side, it, age in _find_orphan_lots(ctx):
+                    if now - _orphan_warned.get(it.lot_id, 0) < ORPHAN_REWARN_MS:
+                        continue
+                    _orphan_warned[it.lot_id] = now
+                    system_logger.warning(
+                        f"🧟 [{eng}] 고아 포지션 감지: {sym} {side} qty={it.qty_total} @{it.entry_price} "
+                        f"진입 {age / 86400000:.1f}일 경과 — 신호 장부에 없어 봇이 청산하지 않음. "
+                        f"처분: python tools/manual_exit.py {sym} {side} {it.entry_signal_id}"
+                    )
+        except Exception as e:
+            system_logger.warning(f"[orphan-reconcile] 점검 실패: {e}")
+        await asyncio.sleep(ORPHAN_CHECK_SEC)
+
+
 async def main():
     log.debug("=== Local Executor ===")
     log.debug(f"listen={HOST}:{PORT}")
@@ -893,6 +946,9 @@ async def main():
     server = await asyncio.start_server(handle_client, HOST, PORT)
     addrs = ", ".join(str(sock.getsockname()) for sock in (server.sockets or []))
     log.debug(f"Listening on {addrs}")
+
+    # ✅ 고아 포지션 대사 루프(감지+경고 전용, 자동청산 없음) — 6h 주기, 기동 직후 1회 즉시
+    asyncio.create_task(orphan_reconcile_loop())
 
     async with server:
         await server.serve_forever()
